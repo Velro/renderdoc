@@ -93,6 +93,7 @@ namespace renderdoc
     public enum ShaderBindType
     {
         Unknown = 0,
+        ConstantBuffer,
         Sampler,
         ImageSampler,
         ReadOnlyImage,
@@ -170,6 +171,8 @@ namespace renderdoc
         ClearBeforeDraw,
         QuadOverdrawPass,
         QuadOverdrawDraw,
+        TriangleSizePass,
+        TriangleSizeDraw,
     };
 
     public enum FileType
@@ -227,6 +230,7 @@ namespace renderdoc
     public enum GraphicsAPI
     {
         D3D11,
+        D3D12,
         OpenGL,
         Vulkan,
     };
@@ -301,7 +305,7 @@ namespace renderdoc
     };
 
     [Flags]
-    public enum D3D11BufferViewFlags
+    public enum D3DBufferViewFlags
     {
         Raw = 0x1,
         Append = 0x2,
@@ -332,6 +336,7 @@ namespace renderdoc
     [Flags]
     public enum ShaderStageBits
     {
+        None         = 0,
         Vertex       = (1 << ShaderStageType.Vertex),
         Hull         = (1 << ShaderStageType.Hull),
         Tess_Control = (1 << ShaderStageType.Tess_Control),
@@ -341,6 +346,7 @@ namespace renderdoc
         Pixel        = (1 << ShaderStageType.Pixel),
         Fragment     = (1 << ShaderStageType.Fragment),
         Compute      = (1 << ShaderStageType.Compute),
+        All          = (Vertex | Hull | Domain | Geometry | Pixel | Fragment | Compute),
     };
 
     public enum DebugMessageSource
@@ -855,6 +861,7 @@ namespace renderdoc
         {
             switch (bindType)
             {
+                case ShaderBindType.ConstantBuffer:   return "Constants";
                 case ShaderBindType.Sampler:          return "Sampler";
                 case ShaderBindType.ImageSampler:     return "Image&Sampler";
                 case ShaderBindType.ReadOnlyImage:    return "Image";

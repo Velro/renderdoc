@@ -53,6 +53,10 @@ public:
   bool SetPixelContextLocation(uint32_t x, uint32_t y);
   void DisablePixelContext();
 
+  bool GetMinMax(PixelValue *minval, PixelValue *maxval);
+  bool GetHistogram(float minval, float maxval, bool channels[4],
+                    rdctype::array<uint32_t> *histogram);
+
   ResourceId GetCustomShaderTexID() { return m_CustomShaderResourceId; }
   bool PickPixel(ResourceId texID, bool customShader, uint32_t x, uint32_t y, uint32_t sliceFace,
                  uint32_t mip, uint32_t sample, PixelValue *val);
@@ -136,6 +140,7 @@ public:
   void FetchPipelineState();
 
   bool GetD3D11PipelineState(D3D11PipelineState *state);
+  bool GetD3D12PipelineState(D3D12PipelineState *state);
   bool GetGLPipelineState(GLPipelineState *state);
   bool GetVulkanPipelineState(VulkanPipelineState *state);
 
@@ -170,12 +175,6 @@ public:
   bool DebugThread(uint32_t groupid[3], uint32_t threadid[3], ShaderDebugTrace *trace);
 
   bool GetPostVSData(uint32_t instID, MeshDataStage stage, MeshFormat *data);
-
-  bool GetMinMax(ResourceId tex, uint32_t sliceFace, uint32_t mip, uint32_t sample,
-                 FormatComponentType typeHint, PixelValue *minval, PixelValue *maxval);
-  bool GetHistogram(ResourceId tex, uint32_t sliceFace, uint32_t mip, uint32_t sample,
-                    FormatComponentType typeHint, float minval, float maxval, bool channels[4],
-                    rdctype::array<uint32_t> *histogram);
 
   bool GetUsage(ResourceId id, rdctype::array<EventUsage> *usage);
 
@@ -213,6 +212,7 @@ private:
   uint32_t m_EventID;
 
   D3D11PipelineState m_D3D11PipelineState;
+  D3D12PipelineState m_D3D12PipelineState;
   GLPipelineState m_GLPipelineState;
   VulkanPipelineState m_VulkanPipelineState;
 

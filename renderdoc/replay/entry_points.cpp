@@ -281,7 +281,17 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_FreeEnvironmentModification
 
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_LogText(const char *text)
 {
-  RDCLOG("%s", text);
+  rdclog_int(RDCLog_Comment, "EXT", "external", 0, "%s", text);
+}
+
+extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_LogMessage(LogMessageType type,
+                                                                const char *project, const char *file,
+                                                                unsigned int line, const char *text)
+{
+  RDCCOMPILE_ASSERT(
+      (int)eLogType_First == (int)RDCLog_First && (int)eLogType_NumTypes == (int)eLogType_NumTypes,
+      "Log type enum is out of sync");
+  rdclog_int((LogType)type, project, file, line, "%s", text);
 }
 
 extern "C" RENDERDOC_API const char *RENDERDOC_CC RENDERDOC_GetLogFile()
@@ -402,9 +412,10 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StartGlobalHook(const char 
 }
 
 extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_InjectIntoProcess(
-    uint32_t pid, const char *logfile, const CaptureOptions *opts, bool32 waitForExit)
+    uint32_t pid, void *env, const char *logfile, const CaptureOptions *opts, bool32 waitForExit)
 {
-  return Process::InjectIntoProcess(pid, logfile, opts, waitForExit != 0);
+  return Process::InjectIntoProcess(pid, (Process::EnvironmentModification *)env, logfile, opts,
+                                    waitForExit != 0);
 }
 
 extern "C" RENDERDOC_API bool32 RENDERDOC_CC RENDERDOC_GetThumbnail(const char *filename, byte *buf,
@@ -485,7 +496,19 @@ extern "C" RENDERDOC_API uint32_t RENDERDOC_CC RENDERDOC_EnumerateRemoteTargets(
   else
     nextIdent++;
 
-  for(; nextIdent <= RenderDoc_LastTargetControlPort; nextIdent++)
+  uint32_t lastIdent = RenderDoc_LastTargetControlPort;
+  if(host != NULL && !strncmp(host, "adb:", 4))
+  {
+    if(nextIdent == RenderDoc_FirstTargetControlPort)
+      nextIdent += RenderDoc_AndroidPortOffset;
+    lastIdent += RenderDoc_AndroidPortOffset;
+
+    s = "127.0.0.1";
+
+    // could parse out an (optional) device name from host+4 here.
+  }
+
+  for(; nextIdent <= lastIdent; nextIdent++)
   {
     Network::Socket *sock = Network::CreateClientSocket(s.c_str(), (uint16_t)nextIdent, 250);
 

@@ -1,9 +1,33 @@
+/******************************************************************************
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2016 Baldur Karlsson
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ ******************************************************************************/
+
 #ifndef EVENTBROWSER_H
 #define EVENTBROWSER_H
 
 #include <QFrame>
 #include <QIcon>
-#include "Code/Core.h"
+#include "Code/CaptureContext.h"
 
 namespace Ui
 {
@@ -19,7 +43,7 @@ private:
   Q_OBJECT
 
 public:
-  explicit EventBrowser(Core *core, QWidget *parent = 0);
+  explicit EventBrowser(CaptureContext *ctx, QWidget *parent = 0);
   ~EventBrowser();
 
   void OnLogfileLoaded();
@@ -27,29 +51,21 @@ public:
   void OnEventSelected(uint32_t eventID);
 
 private slots:
+  // automatic slots
   void on_find_clicked();
-
   void on_gotoEID_clicked();
-
   void on_timeDraws_clicked();
-
   void on_toolButton_clicked();
-
   void on_HideFindJump();
-
   void on_jumpToEID_returnPressed();
-
   void on_findEvent_returnPressed();
-
   void on_findEvent_textEdited(const QString &arg1);
-
   void on_events_currentItemChanged(QTreeWidgetItem *current, QTreeWidgetItem *previous);
-
   void on_findNext_clicked();
-
   void on_findPrev_clicked();
 
-  void on_findHighlight_timeout();
+  // manual slots
+  void findHighlight_timeout();
 
 private:
   uint AddDrawcalls(QTreeWidgetItem *parent, const rdctype::array<FetchDrawcall> &draws);
@@ -81,7 +97,7 @@ private:
   void RefreshIcon(QTreeWidgetItem *item);
 
   Ui::EventBrowser *ui;
-  Core *m_Core;
+  CaptureContext *m_Ctx;
 };
 
 #endif    // EVENTBROWSER_H

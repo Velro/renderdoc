@@ -90,6 +90,7 @@ enum ShaderResourceType
 enum ShaderBindType
 {
   eBindType_Unknown = 0,
+  eBindType_ConstantBuffer,
   eBindType_Sampler,
   eBindType_ImageSampler,
   eBindType_ReadOnlyImage,
@@ -167,6 +168,8 @@ enum TextureDisplayOverlay
   eTexOverlay_ClearBeforeDraw,
   eTexOverlay_QuadOverdrawPass,
   eTexOverlay_QuadOverdrawDraw,
+  eTexOverlay_TriangleSizePass,
+  eTexOverlay_TriangleSizeDraw,
 };
 
 enum FileType
@@ -224,6 +227,7 @@ enum QualityHint
 enum GraphicsAPI
 {
   eGraphicsAPI_D3D11,
+  eGraphicsAPI_D3D12,
   eGraphicsAPI_OpenGL,
   eGraphicsAPI_Vulkan,
 };
@@ -318,6 +322,7 @@ enum ShaderStageType
 
 enum ShaderStageBits
 {
+  eStageBits_None = 0,
   eStageBits_Vertex = 1 << eShaderStage_Vertex,
   eStageBits_Hull = 1 << eShaderStage_Hull,
   eStageBits_Tess_Control = 1 << eShaderStage_Tess_Control,
@@ -327,6 +332,9 @@ enum ShaderStageBits
   eStageBits_Pixel = 1 << eShaderStage_Pixel,
   eStageBits_Fragment = 1 << eShaderStage_Fragment,
   eStageBits_Compute = 1 << eShaderStage_Compute,
+  eStageBits_All = eStageBits_Vertex | eStageBits_Hull | eStageBits_Domain | eStageBits_Geometry |
+                   eStageBits_Pixel |
+                   eStageBits_Compute,
 };
 
 enum DebugMessageCategory
@@ -545,4 +553,16 @@ enum EnvironmentSeparator
   eEnvSep_SemiColon,
   eEnvSep_Colon,
   eEnvSep_None,
+};
+
+// matches enum in common.h
+enum LogMessageType
+{
+  eLogType_First = -1,
+  eLogType_Debug,
+  eLogType_Comment,
+  eLogType_Warning,
+  eLogType_Error,
+  eLogType_Fatal,
+  eLogType_NumTypes,
 };

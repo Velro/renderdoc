@@ -255,8 +255,11 @@ namespace renderdocui.Windows.PipelineState
 
         private void ViewDetailsRow(TreelistView.Node node, bool highlight)
         {
-            if(highlight)
+            if (highlight)
+            {
                 node.BackColor = Color.Aquamarine;
+                node.ForeColor = Color.Black;
+            }
             m_ViewDetailNodes.Add(node);
         }
 
@@ -453,8 +456,7 @@ namespace renderdocui.Windows.PipelineState
             if (!usedSlot && !stageBitsIncluded)
                 return;
 
-            // these are treated as uniform buffers
-            if (bindType == ShaderBindType.ReadOnlyBuffer)
+            if (bindType == ShaderBindType.ConstantBuffer)
                 return;
 
             // TODO - check compatibility between bindType and shaderRes.resType ?
@@ -574,7 +576,12 @@ namespace renderdocui.Windows.PipelineState
                                 name = bufs[t].name;
                                 restype = ShaderResourceType.Buffer;
 
-                                tag = new BufferResTag(isrw, bindPoint, bufs[t].ID, descriptorBind.offset, descriptorBind.size);
+                                ulong descriptorLen = descriptorBind.size;
+
+                                if(descriptorLen == ulong.MaxValue)
+                                    descriptorLen = len - descriptorBind.offset;
+
+                                tag = new BufferResTag(isrw, bindPoint, bufs[t].ID, descriptorBind.offset, descriptorLen);
 
                                 if (HasImportantViewParams(descriptorBind, bufs[t]))
                                     viewDetails = true;
@@ -803,7 +810,7 @@ namespace renderdocui.Windows.PipelineState
             }
 
             VulkanPipelineState.Pipeline.DescriptorSet.DescriptorBinding.BindingElement[] slotBinds = null;
-            ShaderBindType bindType = ShaderBindType.ReadOnlyBuffer;
+            ShaderBindType bindType = ShaderBindType.ConstantBuffer;
             ShaderStageBits stageBits = (ShaderStageBits)0;
 
             if (bindset < pipe.DescSets.Length && bind < pipe.DescSets[bindset].bindings.Length)
@@ -820,8 +827,7 @@ namespace renderdocui.Windows.PipelineState
             if (!usedSlot && !stageBitsIncluded)
                 return;
 
-            // these are treated as uniform buffers
-            if (bindType != ShaderBindType.ReadOnlyBuffer)
+            if (bindType != ShaderBindType.ConstantBuffer)
                 return;
 
             // consider it filled if any array element is filled (or it's push constants)
@@ -893,13 +899,19 @@ namespace renderdocui.Windows.PipelineState
                         length = descriptorBind.size;
 
                         for (int t = 0; t < bufs.Length; t++)
+                        {
                             if (bufs[t].ID == descriptorBind.res)
+                            {
                                 name = bufs[t].name;
+                                if(length == ulong.MaxValue)
+                                    length = bufs[t].length - descriptorBind.offset;
+                            }
+                        }
 
                         if (name == "")
                             name = "UBO " + descriptorBind.res.ToString();
 
-                        vecrange = String.Format("{0} - {1}", descriptorBind.offset, descriptorBind.offset + descriptorBind.size);
+                        vecrange = String.Format("{0} - {1}", descriptorBind.offset, descriptorBind.offset + length);
                     }
 
                     string sizestr;
@@ -1482,12 +1494,12 @@ namespace renderdocui.Windows.PipelineState
                     if (v.vp.Width == 0 || v.vp.Height == 0 || v.vp.MinDepth == v.vp.MaxDepth)
                         EmptyRow(node);
 
-                    i++;
-
                     node = scissors.Nodes.Add(new object[] { i, v.scissor.x, v.scissor.y, v.scissor.width, v.scissor.height });
 
                     if (v.scissor.width == 0 || v.scissor.height == 0)
                         EmptyRow(node);
+
+                    i++;
                 }
             }
 
@@ -2219,10 +2231,158 @@ namespace renderdocui.Windows.PipelineState
 
             var files = new Dictionary<string, string>();
 
-            // use disassembly for now. It's not compilable GLSL but it's better than
-            // starting with a blank canvas
-            files.Add("Disassembly", shaderDetails.Disassembly);
+            if (m_Core.Config.ExternalDisassemblerEnabled)
+            {
+                BackgroundWorker bgWorker = new BackgroundWorker();
+                extDisassemblerProgBar.Visible = true;
+                bgWorker.RunWorkerCompleted += (obj, eventArgs) =>
+                {
+                    if((bool)eventArgs.Result == true)
+                    {
+                        ShowShaderViewer(stage, files);
+                    }
+                    extDisassemblerProgBar.Visible = false;
+                };
+                bgWorker.DoWork += (obj, eventArgs) =>
+                {
+                    eventArgs.Result = true;
 
+                    //try to use the external disassembler to get back the shader source
+                    string spv_bin_file = "spv_bin.spv";
+                    string spv_disas_file = "spv_disas.txt";
+
+                    spv_bin_file = Path.Combine(Path.GetTempPath(), spv_bin_file);
+                    spv_disas_file = Path.Combine(Path.GetTempPath(), spv_disas_file);
+
+                    //replace the {spv_bin} tag with the correct SPIR-V binary source
+                    string args = m_Core.Config.GetDefaultExternalDisassembler().args;
+                    if (args.Contains(ExternalDisassembler.SPV_BIN_TAG))
+                    {
+                        args = args.Replace(ExternalDisassembler.SPV_BIN_TAG, spv_bin_file);
+
+                        //write to temp file
+                        try
+                        {
+                            // Open file for reading
+                            using (FileStream fileStream =
+                                new FileStream(spv_bin_file, FileMode.Create,
+                                                        FileAccess.Write))
+                            {
+                                // Writes a block of bytes to this stream using data from
+                                // a byte array.
+                                fileStream.Write(shaderDetails.RawBytes, 0, shaderDetails.RawBytes.Length);
+
+                                // close file stream
+                                fileStream.Close();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            // Error
+                            MessageBox.Show("Couldn't save SPIR-V binary to file: " + spv_bin_file +
+                                Environment.NewLine + ex.ToString(), "Cannot save",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            eventArgs.Result = false;
+                        }
+                    }
+                    else
+                    {
+                        MessageBox.Show("Please indicate the " + ExternalDisassembler.SPV_BIN_TAG +
+                            " in the arguments list!", "Error disassembling",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        eventArgs.Result = false;
+                    }
+                    bool useStdout = true;
+                    if (args.Contains(ExternalDisassembler.SPV_DISAS_TAG))
+                    {
+                        args = args.Replace(ExternalDisassembler.SPV_DISAS_TAG, spv_disas_file);
+                        useStdout = false;
+                    }
+                    // else we assume the disassembler will return the result to stdout
+
+                    //check if any errors
+                    if ((bool)eventArgs.Result == false)
+                        return;
+
+                    //run the disassembler
+                    try
+                    {
+                        using (System.Diagnostics.Process disassemblerProcess = new System.Diagnostics.Process())
+                        {
+                            disassemblerProcess.StartInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+                            //settings up parameters for the install process
+                            disassemblerProcess.StartInfo.FileName = m_Core.Config.GetDefaultExternalDisassembler().executable;
+
+                            disassemblerProcess.StartInfo.Arguments = args;
+                            disassemblerProcess.StartInfo.RedirectStandardOutput = true;
+                            disassemblerProcess.StartInfo.UseShellExecute = false;
+                            disassemblerProcess.StartInfo.CreateNoWindow = true;
+
+                            disassemblerProcess.Start();
+
+                            string shaderDisassembly = "";
+                            if(useStdout)
+                            {
+                                StringBuilder q = new StringBuilder();
+                                while (!disassemblerProcess.HasExited)
+                                {
+                                    q.Append(disassemblerProcess.StandardOutput.ReadToEnd());
+                                }
+                                shaderDisassembly = q.ToString();
+                            } else
+                            {
+                                //read from the output file after the process has finished
+                                bool ok = disassemblerProcess.WaitForExit(5*1000); //wait for 5 sec max
+                                if(ok)
+                                {
+                                    shaderDisassembly = File.ReadAllText(spv_disas_file);
+                                }
+                                else
+                                {
+                                    eventArgs.Result = false;
+                                }
+                            }
+
+                            files.Add("Disassembly", shaderDisassembly);
+
+                            // Check for sucessful completion
+                            if (disassemblerProcess.ExitCode != 0)
+                            {
+                                MessageBox.Show("Error wile running external disassembler: " + m_Core.Config.GetDefaultExternalDisassembler().name +
+                                                        Environment.NewLine + "Return code: " + disassemblerProcess.ExitCode, "Error disassembling",
+                                                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                eventArgs.Result = false;
+                            }
+                        }
+
+                        //delete the temp files
+                        if(File.Exists(spv_bin_file))
+                            File.Delete(spv_bin_file);
+                        if(File.Exists(spv_disas_file))
+                            File.Delete(spv_disas_file);
+                    }
+                    catch (Exception ex)
+                    { 
+                        // Error
+                        MessageBox.Show("Error using external disassembler: " + m_Core.Config.GetDefaultExternalDisassembler().name + 
+                                                    Environment.NewLine + ex.ToString(), "Error disassembling",
+                                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        eventArgs.Result = false;
+                    }
+                };
+                bgWorker.RunWorkerAsync();
+            }
+            else
+            {
+                // use disassembly for now. It's not compilable GLSL but it's better than
+                // starting with a blank canvas
+                files.Add("Disassembly", shaderDetails.Disassembly);
+                ShowShaderViewer(stage, files);
+            }
+        }
+
+        private void ShowShaderViewer(VulkanPipelineState.ShaderStage stage, Dictionary<String, String> files)
+        {
             VulkanPipelineStateViewer pipeviewer = this;
 
             ShaderViewer sv = new ShaderViewer(m_Core, false, "main", files,
@@ -2241,7 +2401,7 @@ namespace renderdocui.Windows.PipelineState
                     string errs = "";
 
                     ResourceId from = stage.Shader;
-                    ResourceId to = r.BuildTargetShader("main", compileSource, shaderDetails.DebugInfo.compileFlags, stage.stage, out errs);
+                    ResourceId to = r.BuildTargetShader("main", compileSource, stage.ShaderDetails.DebugInfo.compileFlags, stage.stage, out errs);
 
                     viewer.BeginInvoke((MethodInvoker)delegate { viewer.ShowErrors(errs); });
                     if (to == ResourceId.Null)
@@ -2738,8 +2898,13 @@ namespace renderdocui.Windows.PipelineState
                         }
 
                         FetchBuffer buf = m_Core.GetBuffer(id);
-                        if(buf != null)
+                        if (buf != null)
+                        {
                             name = buf.name;
+
+                            if (length == ulong.MaxValue)
+                                length = buf.length - byteOffset;
+                        }
 
                         if (name == "")
                             name = "UBO " + descriptorBind.res.ToString();
@@ -2847,7 +3012,12 @@ namespace renderdocui.Windows.PipelineState
                             format = "-";
                             name = buf.name;
 
-                            viewParams = String.Format("Byte Range: {0} - {1}", descriptorBind.offset, descriptorBind.offset + descriptorBind.size);
+                            ulong length = descriptorBind.size;
+
+                            if (length == ulong.MaxValue)
+                                length = buf.length - descriptorBind.offset;
+
+                            viewParams = String.Format("Byte Range: {0} - {1}", descriptorBind.offset, descriptorBind.offset + length);
                         }
 
                         if (bind.type != ShaderBindType.Sampler)
@@ -2863,10 +3033,9 @@ namespace renderdocui.Windows.PipelineState
                             object[] sampDetails = MakeSampler("", "", descriptorBind);
                             rows.Add(new object[] {
                                 setname, slotname, name, bind.type,
-                                "", "", "",
+                                "", "", "", "",
                                 sampDetails[5],
-                                sampDetails[6],
-                                sampDetails[7]
+                                sampDetails[6]
                             });
                         }
                     }
@@ -2965,7 +3134,12 @@ namespace renderdocui.Windows.PipelineState
                             format = "-";
                             name = buf.name;
 
-                            viewParams = String.Format("Byte Range: {0} - {1}", descriptorBind.offset, descriptorBind.offset + descriptorBind.size);
+                            ulong length = descriptorBind.size;
+
+                            if (length == ulong.MaxValue)
+                                length = buf.length - descriptorBind.offset;
+
+                            viewParams = String.Format("Byte Range: {0} - {1}", descriptorBind.offset, descriptorBind.offset + length);
                         }
 
                         rows.Add(new object[] { setname, slotname, name, bind.type, w, h, d, arr, format, viewParams });

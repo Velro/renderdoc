@@ -172,6 +172,40 @@ void ReplayOutput::RefreshOverlay()
 
   passEvents = m_pDevice->GetPassEvents(m_EventID);
 
+  bool postVSBuffers = false;
+  bool postVSWholePass = false;
+
+  if(m_Config.m_Type == eOutputType_MeshDisplay && m_OverlayDirty)
+  {
+    postVSBuffers = true;
+    postVSWholePass = m_RenderData.meshDisplay.showWholePass != 0;
+  }
+
+  if(m_Config.m_Type == eOutputType_TexDisplay)
+  {
+    postVSBuffers = m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizePass ||
+                    m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizeDraw;
+    postVSWholePass = m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizePass;
+  }
+
+  if(postVSBuffers)
+  {
+    if(m_Config.m_Type == eOutputType_MeshDisplay)
+      m_OverlayDirty = false;
+
+    if(draw != NULL && (draw->flags & eDraw_Drawcall))
+    {
+      m_pDevice->InitPostVSBuffers(draw->eventID);
+
+      if(postVSWholePass && !passEvents.empty())
+      {
+        m_pDevice->InitPostVSBuffers(passEvents);
+
+        m_pDevice->ReplayLog(m_EventID, eReplay_WithoutDraw);
+      }
+    }
+  }
+
   if(m_Config.m_Type == eOutputType_TexDisplay && m_RenderData.texDisplay.overlay != eTexOverlay_None)
   {
     if(draw && m_pDevice->IsRenderOutput(m_RenderData.texDisplay.texid))
@@ -181,22 +215,9 @@ void ReplayOutput::RefreshOverlay()
           m_RenderData.texDisplay.overlay, m_EventID, passEvents);
       m_OverlayDirty = false;
     }
-  }
-
-  if(m_Config.m_Type == eOutputType_MeshDisplay && m_OverlayDirty)
-  {
-    m_OverlayDirty = false;
-
-    if(draw == NULL || (draw->flags & eDraw_Drawcall) == 0)
-      return;
-
-    m_pDevice->InitPostVSBuffers(draw->eventID);
-
-    if(m_RenderData.meshDisplay.showWholePass && !passEvents.empty())
+    else
     {
-      m_pDevice->InitPostVSBuffers(passEvents);
-
-      m_pDevice->ReplayLog(m_EventID, eReplay_WithoutDraw);
+      m_OverlayResourceId = ResourceId();
     }
   }
 }
@@ -271,6 +292,68 @@ bool ReplayOutput::AddThumbnail(WindowingSystem system, void *data, ResourceId t
   return true;
 }
 
+bool ReplayOutput::GetMinMax(PixelValue *minval, PixelValue *maxval)
+{
+  PixelValue *a = minval;
+  PixelValue *b = maxval;
+
+  PixelValue dummy;
+
+  if(a == NULL)
+    a = &dummy;
+  if(b == NULL)
+    b = &dummy;
+
+  ResourceId tex = m_pDevice->GetLiveID(m_RenderData.texDisplay.texid);
+
+  FormatComponentType typeHint = m_RenderData.texDisplay.typeHint;
+  uint32_t slice = m_RenderData.texDisplay.sliceFace;
+  uint32_t mip = m_RenderData.texDisplay.mip;
+  uint32_t sample = m_RenderData.texDisplay.sampleIdx;
+
+  if(m_RenderData.texDisplay.CustomShader != ResourceId() && m_CustomShaderResourceId != ResourceId())
+  {
+    tex = m_CustomShaderResourceId;
+    typeHint = eCompType_None;
+    slice = 0;
+    sample = 0;
+  }
+
+  return m_pDevice->GetMinMax(tex, slice, mip, sample, typeHint, &a->value_f[0], &b->value_f[0]);
+}
+
+bool ReplayOutput::GetHistogram(float minval, float maxval, bool channels[4],
+                                rdctype::array<uint32_t> *histogram)
+{
+  if(histogram == NULL)
+    return false;
+
+  vector<uint32_t> hist;
+
+  ResourceId tex = m_pDevice->GetLiveID(m_RenderData.texDisplay.texid);
+
+  FormatComponentType typeHint = m_RenderData.texDisplay.typeHint;
+  uint32_t slice = m_RenderData.texDisplay.sliceFace;
+  uint32_t mip = m_RenderData.texDisplay.mip;
+  uint32_t sample = m_RenderData.texDisplay.sampleIdx;
+
+  if(m_RenderData.texDisplay.CustomShader != ResourceId() && m_CustomShaderResourceId != ResourceId())
+  {
+    tex = m_CustomShaderResourceId;
+    typeHint = eCompType_None;
+    slice = 0;
+    sample = 0;
+  }
+
+  bool ret =
+      m_pDevice->GetHistogram(tex, slice, mip, sample, typeHint, minval, maxval, channels, hist);
+
+  if(ret)
+    *histogram = hist;
+
+  return ret;
+}
+
 bool ReplayOutput::PickPixel(ResourceId tex, bool customShader, uint32_t x, uint32_t y,
                              uint32_t sliceFace, uint32_t mip, uint32_t sample, PixelValue *ret)
 {
@@ -290,7 +373,9 @@ bool ReplayOutput::PickPixel(ResourceId tex, bool customShader, uint32_t x, uint
     typeHint = eCompType_None;
   }
   if((m_RenderData.texDisplay.overlay == eTexOverlay_QuadOverdrawDraw ||
-      m_RenderData.texDisplay.overlay == eTexOverlay_QuadOverdrawPass) &&
+      m_RenderData.texDisplay.overlay == eTexOverlay_QuadOverdrawPass ||
+      m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizeDraw ||
+      m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizePass) &&
      m_OverlayResourceId != ResourceId())
   {
     decodeRamp = true;
@@ -315,6 +400,21 @@ bool ReplayOutput::PickPixel(ResourceId tex, bool customShader, uint32_t x, uint
         ret->value_i[3] = 0;
         break;
       }
+    }
+
+    // decode back into approximate pixel size area
+    if(m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizePass ||
+       m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizeDraw)
+    {
+      float bucket = (float)ret->value_i[0];
+
+      // decode bucket into approximate triangle area
+      if(bucket <= 0.5f)
+        ret->value_f[0] = 0.0f;
+      else if(bucket < 2.0f)
+        ret->value_f[0] = 16.0f;
+      else
+        ret->value_f[0] = -2.5f * logf(1.0f + (bucket - 22.0f) / 20.1f);
     }
   }
 
@@ -388,7 +488,9 @@ void ReplayOutput::DisplayContext()
     disp.texid = m_CustomShaderResourceId;
 
   if((m_RenderData.texDisplay.overlay == eTexOverlay_QuadOverdrawDraw ||
-      m_RenderData.texDisplay.overlay == eTexOverlay_QuadOverdrawPass) &&
+      m_RenderData.texDisplay.overlay == eTexOverlay_QuadOverdrawPass ||
+      m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizeDraw ||
+      m_RenderData.texDisplay.overlay == eTexOverlay_TriangleSizePass) &&
      m_OverlayResourceId != ResourceId())
     disp.texid = m_OverlayResourceId;
 
@@ -771,6 +873,20 @@ extern "C" RENDERDOC_API void RENDERDOC_CC ReplayOutput_GetCustomShaderTexID(Rep
 {
   if(id)
     *id = output->GetCustomShaderTexID();
+}
+
+extern "C" RENDERDOC_API bool32 RENDERDOC_CC ReplayOutput_GetMinMax(ReplayOutput *output,
+                                                                    PixelValue *minval,
+                                                                    PixelValue *maxval)
+{
+  return output->GetMinMax(minval, maxval);
+}
+extern "C" RENDERDOC_API bool32 RENDERDOC_CC
+ReplayOutput_GetHistogram(ReplayOutput *output, float minval, float maxval, bool32 channels[4],
+                          rdctype::array<uint32_t> *histogram)
+{
+  bool chans[4] = {channels[0] != 0, channels[1] != 0, channels[2] != 0, channels[3] != 0};
+  return output->GetHistogram(minval, maxval, chans, histogram);
 }
 
 extern "C" RENDERDOC_API bool32 RENDERDOC_CC ReplayOutput_PickPixel(

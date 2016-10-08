@@ -809,7 +809,7 @@ FetchTexture VulkanReplay::GetTexture(ResourceId id)
   ret.byteSize *= ret.arraysize;
 
   ret.msQual = 0;
-  ret.msSamp = iminfo.samples;
+  ret.msSamp = RDCMAX(1U, (uint32_t)iminfo.samples);
 
   ret.format = MakeResourceFormat(iminfo.format);
 
@@ -987,7 +987,7 @@ void VulkanReplay::PickPixel(ResourceId texture, uint32_t x, uint32_t y, uint32_
           &clearval,
       };
 
-      RenderTextureInternal(texDisplay, rpbegin, true);
+      RenderTextureInternal(texDisplay, rpbegin, eTexDisplay_F32Render | eTexDisplay_MipShift);
     }
 
     VkDevice dev = m_pDriver->GetDev();
@@ -1110,12 +1110,15 @@ bool VulkanReplay::RenderTexture(TextureDisplay cfg)
       &clearval,
   };
 
-  return RenderTextureInternal(cfg, rpbegin, false);
+  return RenderTextureInternal(cfg, rpbegin, eTexDisplay_MipShift | eTexDisplay_BlendAlpha);
 }
 
-bool VulkanReplay::RenderTextureInternal(TextureDisplay cfg, VkRenderPassBeginInfo rpbegin,
-                                         bool f32render)
+bool VulkanReplay::RenderTextureInternal(TextureDisplay cfg, VkRenderPassBeginInfo rpbegin, int flags)
 {
+  const bool blendAlpha = (flags & eTexDisplay_BlendAlpha) != 0;
+  const bool mipShift = (flags & eTexDisplay_MipShift) != 0;
+  const bool f32render = (flags & eTexDisplay_F32Render) != 0;
+
   VkDevice dev = m_pDriver->GetDev();
   VkCommandBuffer cmd = m_pDriver->GetNextCmd();
   const VkLayerDispatchTable *vt = ObjDisp(dev);
@@ -1223,17 +1226,20 @@ bool VulkanReplay::RenderTextureInternal(TextureDisplay cfg, VkRenderPassBeginIn
   data->MipLevel = (int)cfg.mip;
   data->Slice = 0;
   if(iminfo.type != VK_IMAGE_TYPE_3D)
-    data->Slice = (float)cfg.sliceFace;
+    data->Slice = (float)cfg.sliceFace + 0.001f;
   else
     data->Slice = (float)(cfg.sliceFace >> cfg.mip);
 
-  float mipScale = float(1 << cfg.mip);
+  data->TextureResolutionPS.x = float(RDCMAX(1, tex_x >> cfg.mip));
+  data->TextureResolutionPS.y = float(RDCMAX(1, tex_y >> cfg.mip));
+  data->TextureResolutionPS.z = float(RDCMAX(1, tex_z >> cfg.mip));
 
-  data->TextureResolutionPS.x = float(tex_x) / mipScale;
-  data->TextureResolutionPS.y = float(tex_y) / mipScale;
-  data->TextureResolutionPS.z = float(tex_z) / mipScale;
+  if(mipShift)
+    data->MipShift = float(1 << cfg.mip);
+  else
+    data->MipShift = 1.0f;
 
-  data->Scale = cfg.scale * mipScale;
+  data->Scale = cfg.scale;
 
   int sampleIdx = (int)RDCCLAMP(cfg.sampleIdx, 0U, (uint32_t)SampleCount(iminfo.samples));
 
@@ -1389,7 +1395,7 @@ bool VulkanReplay::RenderTextureInternal(TextureDisplay cfg, VkRenderPassBeginIn
     {
       pipe = GetDebugManager()->m_TexDisplayF32Pipeline;
     }
-    else if(!cfg.rawoutput && cfg.CustomShader == ResourceId())
+    else if(!cfg.rawoutput && blendAlpha && cfg.CustomShader == ResourceId())
     {
       pipe = GetDebugManager()->m_TexDisplayBlendPipeline;
     }
@@ -1788,6 +1794,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
         data->homogenousInput = cfg.position.unproject;
         data->pointSpriteSize = Vec2f(0.0f, 0.0f);
         data->displayFormat = MESHDISPLAY_SOLID;
+        data->rawoutput = 0;
 
         GetDebugManager()->m_MeshUBO.Unmap();
 
@@ -1918,6 +1925,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
     data->homogenousInput = cfg.position.unproject;
     data->pointSpriteSize = Vec2f(0.0f, 0.0f);
     data->displayFormat = (uint32_t)solidShadeMode;
+    data->rawoutput = 0;
 
     if(solidShadeMode == eShade_Secondary && cfg.second.showAlpha)
       data->displayFormat = MESHDISPLAY_SECONDARY_ALPHA;
@@ -1965,6 +1973,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
     data->displayFormat = (uint32_t)eShade_Solid;
     data->homogenousInput = cfg.position.unproject;
     data->pointSpriteSize = Vec2f(0.0f, 0.0f);
+    data->rawoutput = 0;
 
     GetDebugManager()->m_MeshUBO.Unmap();
 
@@ -2052,6 +2061,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
     data->displayFormat = (uint32_t)eShade_Solid;
     data->homogenousInput = 0;
     data->pointSpriteSize = Vec2f(0.0f, 0.0f);
+    data->rawoutput = 0;
 
     GetDebugManager()->m_MeshUBO.Unmap();
 
@@ -2080,6 +2090,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
     data->displayFormat = (uint32_t)eShade_Solid;
     data->homogenousInput = 0;
     data->pointSpriteSize = Vec2f(0.0f, 0.0f);
+    data->rawoutput = 0;
 
     GetDebugManager()->m_MeshUBO.Unmap();
 
@@ -2100,6 +2111,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
     data->displayFormat = (uint32_t)eShade_Solid;
     data->homogenousInput = 0;
     data->pointSpriteSize = Vec2f(0.0f, 0.0f);
+    data->rawoutput = 0;
 
     GetDebugManager()->m_MeshUBO.Unmap();
 
@@ -2115,6 +2127,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
     data->displayFormat = (uint32_t)eShade_Solid;
     data->homogenousInput = 0;
     data->pointSpriteSize = Vec2f(0.0f, 0.0f);
+    data->rawoutput = 0;
 
     GetDebugManager()->m_MeshUBO.Unmap();
 
@@ -2139,6 +2152,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
     data->displayFormat = (uint32_t)eShade_Solid;
     data->homogenousInput = 0;
     data->pointSpriteSize = Vec2f(0.0f, 0.0f);
+    data->rawoutput = 0;
 
     GetDebugManager()->m_MeshUBO.Unmap();
 
@@ -2576,7 +2590,7 @@ void VulkanReplay::RenderMesh(uint32_t eventID, const vector<MeshFormat> &second
       else
         ModelViewProj = projMat.Mul(camMat);
 
-      MeshUBOData uniforms;
+      MeshUBOData uniforms = {};
       uniforms.mvp = ModelViewProj;
       uniforms.color = Vec4f(1.0f, 1.0f, 1.0f, 1.0f);
       uniforms.displayFormat = (uint32_t)eShade_Solid;
@@ -3527,13 +3541,13 @@ void VulkanReplay::SavePipelineState()
                 dst.bindings[b].type = eBindType_ReadWriteTBuffer;
                 break;
               case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-                dst.bindings[b].type = eBindType_ReadOnlyBuffer;
+                dst.bindings[b].type = eBindType_ConstantBuffer;
                 break;
               case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
                 dst.bindings[b].type = eBindType_ReadWriteBuffer;
                 break;
               case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-                dst.bindings[b].type = eBindType_ReadOnlyBuffer;
+                dst.bindings[b].type = eBindType_ConstantBuffer;
                 dynamicOffset = true;
                 break;
               case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
@@ -4128,7 +4142,10 @@ bool VulkanReplay::GetMinMax(ResourceId texid, uint32_t sliceFace, uint32_t mip,
   data->HistogramTextureResolution.x = (float)RDCMAX(uint32_t(iminfo.extent.width) >> mip, 1U);
   data->HistogramTextureResolution.y = (float)RDCMAX(uint32_t(iminfo.extent.height) >> mip, 1U);
   data->HistogramTextureResolution.z = (float)RDCMAX(uint32_t(iminfo.arrayLayers) >> mip, 1U);
-  data->HistogramSlice = (float)sliceFace;
+  if(iminfo.type != VK_IMAGE_TYPE_3D)
+    data->HistogramSlice = (float)sliceFace + 0.001f;
+  else
+    data->HistogramSlice = (float)(sliceFace >> mip);
   data->HistogramMip = (int)mip;
   data->HistogramNumSamples = iminfo.samples;
   data->HistogramSample = (int)RDCCLAMP(sample, 0U, uint32_t(iminfo.samples) - 1);
@@ -4137,9 +4154,6 @@ bool VulkanReplay::GetMinMax(ResourceId texid, uint32_t sliceFace, uint32_t mip,
   data->HistogramMin = 0.0f;
   data->HistogramMax = 1.0f;
   data->HistogramChannels = 0xf;
-
-  if(iminfo.type == VK_IMAGE_TYPE_3D)
-    data->HistogramSlice = float(sliceFace) / float(iminfo.extent.depth);
 
   GetDebugManager()->m_HistogramUBO.Unmap();
 
@@ -4373,7 +4387,10 @@ bool VulkanReplay::GetHistogram(ResourceId texid, uint32_t sliceFace, uint32_t m
   data->HistogramTextureResolution.x = (float)RDCMAX(uint32_t(iminfo.extent.width) >> mip, 1U);
   data->HistogramTextureResolution.y = (float)RDCMAX(uint32_t(iminfo.extent.height) >> mip, 1U);
   data->HistogramTextureResolution.z = (float)RDCMAX(uint32_t(iminfo.arrayLayers) >> mip, 1U);
-  data->HistogramSlice = (float)sliceFace;
+  if(iminfo.type != VK_IMAGE_TYPE_3D)
+    data->HistogramSlice = (float)sliceFace + 0.001f;
+  else
+    data->HistogramSlice = (float)(sliceFace >> mip);
   data->HistogramMip = (int)mip;
   data->HistogramNumSamples = iminfo.samples;
   data->HistogramSample = (int)RDCCLAMP(sample, 0U, uint32_t(iminfo.samples) - 1);
@@ -4398,9 +4415,6 @@ bool VulkanReplay::GetHistogram(ResourceId texid, uint32_t sliceFace, uint32_t m
 
   data->HistogramChannels = chans;
   data->HistogramFlags = 0;
-
-  if(iminfo.type == VK_IMAGE_TYPE_3D)
-    data->HistogramSlice = float(sliceFace) / float(iminfo.extent.depth);
 
   GetDebugManager()->m_HistogramUBO.Unmap();
 
@@ -4571,9 +4585,8 @@ MeshFormat VulkanReplay::GetPostVSBuffers(uint32_t eventID, uint32_t instID, Mes
   return GetDebugManager()->GetPostVSBuffers(eventID, instID, stage);
 }
 
-byte *VulkanReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, bool forDiskSave,
-                                   FormatComponentType typeHint, bool resolve, bool forceRGBA8unorm,
-                                   float blackPoint, float whitePoint, size_t &dataSize)
+byte *VulkanReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
+                                   const GetTextureDataParams &params, size_t &dataSize)
 {
   bool wasms = false;
 
@@ -4640,7 +4653,7 @@ byte *VulkanReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t m
     wasms = true;
   }
 
-  if(forceRGBA8unorm)
+  if(params.remap)
   {
     // force readback texture to RGBA8 unorm
     imCreateInfo.format =
@@ -4752,15 +4765,15 @@ byte *VulkanReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t m
       texDisplay.FlipY = false;
       texDisplay.mip = mip;
       texDisplay.sampleIdx =
-          imCreateInfo.imageType == VK_IMAGE_TYPE_3D ? 0 : (resolve ? ~0U : arrayIdx);
+          imCreateInfo.imageType == VK_IMAGE_TYPE_3D ? 0 : (params.resolve ? ~0U : arrayIdx);
       texDisplay.CustomShader = ResourceId();
       texDisplay.sliceFace = imCreateInfo.imageType == VK_IMAGE_TYPE_3D ? i : arrayIdx;
-      texDisplay.rangemin = blackPoint;
-      texDisplay.rangemax = whitePoint;
+      texDisplay.rangemin = params.blackPoint;
+      texDisplay.rangemax = params.whitePoint;
       texDisplay.scale = 1.0f;
       texDisplay.texid = tex;
       texDisplay.typeHint = eCompType_None;
-      texDisplay.rawoutput = true;
+      texDisplay.rawoutput = false;
       texDisplay.offx = 0;
       texDisplay.offy = 0;
 
@@ -4809,7 +4822,7 @@ byte *VulkanReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t m
           &clearval,
       };
 
-      RenderTextureInternal(texDisplay, rpbegin, true);
+      RenderTextureInternal(texDisplay, rpbegin, 0);
     }
 
     m_DebugWidth = oldW;
@@ -4840,7 +4853,7 @@ byte *VulkanReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t m
     isDepth = false;
     isStencil = false;
   }
-  else if(wasms && resolve)
+  else if(wasms && params.resolve)
   {
     // force to 1 array slice, 1 mip
     imCreateInfo.arrayLayers = 1;
@@ -5113,6 +5126,13 @@ byte *VulkanReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t m
           imCreateInfo.extent,
       },
   };
+
+  for(int i = 0; i < 2; i++)
+  {
+    copyregion[i].imageExtent.width = RDCMAX(1U, copyregion[i].imageExtent.width >> mip);
+    copyregion[i].imageExtent.height = RDCMAX(1U, copyregion[i].imageExtent.height >> mip);
+    copyregion[i].imageExtent.depth = RDCMAX(1U, copyregion[i].imageExtent.depth >> mip);
+  }
 
   // for most combined depth-stencil images this will be large enough for both to be copied
   // separately, but for D24S8 we need to add extra space since they won't be copied packed
@@ -5424,7 +5444,7 @@ ResourceId VulkanReplay::ApplyCustomShader(ResourceId shader, ResourceId texid, 
       &clearval,
   };
 
-  RenderTextureInternal(disp, rpbegin, false);
+  RenderTextureInternal(disp, rpbegin, eTexDisplay_MipShift);
 
   m_DebugWidth = oldW;
   m_DebugHeight = oldH;
@@ -5537,6 +5557,11 @@ void VulkanReplay::SetProxyTextureData(ResourceId texid, uint32_t arrayIdx, uint
                                        byte *data, size_t dataSize)
 {
   VULKANNOTIMP("SetProxyTextureData");
+}
+
+bool VulkanReplay::IsTextureSupported(const ResourceFormat &format)
+{
+  return true;
 }
 
 ResourceId VulkanReplay::CreateProxyBuffer(const FetchBuffer &templateBuf)

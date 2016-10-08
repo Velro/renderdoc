@@ -66,6 +66,7 @@ ToolWindowManager::ToolWindowManager(QWidget *parent) :
   m_dropSuggestionSwitchTimer.setInterval(1000);
   m_dropCurrentSuggestionIndex = 0;
   m_allowFloatingWindow = true;
+  m_createCallback = NULL;
 
   m_rectRubberBand = new QRubberBand(QRubberBand::Rectangle, this);
   m_lineRubberBand = new QRubberBand(QRubberBand::Line, this);
@@ -163,8 +164,14 @@ void ToolWindowManager::moveToolWindows(QList<QWidget *> toolWindows,
     }
     bool useParentSplitter = false;
     int indexInParentSplitter = 0;
+    QList<QRect> parentSplitterGeometries;
+    QList<int> parentSplitterSizes;
     if (parentSplitter) {
       indexInParentSplitter = parentSplitter->indexOf(area.widget());
+      parentSplitterSizes = parentSplitter->sizes();
+      for(int i = 0; i < parentSplitter->count(); i++) {
+        parentSplitterGeometries.push_back(parentSplitter->widget(i)->geometry());
+      }
       if (parentSplitter->orientation() == Qt::Vertical) {
         useParentSplitter = area.type() == TopOf || area.type() == BottomOf;
       } else {
@@ -178,6 +185,10 @@ void ToolWindowManager::moveToolWindows(QList<QWidget *> toolWindows,
       ToolWindowManagerArea* newArea = createArea();
       newArea->addToolWindows(toolWindows);
       parentSplitter->insertWidget(indexInParentSplitter, newArea);
+
+      for(int i = 0; i < qMin(parentSplitter->count(), parentSplitterGeometries.count()); i++) {
+        parentSplitter->widget(i)->setGeometry(parentSplitterGeometries[i]);
+      }
     } else {
       area.widget()->hide();
       area.widget()->setParent(0);
@@ -187,20 +198,54 @@ void ToolWindowManager::moveToolWindows(QList<QWidget *> toolWindows,
       } else {
         splitter->setOrientation(Qt::Horizontal);
       }
+
+      ToolWindowManagerArea* newArea = createArea();
+
+      // inherit the size policy from the widget we are wrapping
+      splitter->setSizePolicy(area.widget()->sizePolicy());
+
+      // store old geometries so we can restore them
+      QRect areaGeometry = area.widget()->geometry();
+      QRect newGeometry = newArea->geometry();
+
       splitter->addWidget(area.widget());
       area.widget()->show();
-      ToolWindowManagerArea* newArea = createArea();
+
+      int indexInSplitter = 0;
+
       if (area.type() == TopOf || area.type() == LeftOf) {
         splitter->insertWidget(0, newArea);
+        indexInSplitter = 0;
       } else {
         splitter->addWidget(newArea);
+        indexInSplitter = 1;
       }
+
+      // Convert area percentage desired to a stretch factor.
+      const int totalStretch = 100;
+      int pct = int(totalStretch*area.percentage());
+      splitter->setStretchFactor(indexInSplitter, pct);
+      splitter->setStretchFactor(1-indexInSplitter, totalStretch-pct);
+
       if (parentSplitter) {
         parentSplitter->insertWidget(indexInParentSplitter, splitter);
+
+        for (int i = 0; i < qMin(parentSplitter->count(), parentSplitterGeometries.count()); i++) {
+          parentSplitter->widget(i)->setGeometry(parentSplitterGeometries[i]);
+        }
+
+        if (parentSplitterSizes.count() > 0 && parentSplitterSizes[0] != 0) {
+          parentSplitter->setSizes(parentSplitterSizes);
+        }
+
       } else {
         wrapper->layout()->addWidget(splitter);
       }
+
       newArea->addToolWindows(toolWindows);
+
+      area.widget()->setGeometry(areaGeometry);
+      newArea->setGeometry(newGeometry);
     }
   } else if (area.type() == EmptySpace) {
     ToolWindowManagerArea* newArea = createArea();
@@ -227,6 +272,21 @@ void ToolWindowManager::removeToolWindow(QWidget *toolWindow) {
   m_toolWindowProperties.remove(toolWindow);
 }
 
+QWidget* ToolWindowManager::createToolWindow(const QString& objectName)
+{
+  if (m_createCallback) {
+    QWidget *toolWindow = m_createCallback(objectName);
+    if(toolWindow) {
+      m_toolWindows << toolWindow;
+      m_toolWindowProperties[toolWindow] = ToolWindowProperty(0);
+      QObject::connect(toolWindow, &QWidget::windowTitleChanged, this, &ToolWindowManager::windowTitleChanged);
+      return toolWindow;
+    }
+  }
+
+  return NULL;
+}
+
 void ToolWindowManager::setSuggestionSwitchInterval(int msec) {
   m_dropSuggestionSwitchTimer.setInterval(msec);
 }
@@ -247,13 +307,13 @@ void ToolWindowManager::setAllowFloatingWindow(bool allow) {
   m_allowFloatingWindow = allow;
 }
 
-QVariant ToolWindowManager::saveState() {
+QVariantMap ToolWindowManager::saveState() {
   QVariantMap result;
   result["toolWindowManagerStateFormat"] = 1;
   ToolWindowManagerWrapper* mainWrapper = findChild<ToolWindowManagerWrapper*>();
   if (!mainWrapper) {
     qWarning("can't find main wrapper");
-    return QVariant();
+    return QVariantMap();
   }
   result["mainWrapper"] = mainWrapper->saveState();
   QVariantList floatingWindowsData;
@@ -265,9 +325,8 @@ QVariant ToolWindowManager::saveState() {
   return result;
 }
 
-void ToolWindowManager::restoreState(const QVariant &data) {
-  if (!data.isValid()) { return; }
-  QVariantMap dataMap = data.toMap();
+void ToolWindowManager::restoreState(const QVariantMap &dataMap) {
+  if (dataMap.isEmpty()) { return; }
   if (dataMap["toolWindowManagerStateFormat"].toInt() != 1) {
     qWarning("state format is not recognized");
     return;
@@ -283,6 +342,11 @@ void ToolWindowManager::restoreState(const QVariant &data) {
     ToolWindowManagerWrapper* wrapper = new ToolWindowManagerWrapper(this);
     wrapper->restoreState(windowData.toMap());
     wrapper->show();
+    if(wrapper->windowState() && Qt::WindowMaximized)
+    {
+      wrapper->setWindowState(0);
+      wrapper->setWindowState(Qt::WindowMaximized);
+    }
   }
   simplifyLayout();
   foreach(QWidget* toolWindow, m_toolWindows) {
@@ -399,7 +463,7 @@ void ToolWindowManager::startDrag(const QList<QWidget *> &toolWindows) {
 
 QVariantMap ToolWindowManager::saveSplitterState(QSplitter *splitter) {
   QVariantMap result;
-  result["state"] = splitter->saveState();
+  result["state"] = splitter->saveState().toBase64();
   result["type"] = "splitter";
   QVariantList items;
   for(int i = 0; i < splitter->count(); i++) {
@@ -441,7 +505,7 @@ QSplitter *ToolWindowManager::restoreSplitterState(const QVariantMap &data) {
       qWarning("unknown item type");
     }
   }
-  splitter->restoreState(data["state"].toByteArray());
+  splitter->restoreState(QByteArray::fromBase64(data["state"].toByteArray()));
   return splitter;
 }
 
@@ -515,7 +579,44 @@ void ToolWindowManager::findSuggestions(ToolWindowManagerWrapper* wrapper) {
   QPoint globalPos = QCursor::pos();
   QList<QWidget*> candidates;
   foreach(QSplitter* splitter, wrapper->findChildren<QSplitter*>()) {
-    candidates << splitter;
+    // make sure this is one of our layout splitters, not a proper widget or a splitter
+    // from another manager. We walk the parents, expecting either a QSplitter or QTabWidget
+    // at each time until we reach an area.
+
+    QWidget *w = splitter;
+
+    bool valid = false;
+
+    while(w)
+    {
+      QWidget *parent = w->parentWidget();
+
+      QSplitter *parentSplitter = qobject_cast<QSplitter*>(parent);
+      QTabWidget *parentTab = qobject_cast<QTabWidget*>(parent);
+
+      // keep recursing up what looks like our hierarchy
+      if(parentSplitter || parentTab)
+      {
+        w = parent;
+        continue;
+      }
+
+      ToolWindowManagerArea* area = qobject_cast<ToolWindowManagerArea*>(parent);
+      ToolWindowManagerWrapper* wrapper = qobject_cast<ToolWindowManagerWrapper*>(parent);
+
+      // if it's an area or wrapper, check if it's ours
+      if(area)
+        valid = area->manager() == this;
+      else if(wrapper)
+        valid = wrapper->manager() == this;
+
+      // we're done now, whether we checked for validity, or if we
+      // found something that's none of the above
+      break;
+    }
+
+    if(valid)
+      candidates << splitter;
   }
   foreach(ToolWindowManagerArea* area, m_areas) {
     if (area->topLevelWidget() == wrapper->topLevelWidget()) {
@@ -709,8 +810,9 @@ QSplitter *ToolWindowManager::createSplitter() {
   return splitter;
 }
 
-ToolWindowManager::AreaReference::AreaReference(ToolWindowManager::AreaReferenceType type, ToolWindowManagerArea *area) {
+ToolWindowManager::AreaReference::AreaReference(ToolWindowManager::AreaReferenceType type, ToolWindowManagerArea *area, float percentage) {
   m_type = type;
+  m_percentage = percentage;
   setWidget(area);
 }
 

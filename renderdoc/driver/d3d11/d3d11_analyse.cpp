@@ -37,6 +37,30 @@
 #include "d3d11_debug.h"
 #include "d3d11_manager.h"
 
+#include "data/hlsl/debugcbuffers.h"
+
+// over this number of cycles and things get problematic
+#define SHADER_DEBUG_WARN_THRESHOLD 100000
+
+bool PromptDebugTimeout(DXBC::ProgramType prog, uint32_t cycleCounter)
+{
+  string msg = StringFormat::Fmt(
+      "RenderDoc's shader debugging has been running for over %u cycles, which indicates either a "
+      "very long-running loop, or possibly an infinite loop. Continuing could lead to extreme "
+      "memory allocations, slow UI or even crashes. Would you like to abort debugging to see what "
+      "has run so far?\n\n"
+      "Hit yes to abort debugging. Note that loading the resulting trace could take several "
+      "minutes.",
+      cycleCounter);
+
+  int ret = MessageBoxA(NULL, msg.c_str(), "Shader debugging timeout", MB_YESNO | MB_ICONWARNING);
+
+  if(ret == IDYES)
+    return true;
+
+  return false;
+}
+
 void D3D11DebugManager::FillCBufferVariables(const string &prefix, size_t &offset, bool flatten,
                                              const vector<DXBC::CBufferVariable> &invars,
                                              vector<ShaderVariable> &outvars,
@@ -121,6 +145,16 @@ void D3D11DebugManager::FillCBufferVariables(const string &prefix, size_t &offse
         outvars.push_back(var);
       }
 
+      continue;
+    }
+
+    if(invars[v].type.descriptor.varClass == CLASS_OBJECT ||
+       invars[v].type.descriptor.varClass == CLASS_STRUCT ||
+       invars[v].type.descriptor.varClass == CLASS_INTERFACE_CLASS ||
+       invars[v].type.descriptor.varClass == CLASS_INTERFACE_POINTER)
+    {
+      RDCWARN("Unexpected variable '%s' of class '%u' in cbuffer, skipping.",
+              invars[v].name.c_str(), invars[v].type.descriptor.type);
       continue;
     }
 
@@ -1202,7 +1236,7 @@ ShaderDebugTrace D3D11DebugManager::DebugVertex(uint32_t eventID, uint32_t verti
 
   states.push_back((State)initialState);
 
-  for(;;)
+  for(int cycleCounter = 0;; cycleCounter++)
   {
     if(initialState.Finished())
       break;
@@ -1210,6 +1244,12 @@ ShaderDebugTrace D3D11DebugManager::DebugVertex(uint32_t eventID, uint32_t verti
     initialState = initialState.GetNext(global, NULL);
 
     states.push_back((State)initialState);
+
+    if(cycleCounter == SHADER_DEBUG_WARN_THRESHOLD)
+    {
+      if(PromptDebugTimeout(DXBC::TYPE_VERTEX, cycleCounter))
+        break;
+    }
   }
 
   ret.states = states;
@@ -1743,6 +1783,9 @@ ShaderDebugTrace D3D11DebugManager::DebugPixel(uint32_t eventID, uint32_t x, uin
     return empty;
   }
 
+  // replay back to where we were, so we don't pick up modifications by this event in UAVs
+  m_WrappedDevice->ReplayLog(0, eventID, eReplay_WithoutDraw);
+
   ShaderDebugTrace traces[4];
 
   GlobalState global;
@@ -2001,6 +2044,8 @@ ShaderDebugTrace D3D11DebugManager::DebugPixel(uint32_t eventID, uint32_t x, uin
   // marks any threads stalled waiting for others to catch up
   bool activeMask[4] = {true, true, true, true};
 
+  int cycleCounter = 0;
+
   // simulate lockstep until all threads are finished
   bool finished = true;
   do
@@ -2099,6 +2144,14 @@ ShaderDebugTrace D3D11DebugManager::DebugPixel(uint32_t eventID, uint32_t x, uin
     }
 
     finished = curquad[destIdx].Finished();
+
+    cycleCounter++;
+
+    if(cycleCounter == SHADER_DEBUG_WARN_THRESHOLD)
+    {
+      if(PromptDebugTimeout(DXBC::TYPE_VERTEX, cycleCounter))
+        break;
+    }
   } while(!finished);
 
   traces[destIdx].states = states;
@@ -2156,7 +2209,7 @@ ShaderDebugTrace D3D11DebugManager::DebugThread(uint32_t eventID, uint32_t group
 
   states.push_back((State)initialState);
 
-  for(;;)
+  for(int cycleCounter = 0;; cycleCounter++)
   {
     if(initialState.Finished())
       break;
@@ -2164,6 +2217,12 @@ ShaderDebugTrace D3D11DebugManager::DebugThread(uint32_t eventID, uint32_t group
     initialState = initialState.GetNext(global, NULL);
 
     states.push_back((State)initialState);
+
+    if(cycleCounter == SHADER_DEBUG_WARN_THRESHOLD)
+    {
+      if(PromptDebugTimeout(DXBC::TYPE_VERTEX, cycleCounter))
+        break;
+    }
   }
 
   ret.states = states;
@@ -2181,26 +2240,35 @@ uint32_t D3D11DebugManager::PickVertex(uint32_t eventID, const MeshDisplay &cfg,
 
   struct MeshPickData
   {
+    Vec3f RayPos;
+    uint32_t PickIdx;
+
+    Vec3f RayDir;
+    uint32_t PickNumVerts;
+
     Vec2f PickCoords;
     Vec2f PickViewport;
 
+    uint32_t MeshMode;
+    uint32_t PickUnproject;
+    Vec2f Padding;
+
     Matrix4f PickMVP;
 
-    uint32_t PickIdx;
-    uint32_t PickNumVerts;
-    uint32_t PickPadding[2];
   } cbuf;
 
   cbuf.PickCoords = Vec2f((float)x, (float)y);
   cbuf.PickViewport = Vec2f((float)GetWidth(), (float)GetHeight());
   cbuf.PickIdx = cfg.position.idxByteWidth ? 1 : 0;
   cbuf.PickNumVerts = cfg.position.numVerts;
+  cbuf.PickUnproject = cfg.position.unproject ? 1 : 0;
 
   Matrix4f projMat =
       Matrix4f::Perspective(90.0f, 0.1f, 100000.0f, float(GetWidth()) / float(GetHeight()));
 
   Matrix4f camMat = cfg.cam ? cfg.cam->GetMatrix() : Matrix4f::Identity();
-  cbuf.PickMVP = projMat.Mul(camMat);
+
+  Matrix4f pickMVP = projMat.Mul(camMat);
 
   ResourceFormat resFmt;
   resFmt.compByteWidth = cfg.position.compByteWidth;
@@ -2213,6 +2281,7 @@ uint32_t D3D11DebugManager::PickVertex(uint32_t eventID, const MeshDisplay &cfg,
     resFmt.specialFormat = cfg.position.specialFormat;
   }
 
+  Matrix4f pickMVPProj;
   if(cfg.position.unproject)
   {
     // the derivation of the projection matrix might not be right (hell, it could be an
@@ -2223,7 +2292,92 @@ uint32_t D3D11DebugManager::PickVertex(uint32_t eventID, const MeshDisplay &cfg,
     if(cfg.ortho)
       guessProj = Matrix4f::Orthographic(cfg.position.nearPlane, cfg.position.farPlane);
 
-    cbuf.PickMVP = projMat.Mul(camMat.Mul(guessProj.Inverse()));
+    pickMVPProj = projMat.Mul(camMat.Mul(guessProj.Inverse()));
+  }
+
+  Vec3f rayPos;
+  Vec3f rayDir;
+  // convert mouse pos to world space ray
+  {
+    Matrix4f inversePickMVP = pickMVP.Inverse();
+
+    float pickX = ((float)x) / ((float)GetWidth());
+    float pickXCanonical = RDCLERP(-1.0f, 1.0f, pickX);
+
+    float pickY = ((float)y) / ((float)GetHeight());
+    // flip the Y axis
+    float pickYCanonical = RDCLERP(1.0f, -1.0f, pickY);
+
+    Vec3f cameraToWorldNearPosition =
+        inversePickMVP.Transform(Vec3f(pickXCanonical, pickYCanonical, -1), 1);
+
+    Vec3f cameraToWorldFarPosition =
+        inversePickMVP.Transform(Vec3f(pickXCanonical, pickYCanonical, 1), 1);
+
+    Vec3f testDir = (cameraToWorldFarPosition - cameraToWorldNearPosition);
+    testDir.Normalise();
+
+    /* Calculate the ray direction first in the regular way (above), so we can use the
+    the output for testing if the ray we are picking is negative or not. This is similar
+    to checking against the forward direction of the camera, but more robust
+    */
+    if(cfg.position.unproject)
+    {
+      Matrix4f inversePickMVPGuess = pickMVPProj.Inverse();
+
+      Vec3f nearPosProj = inversePickMVPGuess.Transform(Vec3f(pickXCanonical, pickYCanonical, -1), 1);
+
+      Vec3f farPosProj = inversePickMVPGuess.Transform(Vec3f(pickXCanonical, pickYCanonical, 1), 1);
+
+      rayDir = (farPosProj - nearPosProj);
+      rayDir.Normalise();
+
+      if(testDir.z < 0)
+      {
+        rayDir = -rayDir;
+      }
+      rayPos = nearPosProj;
+    }
+    else
+    {
+      rayDir = testDir;
+      rayPos = cameraToWorldNearPosition;
+    }
+  }
+
+  cbuf.RayPos = rayPos;
+  cbuf.RayDir = rayDir;
+
+  cbuf.PickMVP = cfg.position.unproject ? pickMVPProj : pickMVP;
+
+  bool isTriangleMesh = true;
+  switch(cfg.position.topo)
+  {
+    case eTopology_TriangleList:
+    {
+      cbuf.MeshMode = MESH_TRIANGLE_LIST;
+      break;
+    };
+    case eTopology_TriangleStrip:
+    {
+      cbuf.MeshMode = MESH_TRIANGLE_STRIP;
+      break;
+    };
+    case eTopology_TriangleList_Adj:
+    {
+      cbuf.MeshMode = MESH_TRIANGLE_LIST_ADJ;
+      break;
+    };
+    case eTopology_TriangleStrip_Adj:
+    {
+      cbuf.MeshMode = MESH_TRIANGLE_STRIP_ADJ;
+      break;
+    };
+    default:    // points, lines, patchlists, unknown
+    {
+      cbuf.MeshMode = MESH_OTHER;
+      isTriangleMesh = false;
+    };
   }
 
   ID3D11Buffer *vb = NULL, *ib = NULL;
@@ -2294,6 +2448,9 @@ uint32_t D3D11DebugManager::PickVertex(uint32_t eventID, const MeshDisplay &cfg,
 
     RDCASSERT(cfg.position.idxoffs < 0xffffffff);
 
+    D3D11_BUFFER_DESC ibdesc;
+    ib->GetDesc(&ibdesc);
+
     D3D11_BOX box;
     box.front = 0;
     box.back = 1;
@@ -2301,6 +2458,8 @@ uint32_t D3D11DebugManager::PickVertex(uint32_t eventID, const MeshDisplay &cfg,
     box.right = (uint32_t)cfg.position.idxoffs + cfg.position.numVerts * cfg.position.idxByteWidth;
     box.top = 0;
     box.bottom = 1;
+
+    box.right = RDCMIN(box.right, ibdesc.ByteWidth - (uint32_t)cfg.position.idxoffs);
 
     m_pImmediateContext->CopySubresourceRegion(m_DebugRender.PickIBBuf, 0, 0, 0, 0, ib, 0, &box);
   }
@@ -2391,38 +2550,70 @@ uint32_t D3D11DebugManager::PickVertex(uint32_t eventID, const MeshDisplay &cfg,
 
   if(numResults > 0)
   {
-    GetBufferData(m_DebugRender.PickResultBuf, 0, 0, results, false);
-
-    struct PickResult
+    if(isTriangleMesh)
     {
-      uint32_t vertid;
-      uint32_t idx;
-      float len;
-      float depth;
-    };
+      struct PickResult
+      {
+        uint32_t vertid;
+        Vec3f intersectionPoint;
+      };
 
-    PickResult *pickResults = (PickResult *)&results[0];
+      GetBufferData(m_DebugRender.PickResultBuf, 0, 0, results, false);
 
-    PickResult *closest = pickResults;
+      PickResult *pickResults = (PickResult *)&results[0];
 
-    // min with size of results buffer to protect against overflows
-    for(uint32_t i = 1; i < RDCMIN(DebugRenderData::maxMeshPicks, numResults); i++)
-    {
-      // We need to keep the picking order consistent in the face
-      // of random buffer appends, when multiple vertices have the
-      // identical position (e.g. if UVs or normals are different).
-      //
-      // We could do something to try and disambiguate, but it's
-      // never going to be intuitive, it's just going to flicker
-      // confusingly.
-      if(pickResults[i].len < closest->len ||
-         (pickResults[i].len == closest->len && pickResults[i].depth < closest->depth) ||
-         (pickResults[i].len == closest->len && pickResults[i].depth == closest->depth &&
-          pickResults[i].vertid < closest->vertid))
-        closest = pickResults + i;
+      PickResult *closest = pickResults;
+
+      // distance from raycast hit to nearest worldspace position of the mouse
+      float closestPickDistance = (closest->intersectionPoint - rayPos).Length();
+
+      // min with size of results buffer to protect against overflows
+      for(uint32_t i = 1; i < RDCMIN((uint32_t)DebugRenderData::maxMeshPicks, numResults); i++)
+      {
+        float pickDistance = (pickResults[i].intersectionPoint - rayPos).Length();
+        if(pickDistance < closestPickDistance)
+        {
+          closest = pickResults + i;
+        }
+      }
+
+      return closest->vertid;
     }
+    else
+    {
+      struct PickResult
+      {
+        uint32_t vertid;
+        uint32_t idx;
+        float len;
+        float depth;
+      };
 
-    return closest->vertid;
+      GetBufferData(m_DebugRender.PickResultBuf, 0, 0, results, false);
+
+      PickResult *pickResults = (PickResult *)&results[0];
+
+      PickResult *closest = pickResults;
+
+      // min with size of results buffer to protect against overflows
+      for(uint32_t i = 1; i < RDCMIN((uint32_t)DebugRenderData::maxMeshPicks, numResults); i++)
+      {
+        // We need to keep the picking order consistent in the face
+        // of random buffer appends, when multiple vertices have the
+        // identical position (e.g. if UVs or normals are different).
+        //
+        // We could do something to try and disambiguate, but it's
+        // never going to be intuitive, it's just going to flicker
+        // confusingly.
+        if(pickResults[i].len < closest->len ||
+           (pickResults[i].len == closest->len && pickResults[i].depth < closest->depth) ||
+           (pickResults[i].len == closest->len && pickResults[i].depth == closest->depth &&
+            pickResults[i].vertid < closest->vertid))
+          closest = pickResults + i;
+      }
+
+      return closest->vertid;
+    }
   }
 
   return ~0U;
@@ -2520,10 +2711,8 @@ void D3D11DebugManager::PickPixel(ResourceId texture, uint32_t x, uint32_t y, ui
   m_pImmediateContext->Unmap(m_DebugRender.PickPixelStageTex, 0);
 }
 
-byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32_t mip,
-                                        bool forDiskSave, FormatComponentType typeHint,
-                                        bool resolve, bool forceRGBA8unorm, float blackPoint,
-                                        float whitePoint, size_t &dataSize)
+byte *D3D11DebugManager::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
+                                        const GetTextureDataParams &params, size_t &dataSize)
 {
   ID3D11Resource *dummyTex = NULL;
 
@@ -2533,10 +2722,10 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
   dataSize = 0;
   size_t bytesize = 0;
 
-  if(WrappedID3D11Texture1D::m_TextureList.find(id) != WrappedID3D11Texture1D::m_TextureList.end())
+  if(WrappedID3D11Texture1D::m_TextureList.find(tex) != WrappedID3D11Texture1D::m_TextureList.end())
   {
     WrappedID3D11Texture1D *wrapTex =
-        (WrappedID3D11Texture1D *)WrappedID3D11Texture1D::m_TextureList[id].m_Texture;
+        (WrappedID3D11Texture1D *)WrappedID3D11Texture1D::m_TextureList[tex].m_Texture;
 
     D3D11_TEXTURE1D_DESC desc = {0};
     wrapTex->GetDesc(&desc);
@@ -2553,8 +2742,10 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
     if(mip >= mips || arrayIdx >= desc.ArraySize)
       return NULL;
 
-    if(forceRGBA8unorm)
+    if(params.remap)
     {
+      RDCASSERT(params.remap == eRemap_RGBA8);
+
       desc.Format =
           IsSRGBFormat(desc.Format) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
       desc.ArraySize = 1;
@@ -2574,8 +2765,10 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
 
     bytesize = GetByteSize(desc.Width, 1, 1, desc.Format, mip);
 
-    if(forceRGBA8unorm)
+    if(params.remap)
     {
+      RDCASSERT(params.remap == eRemap_RGBA8);
+
       subresource = mip;
 
       desc.CPUAccessFlags = 0;
@@ -2632,11 +2825,11 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
         texDisplay.sampleIdx = 0;
         texDisplay.CustomShader = ResourceId();
         texDisplay.sliceFace = arrayIdx;
-        texDisplay.rangemin = blackPoint;
-        texDisplay.rangemax = whitePoint;
+        texDisplay.rangemin = params.blackPoint;
+        texDisplay.rangemax = params.whitePoint;
         texDisplay.scale = 1.0f;
-        texDisplay.texid = id;
-        texDisplay.typeHint = typeHint;
+        texDisplay.texid = tex;
+        texDisplay.typeHint = params.typeHint;
         texDisplay.rawoutput = false;
         texDisplay.offx = 0;
         texDisplay.offy = 0;
@@ -2657,11 +2850,11 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
       m_pImmediateContext->CopyResource(UNWRAP(WrappedID3D11Texture1D, d), wrapTex->GetReal());
     }
   }
-  else if(WrappedID3D11Texture2D1::m_TextureList.find(id) !=
+  else if(WrappedID3D11Texture2D1::m_TextureList.find(tex) !=
           WrappedID3D11Texture2D1::m_TextureList.end())
   {
     WrappedID3D11Texture2D1 *wrapTex =
-        (WrappedID3D11Texture2D1 *)WrappedID3D11Texture2D1::m_TextureList[id].m_Texture;
+        (WrappedID3D11Texture2D1 *)WrappedID3D11Texture2D1::m_TextureList[tex].m_Texture;
 
     D3D11_TEXTURE2D_DESC desc = {0};
     wrapTex->GetDesc(&desc);
@@ -2689,10 +2882,13 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
     if(mip >= mips || arrayIdx >= desc.ArraySize)
       return NULL;
 
-    if(forceRGBA8unorm)
+    if(params.remap)
     {
-      desc.Format =
-          IsSRGBFormat(desc.Format) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+      RDCASSERT(params.remap == eRemap_RGBA8);
+
+      desc.Format = (IsSRGBFormat(desc.Format) || wrapTex->m_RealDescriptor)
+                        ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                        : DXGI_FORMAT_R8G8B8A8_UNORM;
       desc.ArraySize = 1;
     }
 
@@ -2710,8 +2906,10 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
 
     bytesize = GetByteSize(desc.Width, desc.Height, 1, desc.Format, mip);
 
-    if(forceRGBA8unorm)
+    if(params.remap)
     {
+      RDCASSERT(params.remap == eRemap_RGBA8);
+
       subresource = mip;
 
       desc.CPUAccessFlags = 0;
@@ -2766,14 +2964,14 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
         texDisplay.overlay = eTexOverlay_None;
         texDisplay.FlipY = false;
         texDisplay.mip = mip;
-        texDisplay.sampleIdx = resolve ? ~0U : arrayIdx;
+        texDisplay.sampleIdx = params.resolve ? ~0U : arrayIdx;
         texDisplay.CustomShader = ResourceId();
         texDisplay.sliceFace = arrayIdx;
-        texDisplay.rangemin = blackPoint;
-        texDisplay.rangemax = whitePoint;
+        texDisplay.rangemin = params.blackPoint;
+        texDisplay.rangemax = params.whitePoint;
         texDisplay.scale = 1.0f;
-        texDisplay.texid = id;
-        texDisplay.typeHint = typeHint;
+        texDisplay.texid = tex;
+        texDisplay.typeHint = params.typeHint;
         texDisplay.rawoutput = false;
         texDisplay.offx = 0;
         texDisplay.offy = 0;
@@ -2789,7 +2987,7 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
 
       SAFE_RELEASE(wrappedrtv);
     }
-    else if(wasms && resolve)
+    else if(wasms && params.resolve)
     {
       desc.Usage = D3D11_USAGE_DEFAULT;
       desc.CPUAccessFlags = 0;
@@ -2821,11 +3019,11 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
       m_pImmediateContext->CopyResource(UNWRAP(WrappedID3D11Texture2D1, d), wrapTex->GetReal());
     }
   }
-  else if(WrappedID3D11Texture3D1::m_TextureList.find(id) !=
+  else if(WrappedID3D11Texture3D1::m_TextureList.find(tex) !=
           WrappedID3D11Texture3D1::m_TextureList.end())
   {
     WrappedID3D11Texture3D1 *wrapTex =
-        (WrappedID3D11Texture3D1 *)WrappedID3D11Texture3D1::m_TextureList[id].m_Texture;
+        (WrappedID3D11Texture3D1 *)WrappedID3D11Texture3D1::m_TextureList[tex].m_Texture;
 
     D3D11_TEXTURE3D_DESC desc = {0};
     wrapTex->GetDesc(&desc);
@@ -2842,9 +3040,13 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
     if(mip >= mips)
       return NULL;
 
-    if(forceRGBA8unorm)
+    if(params.remap)
+    {
+      RDCASSERT(params.remap == eRemap_RGBA8);
+
       desc.Format =
           IsSRGBFormat(desc.Format) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+    }
 
     subresource = mip;
 
@@ -2860,8 +3062,10 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
 
     bytesize = GetByteSize(desc.Width, desc.Height, desc.Depth, desc.Format, mip);
 
-    if(forceRGBA8unorm)
+    if(params.remap)
     {
+      RDCASSERT(params.remap == eRemap_RGBA8);
+
       subresource = mip;
 
       desc.CPUAccessFlags = 0;
@@ -2893,7 +3097,7 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
 
       int oldW = GetWidth(), oldH = GetHeight();
 
-      for(UINT i = 0; i < desc.Depth; i++)
+      for(UINT i = 0; i < (desc.Depth >> mip); i++)
       {
         rtvDesc.Texture3D.FirstWSlice = i;
         hr = m_WrappedDevice->CreateRenderTargetView(rtTex, &rtvDesc, &wrappedrtv);
@@ -2924,12 +3128,12 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
         texDisplay.mip = mip;
         texDisplay.sampleIdx = 0;
         texDisplay.CustomShader = ResourceId();
-        texDisplay.sliceFace = i;
-        texDisplay.rangemin = blackPoint;
-        texDisplay.rangemax = whitePoint;
+        texDisplay.sliceFace = i << mip;
+        texDisplay.rangemin = params.blackPoint;
+        texDisplay.rangemax = params.whitePoint;
         texDisplay.scale = 1.0f;
-        texDisplay.texid = id;
-        texDisplay.typeHint = typeHint;
+        texDisplay.texid = tex;
+        texDisplay.typeHint = params.typeHint;
         texDisplay.rawoutput = false;
         texDisplay.offx = 0;
         texDisplay.offy = 0;
@@ -2952,7 +3156,7 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
   }
   else
   {
-    RDCERR("Trying to get texture data for unknown ID %llu!", id);
+    RDCERR("Trying to get texture data for unknown ID %llu!", tex);
     dataSize = 0;
     return new byte[0];
   }
@@ -2972,6 +3176,22 @@ byte *D3D11DebugManager::GetTextureData(ResourceId id, uint32_t arrayIdx, uint32
     intercept.InitWrappedResource(dummyTex, subresource, ret);
     intercept.SetD3D(mapped);
     intercept.CopyFromD3D();
+
+    // for 3D textures if we wanted a particular slice (arrayIdx > 0)
+    // copy it into the beginning.
+    if(intercept.numSlices > 1 && arrayIdx > 0 && (int)arrayIdx < intercept.numSlices)
+    {
+      byte *dst = ret;
+      byte *src = ret + intercept.app.DepthPitch * arrayIdx;
+
+      for(int row = 0; row < intercept.numRows; row++)
+      {
+        memcpy(dst, src, intercept.app.RowPitch);
+
+        src += intercept.app.RowPitch;
+        dst += intercept.app.RowPitch;
+      }
+    }
   }
   else
   {
@@ -3089,8 +3309,6 @@ void D3D11DebugManager::CreateCustomShaderTex(uint32_t w, uint32_t h)
     m_CustomShaderResourceId = GetIDForResource(m_CustomShaderTex);
   }
 }
-
-#include "data/hlsl/debugcbuffers.h"
 
 ResourceId D3D11DebugManager::RenderOverlay(ResourceId texid, FormatComponentType typeHint,
                                             TextureDisplayOverlay overlay, uint32_t eventID,
@@ -3641,6 +3859,167 @@ ResourceId D3D11DebugManager::RenderOverlay(ResourceId texid, FormatComponentTyp
         }
       }
     }
+  }
+  else if(overlay == eTexOverlay_TriangleSizeDraw || overlay == eTexOverlay_TriangleSizePass)
+  {
+    SCOPED_TIMER("Triangle size");
+
+    // ensure it will be recreated on next use
+    SAFE_RELEASE(m_MeshDisplayLayout);
+    m_PrevMeshFmt = ResourceFormat();
+
+    D3D11_INPUT_ELEMENT_DESC layoutdesc[2] = {};
+
+    layoutdesc[0].SemanticName = "pos";
+    layoutdesc[0].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+
+    // dummy for vertex shader
+    layoutdesc[1].SemanticName = "sec";
+    layoutdesc[1].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    layoutdesc[1].InputSlot = 1;
+    layoutdesc[1].InputSlotClass = D3D11_INPUT_PER_INSTANCE_DATA;
+
+    hr = m_pDevice->CreateInputLayout(layoutdesc, 2, m_DebugRender.MeshHomogVSBytecode,
+                                      m_DebugRender.MeshHomogVSBytelen, &m_MeshDisplayLayout);
+
+    if(FAILED(hr))
+    {
+      RDCERR("Failed to create m_MeshDisplayLayout %08x", hr);
+      m_MeshDisplayLayout = NULL;
+    }
+
+    DebugVertexCBuffer vertexData = {};
+    vertexData.LineStrip = 0;
+    vertexData.ModelViewProj = Matrix4f::Identity();
+    vertexData.SpriteSize = Vec2f();
+    FillCBuffer(m_DebugRender.GenericVSCBuffer, &vertexData, sizeof(DebugVertexCBuffer));
+
+    ID3D11Buffer *psbuf = MakeCBuffer(&overdrawRamp[0].x, sizeof(overdrawRamp));
+
+    Vec4f viewport = Vec4f((float)details.texWidth, (float)details.texHeight);
+    ID3D11Buffer *gsbuf = MakeCBuffer(&viewport.x, sizeof(viewport));
+
+    float overlayConsts[] = {0.0f, 0.0f, 0.0f, 0.0f};
+    m_pImmediateContext->ClearRenderTargetView(rtv, overlayConsts);
+
+    vector<uint32_t> events = passEvents;
+
+    if(overlay == eTexOverlay_TriangleSizeDraw)
+      events.clear();
+
+    events.push_back(eventID);
+
+    if(overlay == eTexOverlay_TriangleSizePass)
+      m_WrappedDevice->ReplayLog(0, events[0], eReplay_WithoutDraw);
+
+    events.push_back(eventID);
+
+    for(size_t i = 0; i < events.size(); i++)
+    {
+      D3D11RenderState oldstate = *m_WrappedContext->GetCurrentPipelineState();
+
+      D3D11_DEPTH_STENCIL_DESC dsdesc = {
+          /*DepthEnable =*/TRUE,
+          /*DepthWriteMask =*/D3D11_DEPTH_WRITE_MASK_ALL,
+          /*DepthFunc =*/D3D11_COMPARISON_LESS,
+          /*StencilEnable =*/FALSE,
+          /*StencilReadMask =*/D3D11_DEFAULT_STENCIL_READ_MASK,
+          /*StencilWriteMask =*/D3D11_DEFAULT_STENCIL_WRITE_MASK,
+          /*FrontFace =*/{D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP,
+                          D3D11_COMPARISON_ALWAYS},
+          /*BackFace =*/{D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP,
+                         D3D11_COMPARISON_ALWAYS},
+      };
+      ID3D11DepthStencilState *ds = NULL;
+
+      if(oldstate.OM.DepthStencilState)
+        oldstate.OM.DepthStencilState->GetDesc(&dsdesc);
+
+      dsdesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+      dsdesc.StencilWriteMask = 0;
+
+      m_WrappedDevice->CreateDepthStencilState(&dsdesc, &ds);
+
+      m_WrappedContext->OMSetDepthStencilState(ds, oldstate.OM.StencRef);
+
+      SAFE_RELEASE(ds);
+
+      const FetchDrawcall *draw = m_WrappedDevice->GetDrawcall(events[i]);
+
+      for(uint32_t inst = 0; draw && inst < RDCMAX(1U, draw->numInstances); inst++)
+      {
+        MeshFormat fmt = GetPostVSBuffers(events[i], inst, eMeshDataStage_GSOut);
+        if(fmt.buf == ResourceId())
+          fmt = GetPostVSBuffers(events[i], inst, eMeshDataStage_VSOut);
+
+        if(fmt.buf != ResourceId())
+        {
+          D3D11_PRIMITIVE_TOPOLOGY topo = MakeD3DPrimitiveTopology(fmt.topo);
+
+          ID3D11Buffer *ibuf = NULL;
+          DXGI_FORMAT ifmt = DXGI_FORMAT_R16_UINT;
+          UINT ioffs = (UINT)fmt.idxoffs;
+
+          ID3D11Buffer *vbs[2] = {NULL, NULL};
+          UINT str[2] = {fmt.stride, 4};
+          UINT offs[2] = {(UINT)fmt.offset, 0};
+
+          {
+            auto it = WrappedID3D11Buffer::m_BufferList.find(fmt.buf);
+
+            if(it != WrappedID3D11Buffer::m_BufferList.end())
+              vbs[0] = UNWRAP(WrappedID3D11Buffer, it->second.m_Buffer);
+
+            it = WrappedID3D11Buffer::m_BufferList.find(fmt.idxbuf);
+
+            if(it != WrappedID3D11Buffer::m_BufferList.end())
+              ibuf = UNWRAP(WrappedID3D11Buffer, it->second.m_Buffer);
+
+            if(fmt.idxByteWidth == 4)
+              ifmt = DXGI_FORMAT_R32_UINT;
+          }
+
+          m_pImmediateContext->IASetVertexBuffers(0, 1, vbs, str, offs);
+          if(ibuf)
+            m_pImmediateContext->IASetIndexBuffer(ibuf, ifmt, ioffs);
+          else
+            m_pImmediateContext->IASetIndexBuffer(NULL, DXGI_FORMAT_UNKNOWN, NULL);
+
+          m_pImmediateContext->IASetPrimitiveTopology(topo);
+
+          m_pImmediateContext->IASetInputLayout(m_MeshDisplayLayout);
+          m_pImmediateContext->VSSetConstantBuffers(0, 1, &m_DebugRender.GenericVSCBuffer);
+          m_pImmediateContext->PSSetConstantBuffers(0, 1, &psbuf);
+          m_pImmediateContext->GSSetConstantBuffers(0, 1, &gsbuf);
+          m_pImmediateContext->VSSetShader(m_DebugRender.WireframeHomogVS, NULL, 0);
+          m_pImmediateContext->GSSetShader(m_DebugRender.TriangleSizeGS, NULL, 0);
+          m_pImmediateContext->PSSetShader(m_DebugRender.TriangleSizePS, NULL, 0);
+          m_pImmediateContext->HSSetShader(NULL, NULL, 0);
+          m_pImmediateContext->DSSetShader(NULL, NULL, 0);
+          m_pImmediateContext->OMSetBlendState(NULL, NULL, 0xffffffff);
+          m_pImmediateContext->OMSetRenderTargets(
+              1, &rtv, UNWRAP(WrappedID3D11DepthStencilView, oldstate.OM.DepthView));
+
+          if(ibuf)
+            m_pImmediateContext->DrawIndexed(fmt.numVerts, 0, fmt.baseVertex);
+          else
+            m_pImmediateContext->Draw(fmt.numVerts, 0);
+        }
+      }
+
+      oldstate.ApplyState(m_WrappedContext);
+
+      if(overlay == eTexOverlay_TriangleSizePass)
+      {
+        m_WrappedDevice->ReplayLog(events[i], events[i], eReplay_OnlyDraw);
+
+        if(i + 1 < events.size())
+          m_WrappedDevice->ReplayLog(events[i], events[i + 1], eReplay_WithoutDraw);
+      }
+    }
+
+    if(overlay == eTexOverlay_TriangleSizePass)
+      m_WrappedDevice->ReplayLog(0, eventID, eReplay_WithoutDraw);
   }
   else if(overlay == eTexOverlay_QuadOverdrawPass || overlay == eTexOverlay_QuadOverdrawDraw)
   {
@@ -4545,14 +4924,17 @@ vector<PixelModification> D3D11DebugManager::PixelHistory(vector<EventUsage> eve
 
   uint32_t shadoutsrcxyData[8];
   memcpy(shadoutsrcxyData, srcxyData, sizeof(srcxyData));
-  srcxyData[2] = multisampled ? sampleIdx : 0;
+
+  // shadout texture doesn't have slices/mips, just one of the right dimension
+  shadoutsrcxyData[2] = multisampled ? sampleIdx : 0;
+  shadoutsrcxyData[3] = 0;
 
   ID3D11Buffer *srcxyCBuf = MakeCBuffer(sizeof(srcxyData));
   ID3D11Buffer *shadoutsrcxyCBuf = MakeCBuffer(sizeof(shadoutsrcxyData));
   ID3D11Buffer *storexyCBuf = MakeCBuffer(sizeof(srcxyData));
 
   FillCBuffer(srcxyCBuf, srcxyData, sizeof(srcxyData));
-  FillCBuffer(shadoutsrcxyCBuf, srcxyData, sizeof(shadoutsrcxyData));
+  FillCBuffer(shadoutsrcxyCBuf, shadoutsrcxyData, sizeof(shadoutsrcxyData));
 
   // so we do:
   // per sample: orig depth --copy--> depthCopyXXX (created/upsized on demand) --CS pixel copy-->

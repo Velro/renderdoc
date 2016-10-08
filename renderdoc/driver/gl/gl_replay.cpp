@@ -421,6 +421,18 @@ bool GLReplay::IsRenderOutput(ResourceId id)
   return false;
 }
 
+FetchTexture GLReplay::GetTexture(ResourceId id)
+{
+  auto it = m_CachedTextures.find(id);
+  if(it == m_CachedTextures.end())
+  {
+    CacheTexture(id);
+    return m_CachedTextures[id];
+  }
+
+  return it->second;
+}
+
 void GLReplay::CacheTexture(ResourceId id)
 {
   FetchTexture tex;
@@ -469,7 +481,7 @@ void GLReplay::CacheTexture(ResourceId id)
     tex.numSubresources = 1;
     tex.creationFlags = eTextureCreate_RTV;
     tex.msQual = 0;
-    tex.msSamp = res.samples;
+    tex.msSamp = RDCMAX(1, res.samples);
 
     tex.format = MakeResourceFormat(gl, eGL_TEXTURE_2D, res.internalFormat);
 
@@ -594,7 +606,7 @@ void GLReplay::CacheTexture(ResourceId id)
       tex.depth = 1;
       tex.arraysize = (target == eGL_TEXTURE_CUBE_MAP ? 6 : 1);
       tex.cubemap = (target == eGL_TEXTURE_CUBE_MAP);
-      tex.msSamp = (target == eGL_TEXTURE_2D_MULTISAMPLE ? samples : 1);
+      tex.msSamp = RDCMAX(1, target == eGL_TEXTURE_2D_MULTISAMPLE ? samples : 1);
       break;
     case eGL_TEXTURE_2D_ARRAY:
     case eGL_TEXTURE_2D_MULTISAMPLE_ARRAY:
@@ -605,7 +617,7 @@ void GLReplay::CacheTexture(ResourceId id)
       tex.depth = 1;
       tex.arraysize = depth;
       tex.cubemap = (target == eGL_TEXTURE_CUBE_MAP_ARRAY);
-      tex.msSamp = (target == eGL_TEXTURE_2D_MULTISAMPLE_ARRAY ? samples : 1);
+      tex.msSamp = RDCMAX(1, target == eGL_TEXTURE_2D_MULTISAMPLE_ARRAY ? samples : 1);
       break;
     case eGL_TEXTURE_3D:
       tex.dimension = 3;
@@ -679,7 +691,8 @@ void GLReplay::CacheTexture(ResourceId id)
     tex.arraysize = 1;
     tex.numSubresources = 1;
     tex.creationFlags = eTextureCreate_SRV;
-    tex.msQual = tex.msSamp = 0;
+    tex.msQual = 0;
+    tex.msSamp = 1;
     tex.byteSize = 0;
 
     gl.glGetTextureLevelParameterivEXT(res.resource.name, levelQueryType, 0,
@@ -2160,9 +2173,8 @@ void GLReplay::FillCBufferVariables(ResourceId shader, string entryPoint, uint32
                        outvars, data);
 }
 
-byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, bool forDiskSave,
-                               FormatComponentType typeHint, bool resolve, bool forceRGBA8unorm,
-                               float blackPoint, float whitePoint, size_t &dataSize)
+byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
+                               const GetTextureDataParams &params, size_t &dataSize)
 {
   WrappedOpenGL &gl = *m_pDriver;
 
@@ -2219,8 +2231,10 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, 
     arraysize = texDetails.depth;
   }
 
-  if(forceRGBA8unorm && intFormat != eGL_RGBA8 && intFormat != eGL_SRGB8_ALPHA8)
+  if(params.remap && intFormat != eGL_RGBA8 && intFormat != eGL_SRGB8_ALPHA8)
   {
+    RDCASSERT(params.remap == eRemap_RGBA8);
+
     MakeCurrentReplayContext(m_DebugCtx);
 
     GLenum finalFormat = IsSRGBFormat(intFormat) ? eGL_SRGB8_ALPHA8 : eGL_RGBA8;
@@ -2273,8 +2287,8 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, 
       texDisplay.sampleIdx = ~0U;
       texDisplay.CustomShader = ResourceId();
       texDisplay.sliceFace = arrayIdx;
-      texDisplay.rangemin = blackPoint;
-      texDisplay.rangemax = whitePoint;
+      texDisplay.rangemin = params.blackPoint;
+      texDisplay.rangemax = params.whitePoint;
       texDisplay.scale = 1.0f;
       texDisplay.texid = tex;
       texDisplay.typeHint = eCompType_None;
@@ -2291,7 +2305,7 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, 
 
       gl.glViewport(0, 0, width, height);
 
-      RenderTextureInternal(texDisplay, false);
+      RenderTextureInternal(texDisplay, 0);
     }
 
     DebugData.outWidth = oldW;
@@ -2305,10 +2319,11 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, 
       depth = 1;
     arraysize = 1;
     samples = 1;
+    mip = 0;
 
     gl.glDeleteFramebuffers(1, &fbo);
   }
-  else if(resolve && samples > 1)
+  else if(params.resolve && samples > 1)
   {
     MakeCurrentReplayContext(m_DebugCtx);
 
@@ -2373,7 +2388,6 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, 
     // rewrite the variables to temporary texture
     texType = eGL_TEXTURE_2D_ARRAY;
     texname = tempTex;
-    depth = 1;
     depth = arraysize * samples;
     arraysize = arraysize * samples;
     samples = 1;
@@ -2438,7 +2452,7 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, 
       // order is consistent (and we just need to take care to apply an extra vertical flip
       // for display when proxying).
 
-      if(forDiskSave)
+      if(params.forDiskSave)
       {
         // need to vertically flip the image now to get conventional row ordering
         // we either do this when copying out the slice of interest, or just
@@ -2612,7 +2626,7 @@ ResourceId GLReplay::ApplyCustomShader(ResourceId shader, ResourceId texid, uint
   disp.scale = 1.0f;
   disp.sliceFace = arrayIdx;
 
-  RenderTextureInternal(disp, false);
+  RenderTextureInternal(disp, eTexDisplay_MipShift);
 
   return DebugData.CustomShaderTexID;
 }
@@ -2977,6 +2991,11 @@ void GLReplay::SetProxyTextureData(ResourceId texid, uint32_t arrayIdx, uint32_t
       RDCUNIMPLEMENTED("multisampled proxy textures");
     }
   }
+}
+
+bool GLReplay::IsTextureSupported(const ResourceFormat &format)
+{
+  return true;
 }
 
 ResourceId GLReplay::CreateProxyBuffer(const FetchBuffer &templateBuf)

@@ -4,18 +4,12 @@
 #
 #-------------------------------------------------
 
-QT       += core gui
+QT       += core gui widgets
 
-greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
+lessThan(QT_MAJOR_VERSION, 5): error("requires Qt 5")
 
 TARGET = qrenderdoc
 TEMPLATE = app
-
-# Temp files into .obj
-MOC_DIR = .obj
-UI_DIR = .obj
-RCC_DIR = .obj
-OBJECTS_DIR = .obj
 
 # include path for core renderdoc API
 INCLUDEPATH += $$_PRO_FILE_PWD_/../renderdoc/api/replay
@@ -35,9 +29,27 @@ win32 {
 		Debug:DESTDIR = $$_PRO_FILE_PWD_/../Win32/Development
 		Release:DESTDIR = $$_PRO_FILE_PWD_/../Win32/Release
 
+		Debug:MOC_DIR = $$_PRO_FILE_PWD_/Win32/Development
+		Release:MOC_DIR = $$_PRO_FILE_PWD_/Win32/Release
+		Debug:UI_DIR = $$_PRO_FILE_PWD_/Win32/Development
+		Release:UI_DIR = $$_PRO_FILE_PWD_/Win32/Release
+		Debug:RCC_DIR = $$_PRO_FILE_PWD_/Win32/Development
+		Release:RCC_DIR = $$_PRO_FILE_PWD_/Win32/Release
+		Debug:OBJECTS_DIR = $$_PRO_FILE_PWD_/Win32/Development
+		Release:OBJECTS_DIR = $$_PRO_FILE_PWD_/Win32/Release
+
 	} else {
 		Debug:DESTDIR = $$_PRO_FILE_PWD_/../x64/Development
 		Release:DESTDIR = $$_PRO_FILE_PWD_/../x64/Release
+
+		Debug:MOC_DIR = $$_PRO_FILE_PWD_/x64/Development
+		Release:MOC_DIR = $$_PRO_FILE_PWD_/x64/Release
+		Debug:UI_DIR = $$_PRO_FILE_PWD_/x64/Development
+		Release:UI_DIR = $$_PRO_FILE_PWD_/x64/Release
+		Debug:RCC_DIR = $$_PRO_FILE_PWD_/x64/Development
+		Release:RCC_DIR = $$_PRO_FILE_PWD_/x64/Release
+		Debug:OBJECTS_DIR = $$_PRO_FILE_PWD_/x64/Development
+		Release:OBJECTS_DIR = $$_PRO_FILE_PWD_/x64/Release
 	}
 
 	# Link against the core library
@@ -51,6 +63,12 @@ win32 {
 		DESTDIR = $$_PRO_FILE_PWD_/../bin
 	}
 
+	# Temp files into .obj
+	MOC_DIR = .obj
+	UI_DIR = .obj
+	RCC_DIR = .obj
+	OBJECTS_DIR = .obj
+
 	# Link against the core library
 	LIBS += -L$$DESTDIR -lrenderdoc
 	QMAKE_LFLAGS += '-Wl,-rpath,\'\$$ORIGIN\''
@@ -58,10 +76,10 @@ win32 {
 	QMAKE_CXXFLAGS += -std=c++11 -Wno-unused-parameter -Wno-reorder
 
 	QT += x11extras
-	DEFINES += RENDERDOC_PLATFORM_POSIX RENDERDOC_PLATFORM_LINUX
+	DEFINES += RENDERDOC_PLATFORM_POSIX RENDERDOC_PLATFORM_LINUX RENDERDOC_WINDOWING_XLIB RENDERDOC_WINDOWING_XCB
 }
 
-SOURCES += Code/main.cpp \
+SOURCES += Code/qrenderdoc.cpp \
     Windows/MainWindow.cpp \
     Windows/EventBrowser.cpp \
     Windows/TextureViewer.cpp \
@@ -71,9 +89,14 @@ SOURCES += Code/main.cpp \
     3rdparty/toolwindowmanager/ToolWindowManagerArea.cpp \
     3rdparty/toolwindowmanager/ToolWindowManagerWrapper.cpp \
     Code/RenderManager.cpp \
-    Code/Core.cpp \
-    Widgets/LineEditFocusWidget.cpp \
-    3rdparty/flowlayout/FlowLayout.cpp
+    Code/PersistantConfig.cpp \
+    Code/CaptureContext.cpp \
+    Widgets/RDLineEdit.cpp \
+    3rdparty/flowlayout/FlowLayout.cpp \
+    Widgets/ResourcePreview.cpp \
+    Widgets/RDLabel.cpp \
+    Widgets/ThumbnailStrip.cpp \
+    Code/CommonPipelineState.cpp
 
 HEADERS  += Windows/MainWindow.h \
     Windows/EventBrowser.h \
@@ -83,15 +106,22 @@ HEADERS  += Windows/MainWindow.h \
     3rdparty/toolwindowmanager/ToolWindowManager.h \
     3rdparty/toolwindowmanager/ToolWindowManagerArea.h \
     3rdparty/toolwindowmanager/ToolWindowManagerWrapper.h \
-    Code/Core.h \
+    Code/CaptureContext.h \
     Code/RenderManager.h \
-    Widgets/LineEditFocusWidget.h \
-    3rdparty/flowlayout/FlowLayout.h
+    Code/PersistantConfig.h \
+    Widgets/RDLineEdit.h \
+    3rdparty/flowlayout/FlowLayout.h \
+    Widgets/ResourcePreview.h \
+    Widgets/RDLabel.h \
+    Widgets/ThumbnailStrip.h \
+    Code/CommonPipelineState.h
 
 FORMS    += Windows/MainWindow.ui \
     Windows/EventBrowser.ui \
     Windows/TextureViewer.ui \
-    Windows/AboutDialog.ui
+    Windows/AboutDialog.ui \
+    Widgets/ResourcePreview.ui \
+    Widgets/ThumbnailStrip.ui
 
 RESOURCES += \
     resources.qrc

@@ -146,6 +146,7 @@ public:
 
   void SavePipelineState();
   D3D11PipelineState GetD3D11PipelineState() { return D3D11PipelineState(); }
+  D3D12PipelineState GetD3D12PipelineState() { return D3D12PipelineState(); }
   GLPipelineState GetGLPipelineState() { return GLPipelineState(); }
   VulkanPipelineState GetVulkanPipelineState() { return m_VulkanPipelineState; }
   void FreeTargetResource(ResourceId id);
@@ -185,9 +186,8 @@ public:
   MeshFormat GetPostVSBuffers(uint32_t eventID, uint32_t instID, MeshDataStage stage);
 
   void GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, vector<byte> &retData);
-  byte *GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, bool forDiskSave,
-                       FormatComponentType typeHint, bool resolve, bool forceRGBA8unorm,
-                       float blackPoint, float whitePoint, size_t &dataSize);
+  byte *GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
+                       const GetTextureDataParams &params, size_t &dataSize);
 
   void ReplaceResource(ResourceId from, ResourceId to);
   void RemoveReplacement(ResourceId id);
@@ -230,6 +230,7 @@ public:
   ResourceId CreateProxyTexture(const FetchTexture &templateTex);
   void SetProxyTextureData(ResourceId texid, uint32_t arrayIdx, uint32_t mip, byte *data,
                            size_t dataSize);
+  bool IsTextureSupported(const ResourceFormat &format);
 
   ResourceId CreateProxyBuffer(const FetchBuffer &templateBuf);
   void SetProxyBufferData(ResourceId bufid, byte *data, size_t dataSize);
@@ -330,7 +331,14 @@ private:
 
   WrappedVulkan *m_pDriver;
 
-  bool RenderTextureInternal(TextureDisplay cfg, VkRenderPassBeginInfo rpbegin, bool f32render);
+  enum TexDisplayFlags
+  {
+    eTexDisplay_F32Render = 0x1,
+    eTexDisplay_BlendAlpha = 0x2,
+    eTexDisplay_MipShift = 0x4,
+  };
+
+  bool RenderTextureInternal(TextureDisplay cfg, VkRenderPassBeginInfo rpbegin, int flags);
 
   void CreateTexImageView(VkImageAspectFlags aspectFlags, VkImage liveIm,
                           VulkanCreationInfo::Image &iminfo);

@@ -428,12 +428,18 @@ HMODULE WINAPI Hooked_LoadLibraryExA(LPCSTR lpLibFileName, HANDLE fileHandle, DW
   if(flags == 0 && GetModuleHandleA(lpLibFileName))
     dohook = false;
 
+  SetLastError(S_OK);
+
   // we can use the function naked, as when setting up the hook for LoadLibraryExA, our own module
   // was excluded from IAT patching
   HMODULE mod = LoadLibraryExA(lpLibFileName, fileHandle, flags);
 
+  DWORD err = GetLastError();
+
   if(dohook)
     HookAllModules();
+
+  SetLastError(err);
 
   return mod;
 }
@@ -444,12 +450,18 @@ HMODULE WINAPI Hooked_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE fileHandle, D
   if(flags == 0 && GetModuleHandleW(lpLibFileName))
     dohook = false;
 
+  SetLastError(S_OK);
+
   // we can use the function naked, as when setting up the hook for LoadLibraryExA, our own module
   // was excluded from IAT patching
   HMODULE mod = LoadLibraryExW(lpLibFileName, fileHandle, flags);
 
+  DWORD err = GetLastError();
+
   if(dohook)
     HookAllModules();
+
+  SetLastError(err);
 
   return mod;
 }
@@ -474,7 +486,7 @@ FARPROC WINAPI Hooked_GetProcAddress(HMODULE mod, LPCSTR func)
   if(mod == NULL || func == NULL)
     return (FARPROC)NULL;
 
-  if(mod == s_HookData->ownmodule || OrdinalAsString((void *)func))
+  if(mod == s_HookData->ownmodule)
     return GetProcAddress(mod, func);
 
   for(auto it = s_HookData->DllHooks.begin(); it != s_HookData->DllHooks.end(); ++it)
@@ -484,6 +496,33 @@ FARPROC WINAPI Hooked_GetProcAddress(HMODULE mod, LPCSTR func)
 
     if(mod == it->second.module)
     {
+      if(OrdinalAsString((void *)func))
+      {
+        uint32_t ordinal = (uint16_t)(uintptr_t(func) & 0xffff);
+
+        if(ordinal < it->second.OrdinalBase)
+        {
+          RDCERR("Unexpected ordinal - lower than ordinalbase %u for %s",
+                 (uint32_t)it->second.OrdinalBase, it->first.c_str());
+
+          SetLastError(S_OK);
+          return GetProcAddress(mod, func);
+        }
+
+        ordinal -= it->second.OrdinalBase;
+
+        if(ordinal >= it->second.OrdinalNames.size())
+        {
+          RDCERR("Unexpected ordinal - higher than fetched ordinal names (%u) for %s",
+                 (uint32_t)it->second.OrdinalNames.size(), it->first.c_str());
+
+          SetLastError(S_OK);
+          return GetProcAddress(mod, func);
+        }
+
+        func = it->second.OrdinalNames[ordinal].c_str();
+      }
+
       FunctionHook search(func, NULL, NULL);
 
       auto found =
@@ -493,10 +532,17 @@ FARPROC WINAPI Hooked_GetProcAddress(HMODULE mod, LPCSTR func)
         if(found->origptr && *found->origptr == NULL)
           *found->origptr = (void *)GetProcAddress(mod, func);
 
+        SetLastError(S_OK);
+
+        if(found->origptr && *found->origptr == NULL)
+          return NULL;
+
         return (FARPROC)found->hookptr;
       }
     }
   }
+
+  SetLastError(S_OK);
 
   return GetProcAddress(mod, func);
 }

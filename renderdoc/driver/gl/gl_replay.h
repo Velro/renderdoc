@@ -94,7 +94,7 @@ public:
   FetchBuffer GetBuffer(ResourceId id);
 
   vector<ResourceId> GetTextures();
-  FetchTexture GetTexture(ResourceId id) { return m_CachedTextures[id]; }
+  FetchTexture GetTexture(ResourceId id);
   ShaderReflection *GetShader(ResourceId shader, string entryPoint);
 
   vector<DebugMessage> GetDebugMessages();
@@ -105,6 +105,7 @@ public:
 
   void SavePipelineState();
   D3D11PipelineState GetD3D11PipelineState() { return D3D11PipelineState(); }
+  D3D12PipelineState GetD3D12PipelineState() { return D3D12PipelineState(); }
   GLPipelineState GetGLPipelineState() { return m_CurPipelineState; }
   VulkanPipelineState GetVulkanPipelineState() { return VulkanPipelineState(); }
   void FreeTargetResource(ResourceId id);
@@ -150,9 +151,8 @@ public:
   MeshFormat GetPostVSBuffers(uint32_t eventID, uint32_t instID, MeshDataStage stage);
 
   void GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, vector<byte> &ret);
-  byte *GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, bool forDiskSave,
-                       FormatComponentType typeHint, bool resolve, bool forceRGBA8unorm,
-                       float blackPoint, float whitePoint, size_t &dataSize);
+  byte *GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
+                       const GetTextureDataParams &params, size_t &dataSize);
 
   void ReplaceResource(ResourceId from, ResourceId to);
   void RemoveReplacement(ResourceId id);
@@ -169,8 +169,14 @@ public:
                          ShaderStageType type, ResourceId *id, string *errors);
   void FreeCustomShader(ResourceId id);
 
+  enum TexDisplayFlags
+  {
+    eTexDisplay_BlendAlpha = 0x1,
+    eTexDisplay_MipShift = 0x2,
+  };
+
   bool RenderTexture(TextureDisplay cfg);
-  bool RenderTextureInternal(TextureDisplay cfg, bool blendAlpha);
+  bool RenderTextureInternal(TextureDisplay cfg, int flags);
 
   void RenderCheckerboard(Vec3f light, Vec3f dark);
 
@@ -199,6 +205,7 @@ public:
   ResourceId CreateProxyTexture(const FetchTexture &templateTex);
   void SetProxyTextureData(ResourceId texid, uint32_t arrayIdx, uint32_t mip, byte *data,
                            size_t dataSize);
+  bool IsTextureSupported(const ResourceFormat &format);
 
   ResourceId CreateProxyBuffer(const FetchBuffer &templateBuf);
   void SetProxyBufferData(ResourceId bufid, byte *data, size_t dataSize);
@@ -311,6 +318,7 @@ private:
 
     GLuint meshProg;
     GLuint meshgsProg;
+    GLuint trisizeProg;
 
     GLuint meshVAO;
     GLuint axisVAO;
@@ -336,7 +344,7 @@ private:
     GLuint overlayPipe;
     GLint overlayTexWidth, overlayTexHeight;
 
-    GLuint UBOs[2];
+    GLuint UBOs[3];
 
     GLuint readFBO;
 

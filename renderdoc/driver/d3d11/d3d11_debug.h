@@ -94,6 +94,7 @@ struct D3D11PostVSData
 };
 
 struct CopyPixelParams;
+struct GetTextureDataParams;
 
 class D3D11DebugManager
 {
@@ -127,9 +128,8 @@ public:
   void GetBufferData(ID3D11Buffer *buff, uint64_t offset, uint64_t length, vector<byte> &retData,
                      bool unwrap);
 
-  byte *GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip, bool forDiskSave,
-                       FormatComponentType typeHint, bool resolve, bool forceRGBA8unorm,
-                       float blackPoint, float whitePoint, size_t &dataSize);
+  byte *GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
+                       const GetTextureDataParams &params, size_t &dataSize);
 
   void FillCBufferVariables(const vector<DXBC::CBufferVariable> &invars,
                             vector<ShaderVariable> &outvars, bool flattenVec4s,
@@ -447,6 +447,8 @@ private:
       SAFE_RELEASE(MeshVS);
       SAFE_RELEASE(MeshGS);
       SAFE_RELEASE(MeshPS);
+      SAFE_RELEASE(TriangleSizeGS);
+      SAFE_RELEASE(TriangleSizePS);
       SAFE_RELEASE(FullscreenVS);
       SAFE_RELEASE(WireframeVS);
       SAFE_RELEASE(WireframeHomogVS);
@@ -528,8 +530,9 @@ private:
     ID3D11Buffer *GenericPSCBuffer;
     ID3D11Buffer *PublicCBuffers[20];
     ID3D11VertexShader *GenericVS, *WireframeVS, *MeshVS, *WireframeHomogVS, *FullscreenVS;
-    ID3D11GeometryShader *MeshGS;
-    ID3D11PixelShader *TexDisplayPS, *OverlayPS, *WireframePS, *MeshPS, *CheckerboardPS;
+    ID3D11GeometryShader *MeshGS, *TriangleSizeGS;
+    ID3D11PixelShader *TexDisplayPS, *OverlayPS, *WireframePS, *MeshPS, *CheckerboardPS,
+        *TriangleSizePS;
     ID3D11PixelShader *OutlinePS;
     ID3D11PixelShader *CopyMSToArrayPS, *CopyArrayToMSPS;
     ID3D11PixelShader *FloatCopyMSToArrayPS, *FloatCopyArrayToMSPS;

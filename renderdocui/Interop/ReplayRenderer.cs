@@ -144,6 +144,11 @@ namespace renderdoc
         private static extern void ReplayOutput_GetCustomShaderTexID(IntPtr real, ref ResourceId texid);
 
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool ReplayOutput_GetMinMax(IntPtr real, IntPtr outminval, IntPtr outmaxval);
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool ReplayOutput_GetHistogram(IntPtr real, float minval, float maxval, bool[] channels, IntPtr outhistogram);
+
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern bool ReplayOutput_PickPixel(IntPtr real, ResourceId texID, bool customShader,
                                                                 UInt32 x, UInt32 y, UInt32 sliceFace, UInt32 mip, UInt32 sample, IntPtr outval);
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
@@ -204,6 +209,50 @@ namespace renderdoc
             return ret;
         }
 
+        public bool GetMinMax(out PixelValue minval, out PixelValue maxval)
+        {
+            IntPtr mem1 = CustomMarshal.Alloc(typeof(PixelValue));
+            IntPtr mem2 = CustomMarshal.Alloc(typeof(PixelValue));
+
+            bool success = ReplayOutput_GetMinMax(m_Real, mem1, mem2);
+
+            if (success)
+            {
+                minval = (PixelValue)CustomMarshal.PtrToStructure(mem1, typeof(PixelValue), true);
+                maxval = (PixelValue)CustomMarshal.PtrToStructure(mem2, typeof(PixelValue), true);
+            }
+            else
+            {
+                minval = null;
+                maxval = null;
+            }
+
+            CustomMarshal.Free(mem1);
+            CustomMarshal.Free(mem2);
+
+            return success;
+        }
+
+        public bool GetHistogram(float minval, float maxval,
+                                 bool Red, bool Green, bool Blue, bool Alpha,
+                                 out UInt32[] histogram)
+        {
+            IntPtr mem = CustomMarshal.Alloc(typeof(templated_array));
+
+            bool[] channels = new bool[] { Red, Green, Blue, Alpha };
+
+            bool success = ReplayOutput_GetHistogram(m_Real, minval, maxval, channels, mem);
+
+            histogram = null;
+
+            if (success)
+                histogram = (UInt32[])CustomMarshal.GetTemplatedArray(mem, typeof(UInt32), true);
+
+            CustomMarshal.Free(mem);
+
+            return success;
+        }
+
         public PixelValue PickPixel(ResourceId texID, bool customShader, UInt32 x, UInt32 y, UInt32 sliceFace, UInt32 mip, UInt32 sample)
         {
             IntPtr mem = CustomMarshal.Alloc(typeof(PixelValue));
@@ -252,6 +301,8 @@ namespace renderdoc
         private static extern bool ReplayRenderer_SetFrameEvent(IntPtr real, UInt32 eventID, bool force);
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern bool ReplayRenderer_GetD3D11PipelineState(IntPtr real, IntPtr mem);
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool ReplayRenderer_GetD3D12PipelineState(IntPtr real, IntPtr mem);
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern bool ReplayRenderer_GetGLPipelineState(IntPtr real, IntPtr mem);
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
@@ -310,11 +361,6 @@ namespace renderdoc
 
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern bool ReplayRenderer_GetPostVSData(IntPtr real, UInt32 instID, MeshDataStage stage, IntPtr outdata);
-
-        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
-        private static extern bool ReplayRenderer_GetMinMax(IntPtr real, ResourceId tex, UInt32 sliceFace, UInt32 mip, UInt32 sample, FormatComponentType typeHint, IntPtr outminval, IntPtr outmaxval);
-        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
-        private static extern bool ReplayRenderer_GetHistogram(IntPtr real, ResourceId tex, UInt32 sliceFace, UInt32 mip, UInt32 sample, FormatComponentType typeHint, float minval, float maxval, bool[] channels, IntPtr outhistogram);
 
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern bool ReplayRenderer_GetBufferData(IntPtr real, ResourceId buff, UInt64 offset, UInt64 len, IntPtr outdata);
@@ -399,6 +445,22 @@ namespace renderdoc
 
             if (success)
                 ret = (D3D11PipelineState)CustomMarshal.PtrToStructure(mem, typeof(D3D11PipelineState), true);
+
+            CustomMarshal.Free(mem);
+
+            return ret;
+        }
+
+        public D3D12PipelineState GetD3D12PipelineState()
+        {
+            IntPtr mem = CustomMarshal.Alloc(typeof(D3D12PipelineState));
+
+            bool success = ReplayRenderer_GetD3D12PipelineState(m_Real, mem);
+
+            D3D12PipelineState ret = null;
+
+            if (success)
+                ret = (D3D12PipelineState)CustomMarshal.PtrToStructure(mem, typeof(D3D12PipelineState), true);
 
             CustomMarshal.Free(mem);
 
@@ -803,50 +865,6 @@ namespace renderdoc
             return ret;
         }
 
-        public bool GetMinMax(ResourceId tex, UInt32 sliceFace, UInt32 mip, UInt32 sample, FormatComponentType typeHint, out PixelValue minval, out PixelValue maxval)
-        {
-            IntPtr mem1 = CustomMarshal.Alloc(typeof(PixelValue));
-            IntPtr mem2 = CustomMarshal.Alloc(typeof(PixelValue));
-
-            bool success = ReplayRenderer_GetMinMax(m_Real, tex, sliceFace, mip, sample, typeHint, mem1, mem2);
-
-            if (success)
-            {
-                minval = (PixelValue)CustomMarshal.PtrToStructure(mem1, typeof(PixelValue), true);
-                maxval = (PixelValue)CustomMarshal.PtrToStructure(mem2, typeof(PixelValue), true);
-            }
-            else
-            {
-                minval = null;
-                maxval = null;
-            }
-
-            CustomMarshal.Free(mem1);
-            CustomMarshal.Free(mem2);
-
-            return success;
-        }
-
-        public bool GetHistogram(ResourceId tex, UInt32 sliceFace, UInt32 mip, UInt32 sample, FormatComponentType typeHint, float minval, float maxval,
-                                 bool Red, bool Green, bool Blue, bool Alpha,
-                                 out UInt32[] histogram)
-        {
-            IntPtr mem = CustomMarshal.Alloc(typeof(templated_array));
-
-            bool[] channels = new bool[] { Red, Green, Blue, Alpha };
-
-            bool success = ReplayRenderer_GetHistogram(m_Real, tex, sliceFace, mip, sample, typeHint, minval, maxval, channels, mem);
-
-            histogram = null;
-
-            if (success)
-                histogram = (UInt32[])CustomMarshal.GetTemplatedArray(mem, typeof(UInt32), true);
-
-            CustomMarshal.Free(mem);
-
-            return success;
-        }
-
         public byte[] GetBufferData(ResourceId buff, UInt64 offset, UInt64 len)
         {
             IntPtr mem = CustomMarshal.Alloc(typeof(templated_array));
@@ -961,7 +979,7 @@ namespace renderdoc
             CustomMarshal.Free(homepath_mem);
 
             // normalise to /s and with no trailing /s
-            home.Replace('\\', '/');
+            home = home.Replace('\\', '/');
             if (home[home.Length - 1] == '/')
                 home = home.Remove(0, home.Length - 1);
 
@@ -1232,6 +1250,9 @@ namespace renderdoc
 
                     CustomMarshal.Free(mem);
                 }
+
+                if (msg == null)
+                    return;
 
                 if (msg.Type == TargetControlMessageType.Disconnected)
                 {

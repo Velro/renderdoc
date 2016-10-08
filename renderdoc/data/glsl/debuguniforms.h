@@ -106,6 +106,8 @@ BINDING(0) uniform MeshUBOData
   uint displayFormat;
   uint homogenousInput;
   vec2 pointSpriteSize;
+  uint rawoutput;
+  vec3 padding;
 }
 INST_NAME(Mesh);
 
@@ -132,15 +134,20 @@ INST_NAME(general);
 
 BINDING(0) uniform MeshPickUBOData
 {
+  vec3 rayPos;
+  uint use_indices;
+
+  vec3 rayDir;
+  uint numVerts;
+
   vec2 coords;
   vec2 viewport;
 
-  mat4 mvp;
-
-  uint use_indices;
-  uint numVerts;
+  uint meshMode;    // triangles, triangle strip, fan, etc...
   uint unproject;
-  uint padding;
+  vec2 padding;
+
+  mat4 mvp;
 }
 INST_NAME(meshpick);
 
@@ -188,7 +195,8 @@ BINDING(0) uniform TexDisplayUBOData
   float Slice;
 
   int SampleIdx;
-  vec3 Padding;
+  float MipShift;
+  vec2 Padding;
 }
 INST_NAME(texdisplay);
 
@@ -255,3 +263,10 @@ INST_NAME(texdisplay);
 #define HGRAM_TILES_PER_BLOCK 10u
 
 #define HGRAM_NUM_BUCKETS 256u
+
+#define MESH_OTHER 0    // this covers points and lines, logic is the same
+#define MESH_TRIANGLE_LIST 1
+#define MESH_TRIANGLE_STRIP 2
+#define MESH_TRIANGLE_FAN 3
+#define MESH_TRIANGLE_LIST_ADJ 4
+#define MESH_TRIANGLE_STRIP_ADJ 5

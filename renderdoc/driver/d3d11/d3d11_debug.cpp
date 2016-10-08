@@ -93,6 +93,8 @@ D3D11DebugManager::D3D11DebugManager(WrappedID3D11Device *wrapper)
   m_supersamplingX = 1.0f;
   m_supersamplingY = 1.0f;
 
+  m_width = m_height = 1;
+
   m_WrappedDevice = wrapper;
   ID3D11DeviceContext *ctx = NULL;
   m_WrappedDevice->GetImmediateContext(&ctx);
@@ -666,6 +668,11 @@ bool D3D11DebugManager::InitDebugRendering()
         MakeVShader(meshhlsl.c_str(), "RENDERDOC_MeshVS", "vs_4_0", 0, NULL, NULL, &bytecode);
     m_DebugRender.MeshGS = MakeGShader(meshhlsl.c_str(), "RENDERDOC_MeshGS", "gs_4_0");
     m_DebugRender.MeshPS = MakePShader(meshhlsl.c_str(), "RENDERDOC_MeshPS", "ps_4_0");
+
+    m_DebugRender.TriangleSizeGS =
+        MakeGShader(meshhlsl.c_str(), "RENDERDOC_TriangleSizeGS", "gs_4_0");
+    m_DebugRender.TriangleSizePS =
+        MakePShader(meshhlsl.c_str(), "RENDERDOC_TriangleSizePS", "ps_4_0");
 
     m_DebugRender.MeshVSBytecode = new byte[bytecode.size()];
     m_DebugRender.MeshVSBytelen = (uint32_t)bytecode.size();
@@ -1789,7 +1796,7 @@ bool D3D11DebugManager::GetHistogram(ResourceId texid, uint32_t sliceFace, uint3
   }
 
   if(details.texType == eTexType_3D)
-    cdata.HistogramSlice = float(sliceFace) / float(details.texDepth);
+    cdata.HistogramSlice = float(sliceFace) / float(details.texDepth) + 0.001f;
 
   ID3D11Buffer *cbuf = MakeCBuffer(&cdata, sizeof(cdata));
 
@@ -1890,7 +1897,7 @@ bool D3D11DebugManager::GetMinMax(ResourceId texid, uint32_t sliceFace, uint32_t
   }
 
   if(details.texType == eTexType_3D)
-    cdata.HistogramSlice = float(sliceFace) / float(details.texDepth);
+    cdata.HistogramSlice = float(sliceFace) / float(details.texDepth) + 0.001f;
 
   ID3D11Buffer *cbuf = MakeCBuffer(&cdata, sizeof(cdata));
 
@@ -3402,7 +3409,7 @@ bool D3D11DebugManager::RenderTexture(TextureDisplay cfg, bool blendAlpha)
   if(details.texType == eTexType_3D)
   {
     pixelData.OutputDisplayFormat = RESTYPE_TEX3D;
-    pixelData.Slice = float(cfg.sliceFace) / float(details.texDepth);
+    pixelData.Slice = (float(cfg.sliceFace) / float(details.texDepth)) + 0.001f;
   }
   else if(details.texType == eTexType_1D)
   {

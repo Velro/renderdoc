@@ -64,7 +64,10 @@ void main(void)
 #ifdef VULKAN
 	// GL->VK conventions
 	gl_Position.y = -gl_Position.y;
-	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+	if(Mesh.rawoutput == 0)
+	{
+		gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+	}
 
 	gl_PointSize = 4.0f;
 #endif

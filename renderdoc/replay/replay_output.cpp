@@ -528,6 +528,7 @@ void ReplayOutput::DisplayContext()
   m_pDevice->FlipOutputWindow(m_PixelContext.outputID);
 }
 
+static float timeElapsed = 0;
 bool ReplayOutput::Display()
 {
   if(m_pDevice->CheckResizeOutputWindow(m_MainOutput.outputID))
@@ -569,6 +570,8 @@ bool ReplayOutput::Display()
     m_pDevice->BindOutputWindow(m_Thumbnails[i].outputID, false);
     m_pDevice->ClearOutputWindowColour(m_Thumbnails[i].outputID, color);
 
+    timeElapsed += 0.05f;
+
     TextureDisplay disp;
 
     disp.Red = disp.Green = disp.Blue = true;
@@ -585,10 +588,15 @@ bool ReplayOutput::Display()
     disp.rangemin = 0.0f;
     disp.rangemax = 1.0f;
     disp.sliceFace = 0;
+    disp.cubemapViewer = true;
     disp.offx = 0.0f;
     disp.offy = 0.0f;
     disp.rawoutput = false;
     disp.overlay = eTexOverlay_None;
+    disp.cubemapLookRotationX = sin(timeElapsed) * 0.5f + 0.5f;
+    //disp.cubemapLookRotationY = 3.14 * 0.5;
+    //disp.cubemapLookRotationX = 0;
+    disp.cubemapLookRotationY = 0;
 
     disp.lightBackgroundColour = disp.darkBackgroundColour = FloatVector();
 
@@ -597,12 +605,32 @@ bool ReplayOutput::Display()
 
     if(m_Thumbnails[i].depthMode)
       disp.Green = disp.Blue = false;
-
-    m_pDevice->RenderTexture(disp);
+    
+    //NOTE(james): Inputs drawing here!
+    if (disp.cubemapViewer)
+    {
+      m_pDevice->RenderTexture(disp);
+      disp.sliceFace = 0;
+      /*m_pDevice->RenderTexture(disp);
+      disp.sliceFace = 1;
+      m_pDevice->RenderTexture(disp);
+      disp.sliceFace = 2;
+      m_pDevice->RenderTexture(disp);
+      disp.sliceFace = 3;
+      m_pDevice->RenderTexture(disp);
+      disp.sliceFace = 4;
+      m_pDevice->RenderTexture(disp);
+      disp.sliceFace = 5;
+      m_pDevice->RenderTexture(disp);*/
+    }
+    else
+    {
+      m_pDevice->RenderTexture(disp);
+    }
 
     m_pDevice->FlipOutputWindow(m_Thumbnails[i].outputID);
 
-    m_Thumbnails[i].dirty = false;
+    //m_Thumbnails[i].dirty = false;
   }
 
   if(m_pDevice->CheckResizeOutputWindow(m_PixelContext.outputID))
@@ -691,7 +719,30 @@ void ReplayOutput::DisplayTex()
       Vec3f(texDisplay.darkBackgroundColour.x, texDisplay.darkBackgroundColour.y,
             texDisplay.darkBackgroundColour.z));
 
-  m_pDevice->RenderTexture(texDisplay);
+  texDisplay.cubemapLookRotationX = 0;
+  texDisplay.cubemapLookRotationY = 0;
+
+  //render cubemap faces
+  if (texDisplay.cubemapViewer)
+  {
+    m_pDevice->RenderTexture(texDisplay);
+    texDisplay.sliceFace = 0;
+    m_pDevice->RenderTexture(texDisplay);
+    texDisplay.sliceFace = 1;
+    m_pDevice->RenderTexture(texDisplay);
+    texDisplay.sliceFace = 2;
+    m_pDevice->RenderTexture(texDisplay);
+    texDisplay.sliceFace = 3;
+    m_pDevice->RenderTexture(texDisplay);
+    texDisplay.sliceFace = 4;
+    m_pDevice->RenderTexture(texDisplay);
+    texDisplay.sliceFace = 5;
+    m_pDevice->RenderTexture(texDisplay);
+  }
+  else
+  {
+    m_pDevice->RenderTexture(texDisplay);
+  }
 
   if(m_RenderData.texDisplay.overlay != eTexOverlay_None && draw &&
      m_pDevice->IsRenderOutput(m_RenderData.texDisplay.texid) &&

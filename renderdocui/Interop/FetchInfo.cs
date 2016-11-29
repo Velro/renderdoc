@@ -30,6 +30,13 @@ using renderdocui.Code;
 
 namespace renderdoc
 {
+	public struct Vec2f
+	{
+		public Vec2f(float X, float Y) { x = X; y = Y; }
+
+		public float x, y;
+	}
+
     public struct Vec3f
     {
         public Vec3f(float X, float Y, float Z) { x = X; y = Y; z = Z; }
@@ -708,6 +715,7 @@ namespace renderdoc
         public bool rawoutput = false;
 
         public float offx = 0.0f, offy = 0.0f;
+		public Vec2f cubemapLookRotation;
 
         public FloatVector lightBackgroundColour = new FloatVector(0.81f, 0.81f, 0.81f);
         public FloatVector darkBackgroundColour = new FloatVector(0.57f, 0.57f, 0.57f);

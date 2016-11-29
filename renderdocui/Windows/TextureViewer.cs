@@ -57,8 +57,9 @@ namespace renderdocui.Windows
 
         private DockContent m_PreviewPanel = null;
         private DockContent m_TexlistDockPanel = null;
+		//private DockPanel m_TexlistDockActualPanel = null;
 
-        private FileSystemWatcher m_FSWatcher = null;
+		private FileSystemWatcher m_FSWatcher = null;
 
         private int m_HighWaterStatusLength = 0;
 
@@ -745,7 +746,7 @@ namespace renderdocui.Windows
                     var newPanel = Helpers.WrapDockContent(dockPanel, renderToolstripContainer, current.name);
 
                     newPanel.DockState = DockState.Document;
-                    newPanel.AllowEndUserDocking = false;
+                    newPanel.AllowEndUserDocking = true;
 
                     newPanel.Icon = Icon.FromHandle(global::renderdocui.Properties.Resources.page_white_link.GetHicon());
 
@@ -2616,6 +2617,7 @@ namespace renderdocui.Windows
 
                 m_TexDisplay.offx = Math.Min(0.0f, (float)m_TexDisplay.offx);
                 m_TexDisplay.offy = Math.Min(0.0f, (float)m_TexDisplay.offy);
+				
 
                 if (ScrollUpdateScrollbars)
                 {
@@ -2943,9 +2945,12 @@ namespace renderdocui.Windows
                 if (Math.Abs(m_DragStartPos.X - curpos.X) > p.HorizontalScroll.SmallChange ||
                     Math.Abs(m_DragStartPos.Y - curpos.Y) > p.VerticalScroll.SmallChange)
                 {
+					//cubemap move here!
                     ScrollPosition = new Point(m_DragStartScroll.X + (curpos.X - m_DragStartPos.X),
                                                m_DragStartScroll.Y + (curpos.Y - m_DragStartPos.Y));
-                }
+					m_TexDisplay.cubemapLookRotation.y += 0.01f;
+					if (m_TexDisplay.cubemapLookRotation.y > 3.14f * 2) m_TexDisplay.cubemapLookRotation.y = 0;
+				}
 
                 Cursor = Cursors.NoMove2D;
             }

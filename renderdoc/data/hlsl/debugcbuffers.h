@@ -65,7 +65,8 @@ cbuffer DebugVertexCBuffer REG(b0)
 
   float Scale;
   uint LineStrip;
-  float2 dummy1;
+  float dummy1;
+  float dummy2;
 };
 
 cbuffer DebugGeometryCBuffer REG(b0)

@@ -3171,6 +3171,7 @@ void D3D11DebugManager::RenderTextInternal(float x, float y, const char *text)
   }
 }
 
+//NOTE(james): actual drawing in here!
 bool D3D11DebugManager::RenderTexture(TextureDisplay cfg, bool blendAlpha)
 {
   DebugVertexCBuffer vertexData;
@@ -3463,6 +3464,49 @@ bool D3D11DebugManager::RenderTexture(TextureDisplay cfg, bool blendAlpha)
     pixelData.OutputDisplayFormat |= TEXDISPLAY_GAMMA_CURVE;
   }
 
+  
+  Matrix4f model = Matrix4f::Translation(Vec3f(0, 0, 4));
+  if (cfg.cubemapViewer)
+  {
+    /*
+    switch (cfg.sliceFace)
+    {
+    case 0://X+
+      model = Matrix4f::RotationY(3.14f);
+      model.Transform(Vec3f(1, 0, 4));
+      break;
+    case 1://X-
+      model.Transform(Vec3f(-1, 0, 4));
+      break;
+    case 2://Y+
+      model = Matrix4f::RotationX(3.14f * 1.5f);
+      model.Transform(Vec3f(0, 1, 4));
+      break;
+    case 3://Y-
+      model = Matrix4f::RotationX(3.14f * 0.5f);
+      model.Transform(Vec3f(0, 1, 4));
+    case 4://Z+
+      model = Matrix4f::RotationY(3.14f * 1.5f);
+      model.Transform(Vec3f(0, 0, 5));
+      break;
+    case 5://Z-
+      model = Matrix4f::RotationY(3.14f * 0.5f);
+      model.Transform(Vec3f(0, 0, 3));
+      break;
+    }
+  */
+    vertexData.dummy1 = 1;
+    
+    Matrix4f proj = Matrix4f::Perspective(67, 0.01f, 100, 1);//aspect ratio handled through ScreenAspect and TextureResolution in shader
+    Matrix4f rotation = Matrix4f::RotationXYZ(Vec3f(cfg.cubemapLookRotationX, cfg.cubemapLookRotationY, 0));
+    //model[0] *= 0.01f;
+    //model[5] *= 0.01f;
+    //model[10] *= 0.01f;
+
+    vertexData.ModelViewProj = proj.Mul(model.Mul(rotation));
+  }
+
+  
   FillCBuffer(m_DebugRender.GenericVSCBuffer, &vertexData, sizeof(DebugVertexCBuffer));
   FillCBuffer(m_DebugRender.GenericPSCBuffer, &pixelData, sizeof(DebugPixelCBufferData));
 

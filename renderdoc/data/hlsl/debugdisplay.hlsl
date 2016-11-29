@@ -52,7 +52,15 @@ v2f RENDERDOC_DebugVS(uint vertID : SV_VertexID)
 		pos = strippositions[vertID];
 	}
 
-	OUT.pos = float4(Position.xy + pos.xy*TextureResolution.xy*Scale*ScreenAspect.xy, 0, 1)-float4(1.0,-1.0,0,0);
+	if (dummy1 > 0)
+	{
+	  OUT.pos = mul(float4(Position.xy + pos.xy*TextureResolution.xy*Scale*ScreenAspect.xy, 0, 1) - float4(1.0, -1.0, 0, 0), ModelViewProj);
+	}
+	else
+	{
+	  OUT.pos = float4(Position.xy + pos.xy*TextureResolution.xy*Scale*ScreenAspect.xy, 0, 1)-float4(1.0,-1.0,0,0);
+	}
+	
 	OUT.tex.xy = float2(pos.x, -pos.y);
 	return OUT;
 }

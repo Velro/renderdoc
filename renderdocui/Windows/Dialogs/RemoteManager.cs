@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -120,6 +120,7 @@ namespace renderdocui.Windows.Dialogs
         {
             hosts.BeginInit();
 
+            m_Core.Config.AddAndroidHosts();
             foreach (var h in m_Core.Config.RemoteHosts)
                 AddHost(h);
 
@@ -179,6 +180,11 @@ namespace renderdocui.Windows.Dialogs
         {
             TreelistView.Node node = o as TreelistView.Node;
 
+            RemoteHost host = node.Tag as RemoteHost;
+
+            if(host == null)
+                return;
+
             Control p = node.OwnerView;
             while (p.Parent != null)
                 p = p.Parent;
@@ -188,8 +194,6 @@ namespace renderdocui.Windows.Dialogs
             string hostname = node["hostname"] as string;
 
             string username = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
-
-            RemoteHost host = node.Tag as RemoteHost;
 
             host.CheckStatus();
 

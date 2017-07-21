@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2014-2016 Baldur Karlsson
+ * Copyright (c) 2014-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -47,10 +47,21 @@ uint32_t strhash(const char *str, uint32_t seed)
   return hash;
 }
 
+// since tolower is int -> int, this warns below. make a char -> char alternative
+char toclower(char c)
+{
+  return (char)tolower(c);
+}
+
+char tocupper(char c)
+{
+  return (char)toupper(c);
+}
+
 string strlower(const string &str)
 {
   string newstr(str);
-  transform(newstr.begin(), newstr.end(), newstr.begin(), tolower);
+  transform(newstr.begin(), newstr.end(), newstr.begin(), toclower);
   return newstr;
 }
 
@@ -64,7 +75,7 @@ wstring strlower(const wstring &str)
 string strupper(const string &str)
 {
   string newstr(str);
-  transform(newstr.begin(), newstr.end(), newstr.begin(), toupper);
+  transform(newstr.begin(), newstr.end(), newstr.begin(), tocupper);
   return newstr;
 }
 
@@ -77,8 +88,9 @@ wstring strupper(const wstring &str)
 
 std::string trim(const std::string &str)
 {
-  size_t start = str.find_first_not_of("\t \n");
-  size_t end = str.find_last_not_of("\t \n");
+  const char *whitespace = "\t \n\r";
+  size_t start = str.find_first_not_of(whitespace);
+  size_t end = str.find_last_not_of(whitespace);
 
   // no non-whitespace characters, return the empty string
   if(start == std::string::npos)
@@ -86,4 +98,12 @@ std::string trim(const std::string &str)
 
   // searching from the start found something, so searching from the end must have too.
   return str.substr(start, end - start + 1);
+}
+
+bool endswith(const std::string &value, const std::string &ending)
+{
+  if(ending.length() > value.length())
+    return false;
+
+  return (0 == value.compare(value.length() - ending.length(), ending.length(), ending));
 }

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -87,9 +87,9 @@ struct VulkanPostVSData
 
   const StageData &GetStage(MeshDataStage type)
   {
-    if(type == eMeshDataStage_VSOut)
+    if(type == MeshDataStage::VSOut)
       return vsout;
-    else if(type == eMeshDataStage_GSOut)
+    else if(type == MeshDataStage::GSOut)
       return gsout;
     else
       RDCERR("Unexpected mesh data stage!");
@@ -97,6 +97,8 @@ struct VulkanPostVSData
     return vsin;
   }
 };
+
+struct SPIRVCompilationSettings;
 
 class VulkanResourceManager;
 
@@ -110,7 +112,7 @@ public:
   void RenderText(const TextPrintState &textstate, float x, float y, const char *fmt, ...);
   void EndText(const TextPrintState &textstate);
 
-  ResourceId RenderOverlay(ResourceId texid, TextureDisplayOverlay overlay, uint32_t eventID,
+  ResourceId RenderOverlay(ResourceId texid, DebugOverlay overlay, uint32_t eventID,
                            const vector<uint32_t> &passEvents);
 
   void InitPostVSBuffers(uint32_t eventID);
@@ -119,9 +121,6 @@ public:
   void AliasPostVSBuffers(uint32_t eventID, uint32_t alias) { m_PostVSAlias[alias] = eventID; }
   MeshFormat GetPostVSBuffers(uint32_t eventID, uint32_t instID, MeshDataStage stage);
   void GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, vector<byte> &ret);
-
-  FloatVector InterpretVertex(byte *data, uint32_t vert, const MeshDisplay &cfg, byte *end,
-                              bool &valid);
 
   uint32_t PickVertex(uint32_t eventID, const MeshDisplay &cfg, uint32_t x, uint32_t y, uint32_t w,
                       uint32_t h);
@@ -239,7 +238,11 @@ public:
   VkDescriptorSet m_ArrayMSDescSet;
   VkPipeline m_Array2MSPipe;
   VkPipeline m_MS2ArrayPipe;
-  GPUBuffer m_ArrayMSUBO;
+
+  // one per depth/stencil output format
+  VkPipeline m_DepthMS2ArrayPipe[6];
+  // one per depth/stencil output format, per sample count
+  VkPipeline m_DepthArray2MSPipe[6][4];
 
   VkDescriptorSetLayout m_TextDescSetLayout;
   VkPipelineLayout m_TextPipeLayout;
@@ -330,6 +333,7 @@ public:
   MeshDisplayPipelines CacheMeshDisplayPipelines(const MeshFormat &primary,
                                                  const MeshFormat &secondary);
   void MakeGraphicsPipelineInfo(VkGraphicsPipelineCreateInfo &pipeCreateInfo, ResourceId pipeline);
+  void MakeComputePipelineInfo(VkComputePipelineCreateInfo &pipeCreateInfo, ResourceId pipeline);
 
 private:
   void InitDebugData();
@@ -342,8 +346,13 @@ private:
   bool m_ShaderCacheDirty, m_CacheShaders;
   map<uint32_t, vector<uint32_t> *> m_ShaderCache;
 
-  string GetSPIRVBlob(SPIRVShaderStage shadType, const std::vector<std::string> &sources,
-                      vector<uint32_t> **outBlob);
+  string GetSPIRVBlob(const SPIRVCompilationSettings &settings,
+                      const std::vector<std::string> &sources, vector<uint32_t> **outBlob);
+
+  void CopyDepthTex2DMSToArray(VkImage destArray, VkImage srcMS, VkExtent3D extent, uint32_t layers,
+                               uint32_t samples, VkFormat fmt);
+  void CopyDepthArrayToTex2DMS(VkImage destMS, VkImage srcArray, VkExtent3D extent, uint32_t layers,
+                               uint32_t samples, VkFormat fmt);
 
   void PatchFixedColShader(VkShaderModule &mod, float col[4]);
 

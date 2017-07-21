@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,308 +27,529 @@
 
 #include "shader_types.h"
 
-struct D3D11PipelineState
+namespace D3D11Pipe
 {
-  D3D11PipelineState() {}
-  struct InputAssembler
-  {
-    InputAssembler() : Bytecode(NULL), customName(false) {}
-    struct LayoutInput
-    {
-      LayoutInput()
-          : SemanticIndex(0), InputSlot(0), ByteOffset(0), PerInstance(false), InstanceDataStepRate(0)
-      {
-      }
-      rdctype::str SemanticName;
-      uint32_t SemanticIndex;
-      ResourceFormat Format;
-      uint32_t InputSlot;
-      uint32_t ByteOffset;
-      bool32 PerInstance;
-      uint32_t InstanceDataStepRate;
-    };
-    rdctype::array<LayoutInput> layouts;
-    ResourceId layout;
-    ShaderReflection *Bytecode;
-    bool32 customName;
-    rdctype::str LayoutName;
+DOCUMENT(R"(Describes a single D3D11 input layout element for one vertex input.
 
-    struct VertexBuffer
-    {
-      VertexBuffer() : Buffer(), Stride(0), Offset(0) {}
-      ResourceId Buffer;
-      uint32_t Stride;
-      uint32_t Offset;
-    };
-    rdctype::array<VertexBuffer> vbuffers;
+.. data:: TightlyPacked
 
-    struct IndexBuffer
-    {
-      IndexBuffer() : Buffer(), Offset(0) {}
-      ResourceId Buffer;
-      uint32_t Offset;
-    } ibuffer;
-  } m_IA;
+  Value for :data:`ByteOffset` that indicates this element is tightly packed.
+)");
+struct Layout
+{
+  DOCUMENT("The semantic name for this input.");
+  rdctype::str SemanticName;
 
-  struct ShaderStage
-  {
-    ShaderStage() : Shader(), customName(false), ShaderDetails(NULL), stage(eShaderStage_Vertex) {}
-    ResourceId Shader;
-    rdctype::str ShaderName;
-    bool32 customName;
-    ShaderReflection *ShaderDetails;
-    ShaderBindpointMapping BindpointMapping;
+  DOCUMENT("The semantic index for this input.");
+  uint32_t SemanticIndex = 0;
 
-    ShaderStageType stage;
+  DOCUMENT("The :class:`ResourceFormat` describing how the input data is interpreted.");
+  ResourceFormat Format;
 
-    struct ResourceView
-    {
-      ResourceView()
-          : View(),
-            Resource(),
-            Format(),
-            Structured(false),
-            BufferStructCount(0),
-            ElementSize(0),
-            ElementOffset(0),
-            ElementWidth(0),
-            FirstElement(0),
-            NumElements(1),
-            Flags(0),
-            HighestMip(0),
-            NumMipLevels(1),
-            ArraySize(1),
-            FirstArraySlice(0)
-      {
-      }
+  DOCUMENT("The vertex buffer input slot where the data is sourced from.");
+  uint32_t InputSlot = 0;
 
-      ResourceId View;
-      ResourceId Resource;
-      rdctype::str Type;
-      ResourceFormat Format;
+  DOCUMENT(R"(The byte offset from the start of the vertex data in the vertex buffer from
+:data:`InputSlot`.
 
-      bool32 Structured;
-      uint32_t BufferStructCount;
-      uint32_t ElementSize;
+If the value is :data:`TightlyPacked` then the element is packed tightly after the previous element, or 0
+if this is the first element.
+)");
+  uint32_t ByteOffset = 0;
 
-      // Buffer (SRV)
-      uint32_t ElementOffset;
-      uint32_t ElementWidth;
+  DOCUMENT("``True`` if the vertex data is instance-rate.");
+  bool32 PerInstance = false;
 
-      // Buffer (UAV)
-      uint32_t FirstElement;
-      uint32_t NumElements;
+  DOCUMENT(R"(If :data:`PerInstance` is ``True`` then this is how many times each instance data is
+used before advancing to the next instance.
 
-      // BufferEx
-      uint32_t Flags;
+E.g. if this value is two, then two instances will be drawn with the first instance data, then two
+with the next instance data.
+)");
+  uint32_t InstanceDataStepRate = 0;
 
-      // Texture
-      uint32_t HighestMip;
-      uint32_t NumMipLevels;
-
-      // Texture Array
-      uint32_t ArraySize;
-      uint32_t FirstArraySlice;
-    };
-    rdctype::array<ResourceView> SRVs;
-    rdctype::array<ResourceView> UAVs;
-
-    struct Sampler
-    {
-      Sampler()
-          : Samp(),
-            customSamplerName(false),
-            UseBorder(false),
-            UseComparison(false),
-            MaxAniso(0),
-            MaxLOD(0.0f),
-            MinLOD(0.0f),
-            MipLODBias(0.0f)
-      {
-        BorderColor[0] = BorderColor[1] = BorderColor[2] = BorderColor[3] = 0.0f;
-      }
-      ResourceId Samp;
-      rdctype::str SamplerName;
-      bool32 customSamplerName;
-      rdctype::str AddressU, AddressV, AddressW;
-      float BorderColor[4];
-      rdctype::str Comparison;
-      rdctype::str Filter;
-      bool32 UseBorder;
-      bool32 UseComparison;
-      uint32_t MaxAniso;
-      float MaxLOD;
-      float MinLOD;
-      float MipLODBias;
-    };
-    rdctype::array<Sampler> Samplers;
-
-    struct CBuffer
-    {
-      CBuffer() : Buffer(), VecOffset(0), VecCount(0) {}
-      ResourceId Buffer;
-      uint32_t VecOffset;
-      uint32_t VecCount;
-    };
-    rdctype::array<CBuffer> ConstantBuffers;
-
-    rdctype::array<rdctype::str> ClassInstances;
-  } m_VS, m_HS, m_DS, m_GS, m_PS, m_CS;
-
-  struct Streamout
-  {
-    struct Output
-    {
-      Output() : Buffer(), Offset(0) {}
-      ResourceId Buffer;
-      uint32_t Offset;
-    };
-    rdctype::array<Output> Outputs;
-  } m_SO;
-
-  struct Rasterizer
-  {
-    struct Viewport
-    {
-      Viewport() : Width(0.0f), Height(0.0f), MinDepth(0.0f), MaxDepth(0.0f), Enabled(false)
-      {
-        TopLeft[0] = 0.0f;
-        TopLeft[1] = 0.0f;
-      }
-      Viewport(float TX, float TY, float W, float H, float MN, float MX, bool en)
-          : Width(W), Height(H), MinDepth(MN), MaxDepth(MX), Enabled(en)
-      {
-        TopLeft[0] = TX;
-        TopLeft[1] = TY;
-      }
-      float TopLeft[2];
-      float Width, Height;
-      float MinDepth, MaxDepth;
-      bool32 Enabled;
-    };
-    rdctype::array<Viewport> Viewports;
-
-    struct Scissor
-    {
-      Scissor() : left(0), top(0), right(0), bottom(0), Enabled(false) {}
-      Scissor(int l, int t, int r, int b, bool en)
-          : left(l), top(t), right(r), bottom(b), Enabled(en)
-      {
-      }
-      int32_t left, top, right, bottom;
-      bool32 Enabled;
-    };
-    rdctype::array<Scissor> Scissors;
-
-    struct RasterizerState
-    {
-      RasterizerState()
-          : State(),
-            FillMode(eFill_Solid),
-            CullMode(eCull_None),
-            FrontCCW(false),
-            DepthBias(0),
-            DepthBiasClamp(0.0f),
-            SlopeScaledDepthBias(0.0f),
-            DepthClip(false),
-            ScissorEnable(false),
-            MultisampleEnable(false),
-            AntialiasedLineEnable(false),
-            ForcedSampleCount(0),
-            ConservativeRasterization(false)
-      {
-      }
-      ResourceId State;
-      TriangleFillMode FillMode;
-      TriangleCullMode CullMode;
-      bool32 FrontCCW;
-      int32_t DepthBias;
-      float DepthBiasClamp;
-      float SlopeScaledDepthBias;
-      bool32 DepthClip;
-      bool32 ScissorEnable;
-      bool32 MultisampleEnable;
-      bool32 AntialiasedLineEnable;
-      uint32_t ForcedSampleCount;
-      bool32 ConservativeRasterization;
-    } m_State;
-  } m_RS;
-
-  struct OutputMerger
-  {
-    OutputMerger() : UAVStartSlot(0), DepthReadOnly(false), StencilReadOnly(false) {}
-    struct DepthStencilState
-    {
-      DepthStencilState()
-          : State(),
-            DepthEnable(false),
-            DepthWrites(false),
-            StencilEnable(false),
-            StencilReadMask(0),
-            StencilWriteMask(0),
-            StencilRef(0)
-      {
-      }
-      ResourceId State;
-      bool32 DepthEnable;
-      rdctype::str DepthFunc;
-      bool32 DepthWrites;
-      bool32 StencilEnable;
-      byte StencilReadMask;
-      byte StencilWriteMask;
-
-      struct StencilOp
-      {
-        rdctype::str FailOp;
-        rdctype::str DepthFailOp;
-        rdctype::str PassOp;
-        rdctype::str Func;
-      } m_FrontFace, m_BackFace;
-
-      uint32_t StencilRef;
-    } m_State;
-
-    struct BlendState
-    {
-      BlendState() : AlphaToCoverage(false), IndependentBlend(false), SampleMask(0)
-      {
-        BlendFactor[0] = BlendFactor[1] = BlendFactor[2] = BlendFactor[3] = 0.0f;
-      }
-
-      ResourceId State;
-
-      bool32 AlphaToCoverage;
-      bool32 IndependentBlend;
-
-      struct RTBlend
-      {
-        RTBlend() : Enabled(false), LogicEnabled(false), WriteMask(0) {}
-        struct BlendOp
-        {
-          rdctype::str Source;
-          rdctype::str Destination;
-          rdctype::str Operation;
-        } m_Blend, m_AlphaBlend;
-
-        rdctype::str LogicOp;
-
-        bool32 Enabled;
-        bool32 LogicEnabled;
-        byte WriteMask;
-      };
-      rdctype::array<RTBlend> Blends;
-
-      float BlendFactor[4];
-      uint32_t SampleMask;
-    } m_BlendState;
-
-    rdctype::array<ShaderStage::ResourceView> RenderTargets;
-
-    uint32_t UAVStartSlot;
-    rdctype::array<ShaderStage::ResourceView> UAVs;
-
-    ShaderStage::ResourceView DepthTarget;
-    bool32 DepthReadOnly;
-    bool32 StencilReadOnly;
-  } m_OM;
+  // D3D11_APPEND_ALIGNED_ELEMENT
+  static const uint32_t TightlyPacked = ~0U;
 };
+
+DOCUMENT("Describes a single D3D11 vertex buffer binding.")
+struct VB
+{
+  DOCUMENT("The :class:`ResourceId` of the buffer bound to this slot.");
+  ResourceId Buffer;
+
+  DOCUMENT("The byte stride between the start of one set of vertex data and the next.");
+  uint32_t Stride = 0;
+
+  DOCUMENT("The byte offset from the start of the buffer to the beginning of the vertex data.");
+  uint32_t Offset = 0;
+};
+
+DOCUMENT("Describes the D3D11 index buffer binding.")
+struct IB
+{
+  DOCUMENT("The :class:`ResourceId` of the index buffer.");
+  ResourceId Buffer;
+
+  DOCUMENT("The byte offset from the start of the buffer to the beginning of the index data.");
+  uint32_t Offset = 0;
+};
+
+DOCUMENT("Describes the input assembler data.");
+struct IA
+{
+  DOCUMENT("A list of :class:`D3D11_Layout` describing the input layout elements in this layout.");
+  rdctype::array<Layout> layouts;
+
+  DOCUMENT("The :class:`ResourceId` of the layout object.");
+  ResourceId layout;
+
+  DOCUMENT("A :class:`ShaderReflection` describing the bytecode used to create the input layout.");
+  ShaderReflection *Bytecode = NULL;
+
+  DOCUMENT(R"(``True`` if :data:`name` was assigned by the application, otherwise it's autogenerated
+based on the ID.
+)");
+  bool32 customName = false;
+
+  DOCUMENT("The name of the input layout object.");
+  rdctype::str name;
+
+  DOCUMENT("A list of :class:`D3D11_VB` with the vertex buffers that are bound.");
+  rdctype::array<VB> vbuffers;
+
+  DOCUMENT("The :class:`D3D11_IB` describing the index buffer.");
+  IB ibuffer;
+};
+
+DOCUMENT("Describes the details of a D3D11 resource view - any one of UAV, SRV, RTV or DSV.");
+struct View
+{
+  DOCUMENT("The :class:`ResourceId` of the view itself.");
+  ResourceId Object;
+
+  DOCUMENT("The :class:`ResourceId` of the underlying resource the view refers to.");
+  ResourceId Resource;
+
+  DOCUMENT("The :class:`TextureDim` of the view type.");
+  TextureDim Type;
+
+  DOCUMENT("The :class:`ResourceFormat` that the view uses.");
+  ResourceFormat Format;
+
+  DOCUMENT("``True`` if this view describes a structured buffer.");
+  bool32 Structured = false;
+
+  DOCUMENT("If the view has a hidden counter, this stores the current value of the counter.");
+  uint32_t BufferStructCount = 0;
+
+  DOCUMENT(R"(The byte size of a single element in the view. Either the byte size of :data:`Format`,
+or the structured buffer element size, as appropriate.
+)");
+  uint32_t ElementSize = 0;
+
+  DOCUMENT("Valid for buffers - the first element to be used in the view.");
+  uint32_t FirstElement = 0;
+  DOCUMENT("Valid for buffers - the number of elements to be used in the view.");
+  uint32_t NumElements = 1;
+
+  DOCUMENT("Valid for buffers - the flags for additional view properties.");
+  D3DBufferViewFlags Flags = D3DBufferViewFlags::NoFlags;
+
+  DOCUMENT("Valid for textures - the highest mip that is available through the view.");
+  uint32_t HighestMip = 0;
+  DOCUMENT("Valid for textures - the number of mip levels in the view.");
+  uint32_t NumMipLevels = 0;
+
+  DOCUMENT("Valid for texture arrays or 3D textures - the number of slices in the view.");
+  uint32_t ArraySize = 1;
+  DOCUMENT("Valid for texture arrays or 3D textures - the first slice available through the view.");
+  uint32_t FirstArraySlice = 0;
+};
+
+DOCUMENT("Describes a sampler state object.");
+struct Sampler
+{
+  DOCUMENT("The :class:`ResourceId` of the sampler state object.");
+  ResourceId Samp;
+  DOCUMENT("The name of the sampler state object.");
+  rdctype::str name;
+  DOCUMENT(R"(``True`` if :data:`name` was assigned by the application, otherwise it's autogenerated
+based on the ID.
+)");
+  bool32 customName = false;
+  DOCUMENT("The :class:`AddressMode` in the U direction.");
+  AddressMode AddressU = AddressMode::Wrap;
+  DOCUMENT("The :class:`AddressMode` in the V direction.");
+  AddressMode AddressV = AddressMode::Wrap;
+  DOCUMENT("The :class:`AddressMode` in the W direction.");
+  AddressMode AddressW = AddressMode::Wrap;
+  DOCUMENT("The RGBA border color.");
+  float BorderColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  DOCUMENT("The :class:`CompareFunc` for comparison samplers.");
+  CompareFunc Comparison = CompareFunc::AlwaysTrue;
+  DOCUMENT("The :class:`TextureFilter` describing the filtering mode.");
+  TextureFilter Filter;
+  DOCUMENT("The maximum anisotropic filtering level to use.");
+  uint32_t MaxAniso = 0;
+  DOCUMENT("The maximum mip level that can be used.");
+  float MaxLOD = 0.0f;
+  DOCUMENT("The minimum mip level that can be used.");
+  float MinLOD = 0.0f;
+  DOCUMENT("A bias to apply to the calculated mip level before sampling.");
+  float MipLODBias = 0.0f;
+
+  DOCUMENT(R"(Check if the border color is used in this D3D11 sampler.
+
+:return: ``True`` if the border color is used, ``False`` otherwise.
+:rtype: bool
+)");
+  bool UseBorder() const
+  {
+    return AddressU == AddressMode::ClampBorder || AddressV == AddressMode::ClampBorder ||
+           AddressW == AddressMode::ClampBorder;
+  }
+};
+
+DOCUMENT("Describes a constant buffer binding.");
+struct CBuffer
+{
+  DOCUMENT("The :class:`ResourceId` of the buffer.");
+  ResourceId Buffer;
+
+  DOCUMENT(R"(The offset of the buffer binding, in units of ``float4`` (16 bytes).
+
+If the capture isn't using the D3D11.1 binding methods, this offset will be 0.
+)");
+  uint32_t VecOffset = 0;
+
+  DOCUMENT(R"(The size of the buffer binding, in units of ``float4`` (16 bytes).
+
+If the capture isn't using the D3D11.1 binding methods, this offset will be 4096 (64 kiB).
+)");
+  uint32_t VecCount = 0;
+};
+
+DOCUMENT("Describes a D3D11 shader stage.");
+struct Shader
+{
+  DOCUMENT("The :class:`ResourceId` of the shader object itself.");
+  ResourceId Object;
+
+  DOCUMENT("The name of the shader object.");
+  rdctype::str name;
+
+  DOCUMENT(R"(``True`` if :data:`name` was assigned by the application, otherwise it's autogenerated
+based on the ID.
+)");
+  bool32 customName = false;
+
+  DOCUMENT("A :class:`ShaderReflection` describing the reflection data for this shader.");
+  ShaderReflection *ShaderDetails = NULL;
+  DOCUMENT(R"(A :class:`ShaderBindpointMapping` to match :data:`ShaderDetails` with the bindpoint
+mapping data.
+)");
+  ShaderBindpointMapping BindpointMapping;
+
+  DOCUMENT("A :class:`ShaderStage` identifying which stage this shader is bound to.");
+  ShaderStage stage = ShaderStage::Vertex;
+
+  DOCUMENT("A list of :class:`D3D11_View` with the bound SRVs.");
+  rdctype::array<View> SRVs;
+
+  DOCUMENT("A list of :class:`D3D11_View` with the bound UAVs - only valid for the compute stage.");
+  rdctype::array<View> UAVs;
+
+  DOCUMENT("A list of :class:`D3D11_Sampler` with the bound samplers.");
+  rdctype::array<Sampler> Samplers;
+
+  DOCUMENT("A list of :class:`D3D11_CBuffer` with the bound constant buffers.");
+  rdctype::array<CBuffer> ConstantBuffers;
+
+  DOCUMENT("A list of ``str`` with the bound class instance names.");
+  rdctype::array<rdctype::str> ClassInstances;
+};
+
+DOCUMENT("Describes a binding on the D3D11 stream-out stage.");
+struct SOBind
+{
+  DOCUMENT("The :class:`ResourceId` of the buffer.");
+  ResourceId Buffer;
+
+  DOCUMENT("The byte offset of the stream-output binding.");
+  uint32_t Offset = 0;
+};
+
+DOCUMENT("Describes the stream-out stage bindings.");
+struct SO
+{
+  DOCUMENT("A list of ``D3D11_SOBind`` with the bound buffers.");
+  rdctype::array<SOBind> Outputs;
+};
+
+DOCUMENT("Describes a single D3D11 viewport.");
+struct Viewport
+{
+  Viewport() = default;
+  Viewport(float TX, float TY, float W, float H, float MN, float MX, bool en)
+      : X(TX), Y(TY), Width(W), Height(H), MinDepth(MN), MaxDepth(MX), Enabled(en)
+  {
+  }
+
+  DOCUMENT("Top-left X co-ordinate of the viewport.");
+  float X = 0.0f;
+  DOCUMENT("Top-left Y co-ordinate of the viewport.");
+  float Y = 0.0f;
+  DOCUMENT("The width of the viewport.");
+  float Width = 0.0f;
+  DOCUMENT("The height of the viewport.");
+  float Height = 0.0f;
+  DOCUMENT("The minimum depth of the viewport.");
+  float MinDepth = 0.0f;
+  DOCUMENT("The maximum depth of the viewport.");
+  float MaxDepth = 0.0f;
+  DOCUMENT("``True`` if this viewport is enabled.");
+  bool32 Enabled = false;
+};
+
+DOCUMENT("Describes a single D3D11 scissor rect.");
+struct Scissor
+{
+  Scissor() = default;
+  Scissor(int l, int t, int r, int b, bool en) : left(l), top(t), right(r), bottom(b), Enabled(en)
+  {
+  }
+  DOCUMENT("Top-left X co-ordinate of the viewport.");
+  int32_t left = 0;
+  DOCUMENT("Top-left Y co-ordinate of the viewport.");
+  int32_t top = 0;
+  DOCUMENT("Bottom-right X co-ordinate of the viewport.");
+  int32_t right = 0;
+  DOCUMENT("Bottom-right Y co-ordinate of the viewport.");
+  int32_t bottom = 0;
+  DOCUMENT("``True`` if this scissor region is enabled.");
+  bool32 Enabled = false;
+};
+
+DOCUMENT("Describes a rasterizer state object.");
+struct RasterizerState
+{
+  DOCUMENT("The :class:`ResourceId` of the rasterizer state object.");
+  ResourceId State;
+  DOCUMENT("The polygon fill mode.");
+  FillMode fillMode = FillMode::Solid;
+  DOCUMENT("The polygon culling mode.");
+  CullMode cullMode = CullMode::NoCull;
+  DOCUMENT(R"(``True`` if counter-clockwise polygons are front-facing.
+``False`` if clockwise polygons are front-facing.
+)");
+  bool32 FrontCCW = false;
+  DOCUMENT("The fixed depth bias value to apply to z-values.");
+  int32_t DepthBias = 0;
+  DOCUMENT(R"(The clamp value for calculated depth bias from :data:`DepthBias` and
+:data:`SlopeScaledDepthBias`
+)");
+  float DepthBiasClamp = 0.0f;
+  DOCUMENT("The slope-scaled depth bias value to apply to z-values.");
+  float SlopeScaledDepthBias = 0.0f;
+  DOCUMENT("``True`` if pixels outside of the near and far depth planes should be clipped.");
+  bool32 DepthClip = false;
+  DOCUMENT("``True`` if the scissor test should be applied.");
+  bool32 ScissorEnable = false;
+  DOCUMENT("``True`` if the quadrilateral MSAA algorithm should be used on MSAA targets.");
+  bool32 MultisampleEnable = false;
+  DOCUMENT(
+      "``True`` if lines should be anti-aliased. Ignored if :data:`MultisampleEnable` is "
+      "``False``.");
+  bool32 AntialiasedLineEnable = false;
+  DOCUMENT(R"(A sample count to force rasterization to when UAV rendering or rasterizing, or 0 to
+not force any sample count.
+)");
+  uint32_t ForcedSampleCount = 0;
+  DOCUMENT("``True`` if a conservative rasterization algorithm should be used.");
+  bool32 ConservativeRasterization = false;
+};
+
+DOCUMENT("Describes the rasterization state of the D3D11 pipeline.");
+struct Rasterizer
+{
+  DOCUMENT("A list of :class:`D3D11_Viewport` with the bound viewports.");
+  rdctype::array<Viewport> Viewports;
+
+  DOCUMENT("A list of :class:`D3D11_Scissor` with the bound scissor regions.");
+  rdctype::array<Scissor> Scissors;
+
+  DOCUMENT("A :class:`D3D11_RasterizerState` with the details of the rasterization state.");
+  RasterizerState m_State;
+};
+
+DOCUMENT("Describes the details of a D3D11 stencil operation.");
+struct StencilFace
+{
+  DOCUMENT("The :class:`StencilOp` to apply if the stencil-test fails.");
+  StencilOp FailOp = StencilOp::Keep;
+  DOCUMENT("The :class:`StencilOp` to apply if the depth-test fails.");
+  StencilOp DepthFailOp = StencilOp::Keep;
+  DOCUMENT("The :class:`StencilOp` to apply if the stencil-test passes.");
+  StencilOp PassOp = StencilOp::Keep;
+  DOCUMENT("The :class:`CompareFunc` to use for testing stencil values.");
+  CompareFunc Func = CompareFunc::AlwaysTrue;
+};
+
+DOCUMENT("Describes a depth-stencil state object.");
+struct DepthStencilState
+{
+  DOCUMENT("The :class:`ResourceId` of the depth-stencil state object.");
+  ResourceId State;
+  DOCUMENT("``True`` if depth testing should be performed.");
+  bool32 DepthEnable = false;
+  DOCUMENT("The :class:`CompareFunc` to use for testing depth values.");
+  CompareFunc DepthFunc = CompareFunc::AlwaysTrue;
+  DOCUMENT("``True`` if depth values should be written to the depth target.");
+  bool32 DepthWrites = false;
+  DOCUMENT("``True`` if stencil operations should be performed.");
+  bool32 StencilEnable = false;
+  DOCUMENT("The mask for reading stencil values.");
+  byte StencilReadMask = 0;
+  DOCUMENT("The mask for writing stencil values.");
+  byte StencilWriteMask = 0;
+
+  DOCUMENT("A :class:`D3D11_StencilFace` describing what happens for front-facing polygons.");
+  StencilFace m_FrontFace;
+  DOCUMENT("A :class:`D3D11_StencilFace` describing what happens for back-facing polygons.");
+  StencilFace m_BackFace;
+
+  DOCUMENT("The current stencil reference value.");
+  uint32_t StencilRef = 0;
+};
+
+DOCUMENT("Describes the details of a D3D11 blend operation.");
+struct BlendEquation
+{
+  DOCUMENT("The :class:`BlendMultiplier` for the source blend value.");
+  BlendMultiplier Source = BlendMultiplier::One;
+  DOCUMENT("The :class:`BlendMultiplier` for the destination blend value.");
+  BlendMultiplier Destination = BlendMultiplier::One;
+  DOCUMENT("The :class:`BlendOp` to use in the blend calculation.");
+  BlendOp Operation = BlendOp::Add;
+};
+
+DOCUMENT("Describes the blend configuration for a given D3D11 target.");
+struct Blend
+{
+  DOCUMENT("A :class:`D3D11_BlendEquation` describing the blending for colour values.");
+  BlendEquation m_Blend;
+  DOCUMENT("A :class:`D3D11_BlendEquation` describing the blending for alpha values.");
+  BlendEquation m_AlphaBlend;
+
+  DOCUMENT(
+      "The :class:`LogicOp` to use for logic operations, if :data:`LogicEnabled` is ``True``.");
+  LogicOp Logic = LogicOp::NoOp;
+
+  DOCUMENT("``True`` if blending is enabled for this target.");
+  bool32 Enabled = false;
+  DOCUMENT("``True`` if the logic operation in :data:`Logic` should be used.");
+  bool32 LogicEnabled = false;
+  DOCUMENT("The mask for writes to the render target.");
+  byte WriteMask = 0;
+};
+
+DOCUMENT("Describes a blend state object.");
+struct BlendState
+{
+  DOCUMENT("The :class:`ResourceId` of the blend state object.");
+  ResourceId State;
+
+  DOCUMENT("``True`` if alpha-to-coverage should be used when blending to an MSAA target.");
+  bool32 AlphaToCoverage = false;
+  DOCUMENT(R"(``True`` if independent blending for each target should be used.
+
+``False`` if the first blend should be applied to all targets.
+)");
+  bool32 IndependentBlend = false;
+
+  DOCUMENT("A list of :class:`D3D11_Blend` describing the blend operations for each target.");
+  rdctype::array<Blend> Blends;
+
+  DOCUMENT("The constant blend factor to use in blend equations.");
+  float BlendFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  DOCUMENT("The mask determining which samples are written to.");
+  uint32_t SampleMask = ~0U;
+};
+
+DOCUMENT("Describes the current state of the output-merger stage of the D3D11 pipeline.");
+struct OM
+{
+  DOCUMENT("A :class:`D3D11_DepthStencilState` with the details of the depth-stencil state.");
+  DepthStencilState m_State;
+  DOCUMENT("A :class:`D3D11_BlendState` with the details of the blend state.");
+  BlendState m_BlendState;
+
+  DOCUMENT("A list of :class:`D3D11_View` describing the bound render targets.");
+  rdctype::array<View> RenderTargets;
+
+  DOCUMENT("Which slot in the output targets is the first UAV.");
+  uint32_t UAVStartSlot = 0;
+  DOCUMENT("A list of :class:`D3D11_View` describing the bound UAVs.");
+  rdctype::array<View> UAVs;
+
+  DOCUMENT("A :class:`D3D11_View` with details of the bound depth-stencil target.");
+  View DepthTarget;
+  DOCUMENT("``True`` if depth access to the depth-stencil target is read-only.");
+  bool32 DepthReadOnly = false;
+  DOCUMENT("``True`` if stenncil access to the depth-stencil target is read-only.");
+  bool32 StencilReadOnly = false;
+};
+
+DOCUMENT("The full current D3D11 pipeline state.");
+struct State
+{
+  DOCUMENT("A :class:`D3D11_IA` describing the input assembly pipeline stage.");
+  IA m_IA;
+
+  DOCUMENT("A :class:`D3D11_Shader` describing the vertex shader stage.");
+  Shader m_VS;
+  DOCUMENT("A :class:`D3D11_Shader` describing the hull shader stage.");
+  Shader m_HS;
+  DOCUMENT("A :class:`D3D11_Shader` describing the domain shader stage.");
+  Shader m_DS;
+  DOCUMENT("A :class:`D3D11_Shader` describing the geometry shader stage.");
+  Shader m_GS;
+  DOCUMENT("A :class:`D3D11_Shader` describing the pixel shader stage.");
+  Shader m_PS;
+  DOCUMENT("A :class:`D3D11_Shader` describing the compute shader stage.");
+  Shader m_CS;
+
+  DOCUMENT("A :class:`D3D11_SO` describing the stream-out pipeline stage.");
+  SO m_SO;
+
+  DOCUMENT("A :class:`D3D11_Rasterizer` describing the rasterizer pipeline stage.");
+  Rasterizer m_RS;
+
+  DOCUMENT("A :class:`D3D11_OM` describing the output merger pipeline stage.");
+  OM m_OM;
+};
+
+};    // namespace D3D11Pipe
+
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::Layout);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::VB);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::IB);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::IA);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::View);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::Sampler);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::CBuffer);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::Shader);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::SOBind);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::SO);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::Viewport);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::Scissor);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::RasterizerState);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::Rasterizer);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::DepthStencilState);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::StencilFace);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::Blend);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::BlendEquation);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::BlendState);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::OM);
+DECLARE_REFLECTION_STRUCT(D3D11Pipe::State);

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -24,6 +24,7 @@
  ******************************************************************************/
 
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <stdio.h>
 #include <string.h>
 #include <tchar.h>
@@ -166,6 +167,15 @@ void GetExecutableFilename(string &selfName)
   selfName = StringFormat::Wide2UTF8(wstring(curFile));
 }
 
+bool IsRelativePath(const string &path)
+{
+  if(path.empty())
+    return false;
+
+  wstring wpath = StringFormat::UTF82Wide(path.c_str());
+  return PathIsRelativeW(wpath.c_str()) != 0;
+}
+
 string GetFullPathname(const string &filename)
 {
   wstring wfn = StringFormat::UTF82Wide(filename);
@@ -270,7 +280,7 @@ void GetDefaultFiles(const char *logBaseName, string &capture_filename, string &
 
   wchar_t *filename_start = temp_filename + wcslen(temp_filename);
 
-  wsprintf(filename_start, L"%ls_%04d.%02d.%02d_%02d.%02d.rdc", mod, 1900 + now.tm_year,
+  wsprintf(filename_start, L"RenderDoc\\%ls_%04d.%02d.%02d_%02d.%02d.rdc", mod, 1900 + now.tm_year,
            now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min);
 
   capture_filename = StringFormat::Wide2UTF8(wstring(temp_filename));
@@ -279,7 +289,7 @@ void GetDefaultFiles(const char *logBaseName, string &capture_filename, string &
 
   wstring wbase = StringFormat::UTF82Wide(string(logBaseName));
 
-  wsprintf(filename_start, L"%ls_%04d.%02d.%02d_%02d.%02d.%02d.log", wbase.c_str(),
+  wsprintf(filename_start, L"RenderDoc\\%ls_%04d.%02d.%02d_%02d.%02d.%02d.log", wbase.c_str(),
            1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec);
 
   logging_filename = StringFormat::Wide2UTF8(wstring(temp_filename));
@@ -318,6 +328,15 @@ string GetAppFolderFilename(const string &filename)
   return ret;
 }
 
+string GetTempFolderFilename()
+{
+  wchar_t temp_filename[MAX_PATH];
+
+  GetTempPathW(MAX_PATH, temp_filename);
+
+  return StringFormat::Wide2UTF8(wstring(temp_filename));
+}
+
 uint64_t GetModifiedTimestamp(const string &filename)
 {
   wstring wfn = StringFormat::UTF82Wide(filename);
@@ -347,9 +366,9 @@ void Delete(const char *path)
   ::DeleteFileW(wpath.c_str());
 }
 
-vector<FoundFile> GetFilesInDirectory(const char *path)
+std::vector<PathEntry> GetFilesInDirectory(const char *path)
 {
-  vector<FoundFile> ret;
+  std::vector<PathEntry> ret;
 
   if(path[0] == '/' && path[1] == 0)
   {
@@ -364,7 +383,7 @@ vector<FoundFile> GetFilesInDirectory(const char *path)
         string fn = "A:/";
         fn[0] = char('A' + i);
 
-        ret.push_back(FoundFile(fn, eFileProp_Directory));
+        ret.push_back(PathEntry(fn.c_str(), PathProperty::Directory));
       }
     }
 
@@ -394,14 +413,14 @@ vector<FoundFile> GetFilesInDirectory(const char *path)
   {
     DWORD err = GetLastError();
 
-    uint32_t flags = eFileProp_ErrorUnknown;
+    PathProperty flags = PathProperty::ErrorUnknown;
 
     if(err == ERROR_FILE_NOT_FOUND)
-      flags = eFileProp_ErrorInvalidPath;
+      flags = PathProperty::ErrorInvalidPath;
     else if(err == ERROR_ACCESS_DENIED)
-      flags = eFileProp_ErrorAccessDenied;
+      flags = PathProperty::ErrorAccessDenied;
 
-    ret.push_back(FoundFile(path, flags));
+    ret.push_back(PathEntry(path, flags));
     return ret;
   }
 
@@ -418,21 +437,34 @@ vector<FoundFile> GetFilesInDirectory(const char *path)
     }
     else
     {
-      uint32_t flags = 0;
+      PathProperty flags = PathProperty::NoFlags;
 
       if(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-        flags |= eFileProp_Directory;
+        flags |= PathProperty::Directory;
 
       if(findData.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)
-        flags |= eFileProp_Hidden;
+        flags |= PathProperty::Hidden;
 
       if(wcsstr(findData.cFileName, L".EXE") || wcsstr(findData.cFileName, L".exe") ||
          wcsstr(findData.cFileName, L".Exe"))
       {
-        flags |= eFileProp_Executable;
+        flags |= PathProperty::Executable;
       }
 
-      ret.push_back(FoundFile(StringFormat::Wide2UTF8(findData.cFileName), flags));
+      PathEntry f(StringFormat::Wide2UTF8(findData.cFileName).c_str(), flags);
+
+      uint64_t nanosecondsSinceWindowsEpoch = uint64_t(findData.ftLastWriteTime.dwHighDateTime) << 8 |
+                                              uint64_t(findData.ftLastWriteTime.dwLowDateTime);
+
+      uint64_t secondsSinceWindowsEpoch = nanosecondsSinceWindowsEpoch / 10000000;
+
+      // this constant is the number of seconds between Jan 1 1601 and Jan 1 1970
+      uint64_t secondsSinceUnixEpoch = secondsSinceWindowsEpoch - 11644473600;
+
+      f.lastmod = uint32_t(secondsSinceUnixEpoch);
+      f.size = uint64_t(findData.nFileSizeHigh) << 8 | uint64_t(findData.nFileSizeLow);
+
+      ret.push_back(f);
     }
   } while(FindNextFile(find, &findData) != FALSE);
 
@@ -451,6 +483,27 @@ FILE *fopen(const char *filename, const char *mode)
   FILE *ret = NULL;
   ::_wfopen_s(&ret, wfn.c_str(), wmode.c_str());
   return ret;
+}
+
+bool exists(const char *filename)
+{
+  wstring wfn = StringFormat::UTF82Wide(filename);
+
+  struct _stat st;
+  int res = _wstat(wfn.c_str(), &st);
+
+  return (res == 0);
+}
+
+std::string ErrorString()
+{
+  int err = errno;
+
+  char buf[256] = {0};
+
+  strerror_s(buf, err);
+
+  return buf;
 }
 
 string getline(FILE *f)
@@ -500,6 +553,41 @@ int fclose(FILE *f)
 {
   return ::fclose(f);
 }
+
+static HANDLE logHandle = NULL;
+
+bool logfile_open(const char *filename)
+{
+  wstring wfn = StringFormat::UTF82Wide(string(filename));
+  logHandle = CreateFileW(wfn.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                          OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+  return logHandle != NULL;
+}
+
+void logfile_append(const char *msg, size_t length)
+{
+  if(logHandle)
+  {
+    DWORD bytesWritten = 0;
+    WriteFile(logHandle, msg, (DWORD)length, &bytesWritten, NULL);
+  }
+}
+
+void logfile_close(const char *filename)
+{
+  CloseHandle(logHandle);
+  logHandle = NULL;
+
+  if(filename)
+  {
+    // we can just try to delete the file. If it's open elsewhere in another process, the delete
+    // will
+    // fail.
+    wstring wpath = StringFormat::UTF82Wide(string(filename));
+    ::DeleteFileW(wpath.c_str());
+  }
+}
 };
 
 namespace StringFormat
@@ -529,33 +617,6 @@ void sntimef(char *str, size_t bufSize, const char *format)
   }
 }
 
-// this function is only platform specific because va_copy isn't implemented
-// on MSVC
-string Fmt(const char *format, ...)
-{
-  va_list args;
-  va_start(args, format);
-
-  va_list args2;
-  // va_copy(args2, args); // not implemented on VS2010
-  args2 = args;
-
-  int size = StringFormat::vsnprintf(NULL, 0, format, args2);
-
-  char *buf = new char[size + 1];
-  StringFormat::vsnprintf(buf, size + 1, format, args);
-  buf[size] = 0;
-
-  va_end(args);
-  va_end(args2);
-
-  string ret = buf;
-
-  delete[] buf;
-
-  return ret;
-}
-
 string Wide2UTF8(const wstring &s)
 {
   int bytes_required = WideCharToMultiByte(CP_UTF8, 0, s.c_str(), -1, NULL, 0, NULL, NULL);
@@ -573,7 +634,7 @@ string Wide2UTF8(const wstring &s)
 
   if(res == 0)
   {
-#if !defined(_RELEASE)
+#if ENABLED(RDOC_DEVEL)
     RDCWARN("Failed to convert wstring");    // can't pass string through as this would infinitely
                                              // recurse
 #endif
@@ -600,7 +661,7 @@ wstring UTF82Wide(const string &s)
 
   if(res == 0)
   {
-#if !defined(_RELEASE)
+#if ENABLED(RDOC_DEVEL)
     RDCWARN("Failed to convert utf-8 string");    // can't pass string through as this would
                                                   // infinitely recurse
 #endif
@@ -635,7 +696,7 @@ uint64_t GetMachineIdent()
   ret |= MachineIdent_Arch_x86;
 #endif
 
-#if defined(RDC64BIT)
+#if ENABLED(RDOC_X64)
   ret |= MachineIdent_64bit;
 #else
   ret |= MachineIdent_32bit;

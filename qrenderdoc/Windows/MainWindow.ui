@@ -14,8 +14,8 @@
    <string>QRenderDoc</string>
   </property>
   <property name="windowIcon">
-   <iconset resource="../resources.qrc">
-    <normaloff>:/Resources/icon.ico</normaloff>:/Resources/icon.ico</iconset>
+   <iconset resource="../Resources/resources.qrc">
+    <normaloff>:/logo.svg</normaloff>:/logo.svg</iconset>
   </property>
   <widget class="QWidget" name="centralWidget">
    <layout class="QVBoxLayout" name="verticalLayout">
@@ -42,7 +42,7 @@
      <x>0</x>
      <y>0</y>
      <width>1200</width>
-     <height>18</height>
+     <height>26</height>
     </rect>
    </property>
    <widget class="QMenu" name="menu_Tools">
@@ -50,25 +50,38 @@
      <string>&amp;Tools</string>
     </property>
     <addaction name="action_Resolve_Symbols"/>
-    <addaction name="action_Log_Statistics"/>
     <addaction name="separator"/>
-    <addaction name="action_Options"/>
-    <addaction name="action_Manage_Replay_Devices"/>
+    <addaction name="action_Settings"/>
+    <addaction name="action_Manage_Remote_Servers"/>
    </widget>
    <widget class="QMenu" name="menu_File">
     <property name="title">
      <string>&amp;File</string>
     </property>
-    <addaction name="action_Capture_Log"/>
+    <widget class="QMenu" name="menu_Recent_Logs">
+     <property name="title">
+      <string>&amp;Recent Captures</string>
+     </property>
+     <addaction name="separator"/>
+     <addaction name="action_Clear_Log_History"/>
+    </widget>
+    <widget class="QMenu" name="menu_Recent_Capture_Settings">
+     <property name="title">
+      <string>R&amp;ecent Capture Settings</string>
+     </property>
+     <addaction name="separator"/>
+     <addaction name="action_Clear_Capture_History"/>
+    </widget>
+    <addaction name="action_Launch_Application"/>
     <addaction name="action_Attach_to_Running_Instance"/>
     <addaction name="action_Inject_into_Process"/>
     <addaction name="separator"/>
     <addaction name="action_Open_Log"/>
     <addaction name="action_Save_Log"/>
-    <addaction name="actionC_lose_Log"/>
+    <addaction name="action_Close_Log"/>
     <addaction name="separator"/>
-    <addaction name="action_Recent_Logs"/>
-    <addaction name="actionR_ecent_Capture_Settings"/>
+    <addaction name="menu_Recent_Logs"/>
+    <addaction name="menu_Recent_Capture_Settings"/>
     <addaction name="separator"/>
     <addaction name="action_Exit"/>
    </widget>
@@ -105,27 +118,31 @@
     <addaction name="menu_Save_Layout"/>
     <addaction name="menu_Load_Layout"/>
     <addaction name="separator"/>
+    <addaction name="action_Launch_Application_Window"/>
     <addaction name="action_Python_Shell"/>
-    <addaction name="action_Event_Viewer"/>
+    <addaction name="action_Event_Browser"/>
     <addaction name="action_Texture_Viewer"/>
     <addaction name="action_Pipeline_State"/>
     <addaction name="action_API_Inspector"/>
     <addaction name="action_Mesh_Output"/>
     <addaction name="action_Errors_and_Warnings"/>
     <addaction name="action_Timeline"/>
+    <addaction name="action_Statistics_Viewer"/>
    </widget>
    <widget class="QMenu" name="menu_Help">
     <property name="title">
      <string>&amp;Help</string>
     </property>
-    <addaction name="actionView_Documentation"/>
-    <addaction name="actionView_Diagnostic_Log_File"/>
-    <addaction name="actionSend_Error_Report"/>
+    <addaction name="action_View_Documentation"/>
+    <addaction name="action_View_Diagnostic_Log_File"/>
+    <addaction name="actionShow_Tips"/>
+    <addaction name="separator"/>
+    <addaction name="action_Send_Error_Report"/>
     <addaction name="separator"/>
     <addaction name="actionUpdate_available"/>
     <addaction name="separator"/>
-    <addaction name="actionSource_on_github"/>
-    <addaction name="actionBuild_Release_downloads"/>
+    <addaction name="action_Source_on_github"/>
+    <addaction name="action_Build_Release_downloads"/>
     <addaction name="action_About"/>
    </widget>
    <addaction name="menu_File"/>
@@ -134,9 +151,9 @@
    <addaction name="menu_Help"/>
   </widget>
   <widget class="QStatusBar" name="statusBar"/>
-  <action name="action_Capture_Log">
+  <action name="action_Launch_Application">
    <property name="text">
-    <string>&amp;Capture Log</string>
+    <string>&amp;Launch Application</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+N</string>
@@ -154,7 +171,7 @@
   </action>
   <action name="action_Open_Log">
    <property name="text">
-    <string>&amp;Open Log</string>
+    <string>&amp;Open Capture</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+O</string>
@@ -162,36 +179,23 @@
   </action>
   <action name="action_Save_Log">
    <property name="text">
-    <string>&amp;Save Log</string>
+    <string>&amp;Save Capture</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+S</string>
    </property>
   </action>
-  <action name="actionC_lose_Log">
+  <action name="action_Close_Log">
    <property name="text">
-    <string>C&amp;lose Log</string>
+    <string>&amp;Close Capture</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+W</string>
    </property>
   </action>
-  <action name="action_Recent_Logs">
-   <property name="text">
-    <string>&amp;Recent Logs</string>
-   </property>
-  </action>
-  <action name="actionR_ecent_Capture_Settings">
-   <property name="text">
-    <string>R&amp;ecent Capture Settings</string>
-   </property>
-  </action>
   <action name="action_Exit">
    <property name="text">
-    <string>&amp;Exit</string>
-   </property>
-   <property name="shortcut">
-    <string>Alt+F4</string>
+    <string>E&amp;xit</string>
    </property>
   </action>
   <action name="action_Python_Shell">
@@ -199,9 +203,9 @@
     <string>P&amp;ython Shell</string>
    </property>
   </action>
-  <action name="action_Event_Viewer">
+  <action name="action_Event_Browser">
    <property name="text">
-    <string>&amp;Event Viewer</string>
+    <string>&amp;Event Browser</string>
    </property>
   </action>
   <action name="action_Texture_Viewer">
@@ -226,7 +230,7 @@
   </action>
   <action name="action_Errors_and_Warnings">
    <property name="text">
-    <string>Log Errors and &amp;Warnings</string>
+    <string>Errors and &amp;Warnings</string>
    </property>
   </action>
   <action name="action_Timeline">
@@ -321,30 +325,30 @@
   </action>
   <action name="action_Log_Statistics">
    <property name="text">
-    <string>&amp;Log Statistics</string>
+    <string>&amp;Statistics</string>
    </property>
   </action>
-  <action name="action_Options">
+  <action name="action_Settings">
    <property name="text">
-    <string>&amp;Options</string>
+    <string>&amp;Settings</string>
    </property>
   </action>
-  <action name="action_Manage_Replay_Devices">
+  <action name="action_Manage_Remote_Servers">
    <property name="text">
-    <string>&amp;Manage Replay Devices</string>
+    <string>&amp;Manage Remote Servers</string>
    </property>
   </action>
-  <action name="actionView_Documentation">
+  <action name="action_View_Documentation">
    <property name="text">
     <string>View &amp;Documentation</string>
    </property>
   </action>
-  <action name="actionView_Diagnostic_Log_File">
+  <action name="action_View_Diagnostic_Log_File">
    <property name="text">
     <string>View Diagnostic &amp;Log File</string>
    </property>
   </action>
-  <action name="actionSend_Error_Report">
+  <action name="action_Send_Error_Report">
    <property name="text">
     <string>Send &amp;Error Report</string>
    </property>
@@ -354,12 +358,12 @@
     <string>Update available</string>
    </property>
   </action>
-  <action name="actionSource_on_github">
+  <action name="action_Source_on_github">
    <property name="text">
     <string>Source on github</string>
    </property>
   </action>
-  <action name="actionBuild_Release_downloads">
+  <action name="action_Build_Release_downloads">
    <property name="text">
     <string>Build/Release downloads</string>
    </property>
@@ -369,17 +373,42 @@
     <string>&amp;About</string>
    </property>
   </action>
+  <action name="action_Clear_Log_History">
+   <property name="text">
+    <string>Clear History</string>
+   </property>
+  </action>
+  <action name="action_Clear_Capture_History">
+   <property name="text">
+    <string>Clear History</string>
+   </property>
+  </action>
+  <action name="action_Statistics_Viewer">
+   <property name="text">
+    <string>Statisti&amp;cs Viewer</string>
+   </property>
+  </action>
+  <action name="actionShow_Tips">
+   <property name="text">
+    <string>Show Tips</string>
+   </property>
+  </action>
+  <action name="action_Launch_Application_Window">
+   <property name="text">
+    <string>&amp;Launch Application</string>
+   </property>
+  </action>
  </widget>
  <layoutdefault spacing="6" margin="11"/>
  <customwidgets>
   <customwidget>
    <class>ToolWindowManager</class>
    <extends>QWidget</extends>
-   <header>ToolWindowManager.h</header>
+   <header>3rdparty/toolwindowmanager/ToolWindowManager.h</header>
   </customwidget>
  </customwidgets>
  <resources>
-  <include location="../resources.qrc"/>
+  <include location="../Resources/resources.qrc"/>
  </resources>
  <connections/>
 </ui>

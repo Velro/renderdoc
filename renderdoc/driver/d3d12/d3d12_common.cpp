@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -28,6 +28,297 @@
 #include "d3d12_manager.h"
 #include "d3d12_resources.h"
 
+D3D12MarkerRegion::D3D12MarkerRegion(ID3D12GraphicsCommandList *l, const std::string &marker)
+{
+  list = l;
+
+  if(list)
+  {
+    std::wstring text = StringFormat::UTF82Wide(marker);
+    list->BeginEvent(0, text.c_str(), (UINT)text.size());
+  }
+}
+
+void D3D12MarkerRegion::Set(ID3D12GraphicsCommandList *list, const std::string &marker)
+{
+  if(list)
+  {
+    std::wstring text = StringFormat::UTF82Wide(marker);
+    list->SetMarker(0, text.c_str(), (UINT)text.size());
+  }
+}
+
+D3D12MarkerRegion::~D3D12MarkerRegion()
+{
+  if(list)
+    list->EndEvent();
+}
+
+TextureDim MakeTextureDim(D3D12_SRV_DIMENSION dim)
+{
+  switch(dim)
+  {
+    case D3D12_SRV_DIMENSION_UNKNOWN: return TextureDim::Unknown;
+    case D3D12_SRV_DIMENSION_BUFFER: return TextureDim::Buffer;
+    case D3D12_SRV_DIMENSION_TEXTURE1D: return TextureDim::Texture1D;
+    case D3D12_SRV_DIMENSION_TEXTURE1DARRAY: return TextureDim::Texture1DArray;
+    case D3D12_SRV_DIMENSION_TEXTURE2D: return TextureDim::Texture2D;
+    case D3D12_SRV_DIMENSION_TEXTURE2DARRAY: return TextureDim::Texture2DArray;
+    case D3D12_SRV_DIMENSION_TEXTURE2DMS: return TextureDim::Texture2DMS;
+    case D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY: return TextureDim::Texture2DMSArray;
+    case D3D12_SRV_DIMENSION_TEXTURE3D: return TextureDim::Texture3D;
+    case D3D12_SRV_DIMENSION_TEXTURECUBE: return TextureDim::TextureCube;
+    case D3D12_SRV_DIMENSION_TEXTURECUBEARRAY: return TextureDim::TextureCubeArray;
+  }
+
+  return TextureDim::Unknown;
+}
+
+TextureDim MakeTextureDim(D3D12_RTV_DIMENSION dim)
+{
+  switch(dim)
+  {
+    case D3D12_RTV_DIMENSION_UNKNOWN: return TextureDim::Unknown;
+    case D3D12_RTV_DIMENSION_BUFFER: return TextureDim::Buffer;
+    case D3D12_RTV_DIMENSION_TEXTURE1D: return TextureDim::Texture1D;
+    case D3D12_RTV_DIMENSION_TEXTURE1DARRAY: return TextureDim::Texture1DArray;
+    case D3D12_RTV_DIMENSION_TEXTURE2D: return TextureDim::Texture2D;
+    case D3D12_RTV_DIMENSION_TEXTURE2DARRAY: return TextureDim::Texture2DArray;
+    case D3D12_RTV_DIMENSION_TEXTURE2DMS: return TextureDim::Texture2DMS;
+    case D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY: return TextureDim::Texture2DMSArray;
+    case D3D12_RTV_DIMENSION_TEXTURE3D: return TextureDim::Texture3D;
+  }
+
+  return TextureDim::Unknown;
+}
+
+TextureDim MakeTextureDim(D3D12_DSV_DIMENSION dim)
+{
+  switch(dim)
+  {
+    case D3D12_DSV_DIMENSION_UNKNOWN: return TextureDim::Unknown;
+    case D3D12_DSV_DIMENSION_TEXTURE1D: return TextureDim::Texture1D;
+    case D3D12_DSV_DIMENSION_TEXTURE1DARRAY: return TextureDim::Texture1DArray;
+    case D3D12_DSV_DIMENSION_TEXTURE2D: return TextureDim::Texture2D;
+    case D3D12_DSV_DIMENSION_TEXTURE2DARRAY: return TextureDim::Texture2DArray;
+    case D3D12_DSV_DIMENSION_TEXTURE2DMS: return TextureDim::Texture2DMS;
+    case D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY: return TextureDim::Texture2DMSArray;
+  }
+
+  return TextureDim::Unknown;
+}
+
+TextureDim MakeTextureDim(D3D12_UAV_DIMENSION dim)
+{
+  switch(dim)
+  {
+    case D3D12_UAV_DIMENSION_UNKNOWN: return TextureDim::Unknown;
+    case D3D12_UAV_DIMENSION_BUFFER: return TextureDim::Buffer;
+    case D3D12_UAV_DIMENSION_TEXTURE1D: return TextureDim::Texture1D;
+    case D3D12_UAV_DIMENSION_TEXTURE1DARRAY: return TextureDim::Texture1DArray;
+    case D3D12_UAV_DIMENSION_TEXTURE2D: return TextureDim::Texture2D;
+    case D3D12_UAV_DIMENSION_TEXTURE2DARRAY: return TextureDim::Texture2DArray;
+    case D3D12_UAV_DIMENSION_TEXTURE3D: return TextureDim::Texture3D;
+  }
+
+  return TextureDim::Unknown;
+}
+
+AddressMode MakeAddressMode(D3D12_TEXTURE_ADDRESS_MODE addr)
+{
+  switch(addr)
+  {
+    case D3D12_TEXTURE_ADDRESS_MODE_WRAP: return AddressMode::Wrap;
+    case D3D12_TEXTURE_ADDRESS_MODE_MIRROR: return AddressMode::Mirror;
+    case D3D12_TEXTURE_ADDRESS_MODE_CLAMP: return AddressMode::ClampEdge;
+    case D3D12_TEXTURE_ADDRESS_MODE_BORDER: return AddressMode::ClampBorder;
+    case D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE: return AddressMode::MirrorOnce;
+    default: break;
+  }
+
+  return AddressMode::Wrap;
+}
+
+CompareFunc MakeCompareFunc(D3D12_COMPARISON_FUNC func)
+{
+  switch(func)
+  {
+    case D3D12_COMPARISON_FUNC_NEVER: return CompareFunc::Never;
+    case D3D12_COMPARISON_FUNC_LESS: return CompareFunc::Less;
+    case D3D12_COMPARISON_FUNC_EQUAL: return CompareFunc::Equal;
+    case D3D12_COMPARISON_FUNC_LESS_EQUAL: return CompareFunc::LessEqual;
+    case D3D12_COMPARISON_FUNC_GREATER: return CompareFunc::Greater;
+    case D3D12_COMPARISON_FUNC_NOT_EQUAL: return CompareFunc::NotEqual;
+    case D3D12_COMPARISON_FUNC_GREATER_EQUAL: return CompareFunc::GreaterEqual;
+    case D3D12_COMPARISON_FUNC_ALWAYS: return CompareFunc::AlwaysTrue;
+    default: break;
+  }
+
+  return CompareFunc::AlwaysTrue;
+}
+
+TextureFilter MakeFilter(D3D12_FILTER filter)
+{
+  TextureFilter ret;
+
+  ret.func = FilterFunc::Normal;
+
+  if(filter >= D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT &&
+     filter < D3D12_FILTER_COMPARISON_ANISOTROPIC)
+  {
+    ret.func = FilterFunc::Comparison;
+    // the first 0x7f is the min/mag/mip filtering
+    filter = D3D12_FILTER(filter & 0x7f);
+  }
+  else if(filter >= D3D12_FILTER_MINIMUM_MIN_MAG_MIP_POINT &&
+          filter < D3D12_FILTER_MINIMUM_ANISOTROPIC)
+  {
+    ret.func = FilterFunc::Minimum;
+    // the first 0x7f is the min/mag/mip filtering
+    filter = D3D12_FILTER(filter & 0x7f);
+  }
+  else if(filter >= D3D12_FILTER_MAXIMUM_MIN_MAG_MIP_POINT &&
+          filter < D3D12_FILTER_MAXIMUM_ANISOTROPIC)
+  {
+    ret.func = FilterFunc::Maximum;
+    // the first 0x7f is the min/mag/mip filtering
+    filter = D3D12_FILTER(filter & 0x7f);
+  }
+
+  if(filter == D3D12_FILTER_ANISOTROPIC)
+  {
+    ret.minify = ret.magnify = ret.mip = FilterMode::Anisotropic;
+  }
+  else
+  {
+    switch(filter)
+    {
+      case D3D12_FILTER_MIN_MAG_MIP_POINT:
+        ret.minify = ret.magnify = ret.mip = FilterMode::Point;
+        break;
+      case D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR:
+        ret.minify = ret.magnify = FilterMode::Point;
+        ret.mip = FilterMode::Linear;
+        break;
+      case D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT:
+        ret.minify = FilterMode::Point;
+        ret.magnify = FilterMode::Linear;
+        ret.mip = FilterMode::Point;
+        break;
+      case D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR:
+        ret.minify = FilterMode::Point;
+        ret.magnify = ret.mip = FilterMode::Linear;
+        break;
+      case D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT:
+        ret.minify = FilterMode::Linear;
+        ret.magnify = ret.mip = FilterMode::Point;
+        break;
+      case D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR:
+        ret.minify = FilterMode::Linear;
+        ret.magnify = FilterMode::Point;
+        ret.mip = FilterMode::Linear;
+        break;
+      case D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT:
+        ret.minify = ret.magnify = FilterMode::Linear;
+        ret.mip = FilterMode::Point;
+        break;
+      case D3D12_FILTER_MIN_MAG_MIP_LINEAR:
+        ret.minify = ret.magnify = ret.mip = FilterMode::Linear;
+        break;
+    }
+  }
+
+  return ret;
+}
+
+LogicOp MakeLogicOp(D3D12_LOGIC_OP op)
+{
+  switch(op)
+  {
+    case D3D12_LOGIC_OP_CLEAR: return LogicOp::Clear;
+    case D3D12_LOGIC_OP_AND: return LogicOp::And;
+    case D3D12_LOGIC_OP_AND_REVERSE: return LogicOp::AndReverse;
+    case D3D12_LOGIC_OP_COPY: return LogicOp::Copy;
+    case D3D12_LOGIC_OP_AND_INVERTED: return LogicOp::AndInverted;
+    case D3D12_LOGIC_OP_NOOP: return LogicOp::NoOp;
+    case D3D12_LOGIC_OP_XOR: return LogicOp::Xor;
+    case D3D12_LOGIC_OP_OR: return LogicOp::Or;
+    case D3D12_LOGIC_OP_NOR: return LogicOp::Nor;
+    case D3D12_LOGIC_OP_EQUIV: return LogicOp::Equivalent;
+    case D3D12_LOGIC_OP_INVERT: return LogicOp::Invert;
+    case D3D12_LOGIC_OP_OR_REVERSE: return LogicOp::OrReverse;
+    case D3D12_LOGIC_OP_COPY_INVERTED: return LogicOp::CopyInverted;
+    case D3D12_LOGIC_OP_OR_INVERTED: return LogicOp::OrInverted;
+    case D3D12_LOGIC_OP_NAND: return LogicOp::Nand;
+    case D3D12_LOGIC_OP_SET: return LogicOp::Set;
+    default: break;
+  }
+
+  return LogicOp::NoOp;
+}
+
+BlendMultiplier MakeBlendMultiplier(D3D12_BLEND blend, bool alpha)
+{
+  switch(blend)
+  {
+    case D3D12_BLEND_ZERO: return BlendMultiplier::Zero;
+    case D3D12_BLEND_ONE: return BlendMultiplier::One;
+    case D3D12_BLEND_SRC_COLOR: return BlendMultiplier::SrcCol;
+    case D3D12_BLEND_INV_SRC_COLOR: return BlendMultiplier::InvSrcCol;
+    case D3D12_BLEND_DEST_COLOR: return BlendMultiplier::DstCol;
+    case D3D12_BLEND_INV_DEST_COLOR: return BlendMultiplier::InvDstCol;
+    case D3D12_BLEND_SRC_ALPHA: return BlendMultiplier::SrcAlpha;
+    case D3D12_BLEND_INV_SRC_ALPHA: return BlendMultiplier::InvSrcAlpha;
+    case D3D12_BLEND_DEST_ALPHA: return BlendMultiplier::DstAlpha;
+    case D3D12_BLEND_INV_DEST_ALPHA: return BlendMultiplier::InvDstAlpha;
+    case D3D12_BLEND_BLEND_FACTOR:
+      return alpha ? BlendMultiplier::FactorAlpha : BlendMultiplier::FactorRGB;
+    case D3D12_BLEND_INV_BLEND_FACTOR:
+      return alpha ? BlendMultiplier::InvFactorAlpha : BlendMultiplier::InvFactorRGB;
+    case D3D12_BLEND_SRC_ALPHA_SAT: return BlendMultiplier::SrcAlphaSat;
+    case D3D12_BLEND_SRC1_COLOR: return BlendMultiplier::Src1Col;
+    case D3D12_BLEND_INV_SRC1_COLOR: return BlendMultiplier::InvSrc1Col;
+    case D3D12_BLEND_SRC1_ALPHA: return BlendMultiplier::Src1Alpha;
+    case D3D12_BLEND_INV_SRC1_ALPHA: return BlendMultiplier::InvSrc1Alpha;
+    default: break;
+  }
+
+  return BlendMultiplier::One;
+}
+
+BlendOp MakeBlendOp(D3D12_BLEND_OP op)
+{
+  switch(op)
+  {
+    case D3D12_BLEND_OP_ADD: return BlendOp::Add;
+    case D3D12_BLEND_OP_SUBTRACT: return BlendOp::Subtract;
+    case D3D12_BLEND_OP_REV_SUBTRACT: return BlendOp::ReversedSubtract;
+    case D3D12_BLEND_OP_MIN: return BlendOp::Minimum;
+    case D3D12_BLEND_OP_MAX: return BlendOp::Maximum;
+    default: break;
+  }
+
+  return BlendOp::Add;
+}
+
+StencilOp MakeStencilOp(D3D12_STENCIL_OP op)
+{
+  switch(op)
+  {
+    case D3D12_STENCIL_OP_KEEP: return StencilOp::Keep;
+    case D3D12_STENCIL_OP_ZERO: return StencilOp::Zero;
+    case D3D12_STENCIL_OP_REPLACE: return StencilOp::Replace;
+    case D3D12_STENCIL_OP_INCR_SAT: return StencilOp::IncSat;
+    case D3D12_STENCIL_OP_DECR_SAT: return StencilOp::DecSat;
+    case D3D12_STENCIL_OP_INVERT: return StencilOp::Invert;
+    case D3D12_STENCIL_OP_INCR: return StencilOp::IncWrap;
+    case D3D12_STENCIL_OP_DECR: return StencilOp::DecWrap;
+    default: break;
+  }
+
+  return StencilOp::Keep;
+}
+
 static ShaderConstant MakeConstantBufferVariable(const DXBC::CBufferVariable &var, uint32_t &offset);
 
 static ShaderVariableType MakeShaderVariableType(DXBC::CBufferVariableType type, uint32_t &offset)
@@ -36,12 +327,12 @@ static ShaderVariableType MakeShaderVariableType(DXBC::CBufferVariableType type,
 
   switch(type.descriptor.type)
   {
-    case DXBC::VARTYPE_INT: ret.descriptor.type = eVar_Int; break;
+    case DXBC::VARTYPE_INT: ret.descriptor.type = VarType::Int; break;
     case DXBC::VARTYPE_BOOL:
-    case DXBC::VARTYPE_UINT: ret.descriptor.type = eVar_UInt; break;
-    case DXBC::VARTYPE_DOUBLE: ret.descriptor.type = eVar_Double; break;
+    case DXBC::VARTYPE_UINT: ret.descriptor.type = VarType::UInt; break;
+    case DXBC::VARTYPE_DOUBLE: ret.descriptor.type = VarType::Double; break;
     case DXBC::VARTYPE_FLOAT:
-    default: ret.descriptor.type = eVar_Float; break;
+    default: ret.descriptor.type = VarType::Float; break;
   }
   ret.descriptor.rows = type.descriptor.rows;
   ret.descriptor.cols = type.descriptor.cols;
@@ -49,7 +340,7 @@ static ShaderVariableType MakeShaderVariableType(DXBC::CBufferVariableType type,
   ret.descriptor.name = type.descriptor.name;
   ret.descriptor.rowMajorStorage = (type.descriptor.varClass == DXBC::CLASS_MATRIX_ROWS);
 
-  uint32_t baseElemSize = (ret.descriptor.type == eVar_Double) ? 8 : 4;
+  uint32_t baseElemSize = (ret.descriptor.type == VarType::Double) ? 8 : 4;
   if(ret.descriptor.rowMajorStorage)
   {
     uint32_t primary = ret.descriptor.rows;
@@ -110,26 +401,68 @@ void MakeShaderReflection(DXBC::DXBCFile *dxbc, ShaderReflection *refl,
 
   if(dxbc->m_DebugInfo)
   {
-    refl->DebugInfo.entryFunc = dxbc->m_DebugInfo->GetEntryFunction();
     refl->DebugInfo.compileFlags = dxbc->m_DebugInfo->GetShaderCompileFlags();
-
-    refl->DebugInfo.entryFile = -1;
 
     create_array_uninit(refl->DebugInfo.files, dxbc->m_DebugInfo->Files.size());
     for(size_t i = 0; i < dxbc->m_DebugInfo->Files.size(); i++)
     {
       refl->DebugInfo.files[i].first = dxbc->m_DebugInfo->Files[i].first;
       refl->DebugInfo.files[i].second = dxbc->m_DebugInfo->Files[i].second;
+    }
 
-      if(refl->DebugInfo.entryFile == -1 &&
-         strstr(refl->DebugInfo.files[i].second.elems, refl->DebugInfo.entryFunc.elems))
+    string entry = dxbc->m_DebugInfo->GetEntryFunction();
+    if(entry.empty())
+      entry = "main";
+
+    // sort the file with the entry point to the start. We don't have to do anything if there's only
+    // one file.
+    // This isn't a perfect search - it will match entry_point() anywhere in the file, even if it's
+    // in a comment or disabled preprocessor definition. This is just best-effort
+    if(refl->DebugInfo.files.count > 1)
+    {
+      // search from 0 up. If we find a match, we swap it into [0]. If we don't find a match then
+      // we can't rearrange anything. This is a no-op for 0 since it's already in first place, but
+      // since our search isn't perfect we might have multiple matches with some being false
+      // positives, and so we want to bias towards leaving [0] in place.
+      for(int32_t i = 0; i < refl->DebugInfo.files.count; i++)
       {
-        refl->DebugInfo.entryFile = (int32_t)i;
+        char *c = strstr(refl->DebugInfo.files[i].first.elems, entry.c_str());
+        char *end = refl->DebugInfo.files[i].first.elems + refl->DebugInfo.files[i].first.count;
+
+        // no substring match? continue
+        if(c == NULL)
+          continue;
+
+        // if we did get a substring match, ensure there's whitespace preceeding it.
+        if(c == entry.c_str() || !isspace((int)*(c - 1)))
+          continue;
+
+        // skip past the entry point. Then skip any whitespace
+        c += entry.size();
+
+        // check for EOF.
+        if(c >= end)
+          continue;
+
+        while(c < end && isspace(*c))
+          c++;
+
+        if(c >= end)
+          continue;
+
+        // if there's an open bracket next, we found a entry_point( which we count as the
+        // declaration.
+        if(*c == '(')
+        {
+          // only do anything if we're looking at a later file
+          if(i > 0)
+            std::swap(refl->DebugInfo.files[0], refl->DebugInfo.files[i]);
+
+          break;
+        }
       }
     }
   }
-
-  refl->Disassembly = dxbc->GetDisassembly();
 
   if(dxbc->m_ShaderBlob.empty())
     create_array_uninit(refl->RawBytes, 0);
@@ -158,9 +491,9 @@ void MakeShaderReflection(DXBC::DXBCFile *dxbc, ShaderReflection *refl,
 
   create_array_uninit(mapping->ConstantBlocks, numCbuffers);
   create_array_uninit(refl->ConstantBlocks, numCbuffers);
-  for(size_t i = 0, c = 0; i < dxbc->m_CBuffers.size(); i++)
+  for(size_t i = 0; i < dxbc->m_CBuffers.size(); i++)
   {
-    ConstantBlock &cb = refl->ConstantBlocks[c];
+    ConstantBlock &cb = refl->ConstantBlocks[i];
 
     if(dxbc->m_CBuffers[i].descriptor.type != DXBC::CBuffer::Descriptor::TYPE_CBUFFER)
       continue;
@@ -168,14 +501,15 @@ void MakeShaderReflection(DXBC::DXBCFile *dxbc, ShaderReflection *refl,
     cb.name = dxbc->m_CBuffers[i].name;
     cb.bufferBacked = true;
     cb.byteSize = dxbc->m_CBuffers[i].descriptor.byteSize;
-    cb.bindPoint = (uint32_t)c;
+    cb.bindPoint = (uint32_t)i;
 
     BindpointMap map;
     map.arraySize = 1;
-    map.bind = (int32_t)i;
+    map.bindset = dxbc->m_CBuffers[i].space;
+    map.bind = dxbc->m_CBuffers[i].reg;
     map.used = true;
 
-    mapping->ConstantBlocks[c] = map;
+    mapping->ConstantBlocks[i] = map;
 
     create_array_uninit(cb.variables, dxbc->m_CBuffers[i].variables.size());
     for(size_t v = 0; v < dxbc->m_CBuffers[i].variables.size(); v++)
@@ -230,35 +564,34 @@ void MakeShaderReflection(DXBC::DXBCFile *dxbc, ShaderReflection *refl,
                      r.dimension != DXBC::ShaderInputBind::DIM_UNKNOWN &&
                      r.dimension != DXBC::ShaderInputBind::DIM_BUFFER &&
                      r.dimension != DXBC::ShaderInputBind::DIM_BUFFEREX);
-    res.IsSRV = (r.type == DXBC::ShaderInputBind::TYPE_TBUFFER ||
-                 r.type == DXBC::ShaderInputBind::TYPE_TEXTURE ||
-                 r.type == DXBC::ShaderInputBind::TYPE_STRUCTURED ||
-                 r.type == DXBC::ShaderInputBind::TYPE_BYTEADDRESS);
-    bool IsReadWrite = (r.type == DXBC::ShaderInputBind::TYPE_UAV_RWTYPED ||
-                        r.type == DXBC::ShaderInputBind::TYPE_UAV_RWSTRUCTURED ||
-                        r.type == DXBC::ShaderInputBind::TYPE_UAV_RWBYTEADDRESS ||
-                        r.type == DXBC::ShaderInputBind::TYPE_UAV_APPEND_STRUCTURED ||
-                        r.type == DXBC::ShaderInputBind::TYPE_UAV_CONSUME_STRUCTURED ||
-                        r.type == DXBC::ShaderInputBind::TYPE_UAV_RWSTRUCTURED_WITH_COUNTER);
+    res.IsReadOnly = (r.type == DXBC::ShaderInputBind::TYPE_TBUFFER ||
+                      r.type == DXBC::ShaderInputBind::TYPE_SAMPLER ||
+                      r.type == DXBC::ShaderInputBind::TYPE_TEXTURE ||
+                      r.type == DXBC::ShaderInputBind::TYPE_STRUCTURED ||
+                      r.type == DXBC::ShaderInputBind::TYPE_BYTEADDRESS);
 
     switch(r.dimension)
     {
       default:
-      case DXBC::ShaderInputBind::DIM_UNKNOWN: res.resType = eResType_None; break;
+      case DXBC::ShaderInputBind::DIM_UNKNOWN: res.resType = TextureDim::Unknown; break;
       case DXBC::ShaderInputBind::DIM_BUFFER:
-      case DXBC::ShaderInputBind::DIM_BUFFEREX: res.resType = eResType_Buffer; break;
-      case DXBC::ShaderInputBind::DIM_TEXTURE1D: res.resType = eResType_Texture1D; break;
-      case DXBC::ShaderInputBind::DIM_TEXTURE1DARRAY: res.resType = eResType_Texture1DArray; break;
-      case DXBC::ShaderInputBind::DIM_TEXTURE2D: res.resType = eResType_Texture2D; break;
-      case DXBC::ShaderInputBind::DIM_TEXTURE2DARRAY: res.resType = eResType_Texture2DArray; break;
-      case DXBC::ShaderInputBind::DIM_TEXTURE2DMS: res.resType = eResType_Texture2DMS; break;
-      case DXBC::ShaderInputBind::DIM_TEXTURE2DMSARRAY:
-        res.resType = eResType_Texture2DMSArray;
+      case DXBC::ShaderInputBind::DIM_BUFFEREX: res.resType = TextureDim::Buffer; break;
+      case DXBC::ShaderInputBind::DIM_TEXTURE1D: res.resType = TextureDim::Texture1D; break;
+      case DXBC::ShaderInputBind::DIM_TEXTURE1DARRAY:
+        res.resType = TextureDim::Texture1DArray;
         break;
-      case DXBC::ShaderInputBind::DIM_TEXTURE3D: res.resType = eResType_Texture3D; break;
-      case DXBC::ShaderInputBind::DIM_TEXTURECUBE: res.resType = eResType_TextureCube; break;
+      case DXBC::ShaderInputBind::DIM_TEXTURE2D: res.resType = TextureDim::Texture2D; break;
+      case DXBC::ShaderInputBind::DIM_TEXTURE2DARRAY:
+        res.resType = TextureDim::Texture2DArray;
+        break;
+      case DXBC::ShaderInputBind::DIM_TEXTURE2DMS: res.resType = TextureDim::Texture2DMS; break;
+      case DXBC::ShaderInputBind::DIM_TEXTURE2DMSARRAY:
+        res.resType = TextureDim::Texture2DMSArray;
+        break;
+      case DXBC::ShaderInputBind::DIM_TEXTURE3D: res.resType = TextureDim::Texture3D; break;
+      case DXBC::ShaderInputBind::DIM_TEXTURECUBE: res.resType = TextureDim::TextureCube; break;
       case DXBC::ShaderInputBind::DIM_TEXTURECUBEARRAY:
-        res.resType = eResType_TextureCubeArray;
+        res.resType = TextureDim::TextureCubeArray;
         break;
     }
 
@@ -303,22 +636,23 @@ void MakeShaderReflection(DXBC::DXBCFile *dxbc, ShaderReflection *refl,
       }
     }
 
-    res.bindPoint = IsReadWrite ? rwidx : roidx;
+    res.bindPoint = res.IsReadOnly ? roidx : rwidx;
 
     BindpointMap map;
-    map.arraySize = 1;
-    map.bind = r.bindPoint;
+    map.arraySize = r.bindCount == 0 ? ~0U : r.bindCount;
+    map.bindset = r.space;
+    map.bind = r.reg;
     map.used = true;
 
-    if(IsReadWrite)
-    {
-      mapping->ReadWriteResources[rwidx] = map;
-      refl->ReadWriteResources[rwidx++] = res;
-    }
-    else
+    if(res.IsReadOnly)
     {
       mapping->ReadOnlyResources[roidx] = map;
       refl->ReadOnlyResources[roidx++] = res;
+    }
+    else
+    {
+      mapping->ReadWriteResources[rwidx] = map;
+      refl->ReadWriteResources[rwidx++] = res;
     }
   }
 
@@ -408,37 +742,43 @@ UINT GetResourceNumMipLevels(const D3D12_RESOURCE_DESC *desc)
   return 1;
 }
 
-UINT GetNumSubresources(const D3D12_RESOURCE_DESC *desc)
+UINT GetNumSubresources(ID3D12Device *dev, const D3D12_RESOURCE_DESC *desc)
 {
+  D3D12_FEATURE_DATA_FORMAT_INFO formatInfo = {};
+  formatInfo.Format = desc->Format;
+  dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &formatInfo, sizeof(formatInfo));
+
+  UINT planes = RDCMAX((UINT8)1, formatInfo.PlaneCount);
+
   switch(desc->Dimension)
   {
     default:
     case D3D12_RESOURCE_DIMENSION_UNKNOWN:
       RDCERR("Unexpected resource dimension! %d", desc->Dimension);
       break;
-    case D3D12_RESOURCE_DIMENSION_BUFFER: return 1;
+    case D3D12_RESOURCE_DIMENSION_BUFFER: return planes;
     case D3D12_RESOURCE_DIMENSION_TEXTURE1D:
     case D3D12_RESOURCE_DIMENSION_TEXTURE2D:
-      return RDCMAX((UINT16)1, desc->DepthOrArraySize) * GetResourceNumMipLevels(desc);
-    case D3D12_RESOURCE_DIMENSION_TEXTURE3D: return GetResourceNumMipLevels(desc);
+      return RDCMAX((UINT16)1, desc->DepthOrArraySize) * GetResourceNumMipLevels(desc) * planes;
+    case D3D12_RESOURCE_DIMENSION_TEXTURE3D: return GetResourceNumMipLevels(desc) * planes;
   }
 
   return 1;
 }
 
-ShaderStageBits ConvertVisibility(D3D12_SHADER_VISIBILITY ShaderVisibility)
+ShaderStageMask ConvertVisibility(D3D12_SHADER_VISIBILITY ShaderVisibility)
 {
   switch(ShaderVisibility)
   {
-    case D3D12_SHADER_VISIBILITY_ALL: return eStageBits_All;
-    case D3D12_SHADER_VISIBILITY_VERTEX: return eStageBits_Vertex;
-    case D3D12_SHADER_VISIBILITY_HULL: return eStageBits_Hull;
-    case D3D12_SHADER_VISIBILITY_DOMAIN: return eStageBits_Domain;
-    case D3D12_SHADER_VISIBILITY_GEOMETRY: return eStageBits_Geometry;
-    case D3D12_SHADER_VISIBILITY_PIXEL: return eStageBits_Pixel;
+    case D3D12_SHADER_VISIBILITY_ALL: return ShaderStageMask::All;
+    case D3D12_SHADER_VISIBILITY_VERTEX: return ShaderStageMask::Vertex;
+    case D3D12_SHADER_VISIBILITY_HULL: return ShaderStageMask::Hull;
+    case D3D12_SHADER_VISIBILITY_DOMAIN: return ShaderStageMask::Domain;
+    case D3D12_SHADER_VISIBILITY_GEOMETRY: return ShaderStageMask::Geometry;
+    case D3D12_SHADER_VISIBILITY_PIXEL: return ShaderStageMask::Pixel;
   }
 
-  return eStageBits_Vertex;
+  return ShaderStageMask::Vertex;
 }
 
 string ToStrHelper<false, D3D12ComponentMapping>::Get(const D3D12ComponentMapping &el)
@@ -494,7 +834,8 @@ void Serialiser::Serialise(const char *name, D3D12Descriptor &el)
     PortableHandle handle;
 
     if(m_Mode >= WRITING)
-      handle = PortableHandle(el.samp.heap->GetResourceID(), el.samp.idx);
+      handle =
+          PortableHandle(el.samp.heap ? el.samp.heap->GetResourceID() : ResourceId(), el.samp.idx);
 
     Serialise("handle", handle);
 
@@ -508,7 +849,8 @@ void Serialiser::Serialise(const char *name, D3D12Descriptor &el)
   }
 
   // for sampler types, this will be overwritten when serialising the sampler descriptor
-  el.nonsamp.type = type;
+  if(m_Mode < WRITING)
+    el.nonsamp.type = type;
 
   switch(type)
   {
@@ -977,6 +1319,49 @@ void Serialiser::Serialise(const char *name, D3D12_INDEX_BUFFER_VIEW &el)
 }
 
 template <>
+void Serialiser::Serialise(const char *name, D3D12_STREAM_OUTPUT_BUFFER_VIEW &el)
+{
+  ScopedContext scope(this, name, "D3D12_STREAM_OUTPUT_BUFFER_VIEW", 0, true);
+
+  D3D12ResourceManager *rm = (D3D12ResourceManager *)GetUserData();
+
+  ResourceId buffer;
+  UINT64 offs = 0;
+
+  if(m_Mode == WRITING)
+    WrappedID3D12Resource::GetResIDFromAddr(el.BufferLocation, buffer, offs);
+
+  Serialise("BufferLocation", buffer);
+  Serialise("BufferLocation_Offset", offs);
+
+  if(m_Mode == READING)
+  {
+    ID3D12Resource *res = rm->GetLiveAs<ID3D12Resource>(buffer);
+    if(res)
+      el.BufferLocation = res->GetGPUVirtualAddress() + offs;
+    else
+      el.BufferLocation = 0;
+  }
+
+  if(m_Mode == WRITING)
+    WrappedID3D12Resource::GetResIDFromAddr(el.BufferFilledSizeLocation, buffer, offs);
+
+  Serialise("BufferFilledSizeLocation", buffer);
+  Serialise("BufferFilledSizeLocation_Offset", offs);
+
+  if(m_Mode == READING)
+  {
+    ID3D12Resource *res = rm->GetLiveAs<ID3D12Resource>(buffer);
+    if(res)
+      el.BufferFilledSizeLocation = res->GetGPUVirtualAddress() + offs;
+    else
+      el.BufferFilledSizeLocation = 0;
+  }
+
+  Serialise("SizeInBytes", el.SizeInBytes);
+}
+
+template <>
 void Serialiser::Serialise(const char *name, D3D12_CONSTANT_BUFFER_VIEW_DESC &el)
 {
   ScopedContext scope(this, name, "D3D12_CONSTANT_BUFFER_VIEW_DESC", 0, true);
@@ -1354,6 +1739,29 @@ void Serialiser::Serialise(const char *name, D3D12_TEXTURE_COPY_LOCATION &el)
 }
 
 template <>
+void Serialiser::Serialise(const char *name, D3D12_TILED_RESOURCE_COORDINATE &el)
+{
+  ScopedContext scope(this, name, "D3D12_TILED_RESOURCE_COORDINATE", 0, true);
+
+  Serialise("X", el.X);
+  Serialise("Y", el.Y);
+  Serialise("Z", el.Z);
+  Serialise("Subresource", el.Subresource);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12_TILE_REGION_SIZE &el)
+{
+  ScopedContext scope(this, name, "D3D12_TILE_REGION_SIZE", 0, true);
+
+  Serialise("NumTiles", el.NumTiles);
+  Serialise("UseBox", el.UseBox);
+  Serialise("Width", el.Width);
+  Serialise("Height", el.Height);
+  Serialise("Depth", el.Depth);
+}
+
+template <>
 void Serialiser::Serialise(const char *name, D3D12_DISCARD_REGION &el)
 {
   ScopedContext scope(this, name, "D3D12_DISCARD_REGION", 0, true);
@@ -1504,6 +1912,36 @@ string ToStrHelper<false, D3D12_QUERY_HEAP_TYPE>::Get(const D3D12_QUERY_HEAP_TYP
   }
 
   return StringFormat::Fmt("D3D12_QUERY_HEAP_TYPE<%d>", el);
+}
+
+string ToStrHelper<false, D3D12_QUERY_TYPE>::Get(const D3D12_QUERY_TYPE &el)
+{
+  switch(el)
+  {
+    TOSTR_CASE_STRINGIZE(D3D12_QUERY_TYPE_OCCLUSION)
+    TOSTR_CASE_STRINGIZE(D3D12_QUERY_TYPE_BINARY_OCCLUSION)
+    TOSTR_CASE_STRINGIZE(D3D12_QUERY_TYPE_TIMESTAMP)
+    TOSTR_CASE_STRINGIZE(D3D12_QUERY_TYPE_PIPELINE_STATISTICS)
+    TOSTR_CASE_STRINGIZE(D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0)
+    TOSTR_CASE_STRINGIZE(D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1)
+    TOSTR_CASE_STRINGIZE(D3D12_QUERY_TYPE_SO_STATISTICS_STREAM2)
+    TOSTR_CASE_STRINGIZE(D3D12_QUERY_TYPE_SO_STATISTICS_STREAM3)
+    default: break;
+  }
+
+  return StringFormat::Fmt("D3D12_QUERY_TYPE<%d>", el);
+}
+
+string ToStrHelper<false, D3D12_PREDICATION_OP>::Get(const D3D12_PREDICATION_OP &el)
+{
+  switch(el)
+  {
+    TOSTR_CASE_STRINGIZE(D3D12_PREDICATION_OP_EQUAL_ZERO)
+    TOSTR_CASE_STRINGIZE(D3D12_PREDICATION_OP_NOT_EQUAL_ZERO)
+    default: break;
+  }
+
+  return StringFormat::Fmt("D3D12_PREDICATION_OP<%d>", el);
 }
 
 string ToStrHelper<false, D3D12_DESCRIPTOR_HEAP_TYPE>::Get(const D3D12_DESCRIPTOR_HEAP_TYPE &el)
@@ -2224,6 +2662,88 @@ string ToStrHelper<false, D3D12_COMMAND_QUEUE_FLAGS>::Get(const D3D12_COMMAND_QU
 
   if(el & D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT)
     ret += " | D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT";
+
+  if(!ret.empty())
+    ret = ret.substr(3);
+
+  return ret;
+}
+
+string ToStrHelper<false, D3D12_TILE_COPY_FLAGS>::Get(const D3D12_TILE_COPY_FLAGS &el)
+{
+  string ret;
+
+  if(el == D3D12_TILE_COPY_FLAG_NONE)
+    return "D3D12_TILE_COPY_FLAG_NONE";
+
+  if(el & D3D12_TILE_COPY_FLAG_NO_HAZARD)
+    ret += " | D3D12_TILE_COPY_FLAG_NO_HAZARD";
+
+  if(el & D3D12_TILE_COPY_FLAG_LINEAR_BUFFER_TO_SWIZZLED_TILED_RESOURCE)
+    ret += " | D3D12_TILE_COPY_FLAG_LINEAR_BUFFER_TO_SWIZZLED_TILED_RESOURCE";
+
+  if(el & D3D12_TILE_COPY_FLAG_SWIZZLED_TILED_RESOURCE_TO_LINEAR_BUFFER)
+    ret += " | D3D12_TILE_COPY_FLAG_SWIZZLED_TILED_RESOURCE_TO_LINEAR_BUFFER";
+
+  if(!ret.empty())
+    ret = ret.substr(3);
+
+  return ret;
+}
+
+string ToStrHelper<false, D3D12_TILE_MAPPING_FLAGS>::Get(const D3D12_TILE_MAPPING_FLAGS &el)
+{
+  string ret;
+
+  if(el == D3D12_TILE_MAPPING_FLAG_NONE)
+    return "D3D12_TILE_MAPPING_FLAG_NONE";
+
+  if(el & D3D12_TILE_MAPPING_FLAG_NO_HAZARD)
+    ret += " | D3D12_TILE_MAPPING_FLAG_NO_HAZARD";
+
+  if(!ret.empty())
+    ret = ret.substr(3);
+
+  return ret;
+}
+
+string ToStrHelper<false, D3D12_TILE_RANGE_FLAGS>::Get(const D3D12_TILE_RANGE_FLAGS &el)
+{
+  string ret;
+
+  if(el == D3D12_TILE_RANGE_FLAG_NONE)
+    return "D3D12_TILE_RANGE_FLAG_NONE";
+
+  if(el & D3D12_TILE_RANGE_FLAG_NULL)
+    ret += " | D3D12_TILE_RANGE_FLAG_NULL";
+
+  if(el & D3D12_TILE_RANGE_FLAG_SKIP)
+    ret += " | D3D12_TILE_RANGE_FLAG_SKIP";
+
+  if(el & D3D12_TILE_RANGE_FLAG_REUSE_SINGLE_TILE)
+    ret += " | D3D12_TILE_RANGE_FLAG_REUSE_SINGLE_TILE";
+
+  if(!ret.empty())
+    ret = ret.substr(3);
+
+  return ret;
+}
+
+string ToStrHelper<false, D3D12_TILED_RESOURCES_TIER>::Get(const D3D12_TILED_RESOURCES_TIER &el)
+{
+  string ret;
+
+  if(el == D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED)
+    return "D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED";
+
+  if(el & D3D12_TILED_RESOURCES_TIER_1)
+    ret += " | D3D12_TILED_RESOURCES_TIER_1";
+
+  if(el & D3D12_TILED_RESOURCES_TIER_2)
+    ret += " | D3D12_TILED_RESOURCES_TIER_2";
+
+  if(el & D3D12_TILED_RESOURCES_TIER_3)
+    ret += " | D3D12_TILED_RESOURCES_TIER_3";
 
   if(!ret.empty())
     ret = ret.substr(3);

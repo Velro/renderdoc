@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -57,6 +57,7 @@ enum ResourceType
 
   Resource_DeviceContext,
   Resource_CommandList,
+  Resource_DeviceState,
 };
 
 ResourceType IdentifyTypeByPtr(IUnknown *ptr);
@@ -299,7 +300,18 @@ public:
       return m_pDevice->SetShaderDebugPath(this, (const char *)pData);
 
     if(guid == WKPDID_D3DDebugObjectName)
-      m_pDevice->SetResourceName(this, (const char *)pData);
+    {
+      const char *pStrData = (const char *)pData;
+      if(DataSize != 0 && pStrData[DataSize - 1] != '\0')
+      {
+        string sName(pStrData, DataSize);
+        m_pDevice->SetResourceName(this, sName.c_str());
+      }
+      else
+      {
+        m_pDevice->SetResourceName(this, pStrData);
+      }
+    }
 
     return m_pReal->SetPrivateData(guid, DataSize, pData);
   }
@@ -321,14 +333,14 @@ private:
   unsigned int m_ViewRefcount;    // refcount from views (invisible to the end-user)
 
 protected:
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
   DescType m_Desc;
 #endif
 
   WrappedResource11(NestedType *real, WrappedID3D11Device *device)
       : WrappedDeviceChild11(real, device), m_ViewRefcount(0)
   {
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
     real->GetDesc(&m_Desc);
 #endif
 
@@ -884,10 +896,11 @@ public:
   {
   public:
     ShaderEntry() : m_DebugInfoSearchPaths(NULL), m_DXBCFile(NULL), m_Details(NULL) {}
-    ShaderEntry(const byte *code, size_t codeLen)
+    ShaderEntry(WrappedID3D11Device *device, ResourceId id, const byte *code, size_t codeLen)
     {
+      m_ID = id;
       m_Bytecode.assign(code, code + codeLen);
-      m_DebugInfoSearchPaths = NULL;
+      m_DebugInfoSearchPaths = device->GetShaderDebugInfoSearchPaths();
       m_DXBCFile = NULL;
       m_Details = NULL;
     }
@@ -898,12 +911,7 @@ public:
       SAFE_DELETE(m_Details);
     }
 
-    void SetDebugInfoPath(vector<std::string> *searchPaths, const std::string &path)
-    {
-      m_DebugInfoSearchPaths = searchPaths;
-      m_DebugInfoPath = path;
-    }
-
+    void SetDebugInfoPath(const std::string &path) { m_DebugInfoPath = path; }
     DXBC::DXBCFile *GetDXBC()
     {
       if(m_DXBCFile == NULL && !m_Bytecode.empty())
@@ -916,7 +924,14 @@ public:
     ShaderReflection *GetDetails()
     {
       if(m_Details == NULL && GetDXBC() != NULL)
+      {
         m_Details = MakeShaderReflection(m_DXBCFile);
+        m_Details->ID = m_ID;
+        m_Details->EntryPoint =
+            m_DXBCFile->m_DebugInfo ? m_DXBCFile->m_DebugInfo->GetEntryFunction() : "";
+        if(m_Details->EntryPoint.empty())
+          m_Details->EntryPoint = "main";
+      }
       return m_Details;
     }
 
@@ -924,6 +939,8 @@ public:
     ShaderEntry(const ShaderEntry &e);
     void TryReplaceOriginalByteCode();
     ShaderEntry &operator=(const ShaderEntry &e);
+
+    ResourceId m_ID;
 
     std::string m_DebugInfoPath;
     vector<std::string> *m_DebugInfoSearchPaths;
@@ -937,12 +954,15 @@ public:
   static map<ResourceId, ShaderEntry *> m_ShaderList;
   static Threading::CriticalSection m_ShaderListLock;
 
-  WrappedShader(ResourceId id, const byte *code, size_t codeLen) : m_ID(id)
+  WrappedShader(WrappedID3D11Device *device, ResourceId origId, ResourceId liveId, const byte *code,
+                size_t codeLen)
+      : m_ID(liveId)
   {
     SCOPED_LOCK(m_ShaderListLock);
 
     RDCASSERT(m_ShaderList.find(m_ID) == m_ShaderList.end());
-    m_ShaderList[m_ID] = new ShaderEntry(code, codeLen);
+    m_ShaderList[m_ID] =
+        new ShaderEntry(device, origId != ResourceId() ? origId : liveId, code, codeLen);
   }
   virtual ~WrappedShader()
   {
@@ -980,10 +1000,10 @@ public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11Shader<RealShaderType>, AllocPoolCount,
                              AllocPoolMaxByteSize);
 
-  WrappedID3D11Shader(RealShaderType *real, const byte *code, size_t codeLen,
+  WrappedID3D11Shader(RealShaderType *real, ResourceId origId, const byte *code, size_t codeLen,
                       WrappedID3D11Device *device)
       : WrappedDeviceChild11<RealShaderType>(real, device),
-        WrappedShader(GetResourceID(), code, codeLen)
+        WrappedShader(device, origId, GetResourceID(), code, codeLen)
   {
   }
   virtual ~WrappedID3D11Shader() { Shutdown(); }
@@ -1244,6 +1264,7 @@ class WrappedID3D11CommandList : public WrappedDeviceChild11<ID3D11CommandList>
                         // list
 
   set<ResourceId> m_Dirty;
+  set<ResourceId> m_References;
 
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D11CommandList);
@@ -1256,12 +1277,22 @@ public:
   }
   virtual ~WrappedID3D11CommandList()
   {
+    D3D11ResourceManager *manager = m_pDevice->GetResourceManager();
+    // release the references we were holding
+    for(ResourceId id : m_References)
+    {
+      D3D11ResourceRecord *record = manager->GetResourceRecord(id);
+      if(record)
+        record->Delete(manager);
+    }
+
     // context isn't defined type at this point.
     Shutdown();
   }
 
   WrappedID3D11DeviceContext *GetContext() { return m_pContext; }
   bool IsCaptured() { return m_Successful; }
+  void SetReferences(set<ResourceId> &refs) { m_References.swap(refs); }
   void SetDirtyResources(set<ResourceId> &dirty) { m_Dirty.swap(dirty); }
   void MarkDirtyResources(D3D11ResourceManager *manager)
   {
@@ -1278,4 +1309,17 @@ public:
   // implement ID3D11CommandList
 
   virtual UINT STDMETHODCALLTYPE GetContextFlags(void) { return m_pReal->GetContextFlags(); }
+};
+
+class WrappedID3DDeviceContextState : public WrappedDeviceChild11<ID3DDeviceContextState>
+{
+public:
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedID3DDeviceContextState);
+
+  static std::vector<WrappedID3DDeviceContextState *> m_List;
+  static Threading::CriticalSection m_Lock;
+  D3D11RenderState *state;
+
+  WrappedID3DDeviceContextState(ID3DDeviceContextState *real, WrappedID3D11Device *device);
+  virtual ~WrappedID3DDeviceContextState();
 };

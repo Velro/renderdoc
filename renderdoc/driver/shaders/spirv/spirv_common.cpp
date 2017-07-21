@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,13 +23,10 @@
  ******************************************************************************/
 
 #include "spirv_common.h"
+#include "common/common.h"
 
 #undef min
 #undef max
-
-#ifdef _MSC_VER
-#pragma warning(disable : 4481)    // nonstandard extension used: override specifier 'override'
-#endif
 
 #include "3rdparty/glslang/glslang/Public/ShaderLang.h"
 

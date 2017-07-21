@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -153,70 +153,6 @@ namespace renderdocui.Windows
             }
         }
 
-        private string FriendlyName(string disasm, string stem, string prefix, ShaderConstant[] vars)
-        {
-            foreach (var v in vars)
-            {
-                if (v.type.descriptor.rows == 0 && v.type.descriptor.cols == 0 && v.type.members.Length > 0)
-                {
-                    string subPrefix = prefix + v.name + ".";
-
-                    disasm = FriendlyName(disasm, stem, subPrefix, v.type.members);
-                }
-                else if (v.type.descriptor.rows > 0 && v.type.descriptor.cols > 0)
-                {
-                    uint numRegs = v.type.descriptor.rows * Math.Max(1, v.type.descriptor.elements);
-                    int regSize = (int)v.type.descriptor.cols;
-
-                    if (!v.type.descriptor.rowMajorStorage && v.type.descriptor.rows > 1 && v.type.descriptor.cols > 1)
-                    {
-                        numRegs = v.type.descriptor.cols;
-                        regSize = (int)v.type.descriptor.rows;
-                    }
-
-                    for (uint r = 0; r < numRegs; r++)
-                    {
-                        var reg = string.Format("{0}[{1}]", stem, v.reg.vec + r);
-
-                        int compStart = r == 0 ? (int)v.reg.comp : 0;
-                        int compEnd = compStart + regSize;
-
-                        var comps = "xyzw".Substring(compStart, compEnd - compStart);
-
-                        var regexp = string.Format(", (-|abs\\()?{0}\\.([{1}]*)([^xyzw])", Regex.Escape(reg), comps);
-
-                        var match = Regex.Match(disasm, regexp);
-
-                        while (match.Success)
-                        {
-                            var swizzle = match.Groups[2].Value.ToCharArray();
-
-                            for (int c = 0; c < swizzle.Length; c++)
-                            {
-                                int val = "xyzw".IndexOf(swizzle[c]);
-                                swizzle[c] = "xyzw"[val - compStart];
-                            }
-
-                            var name = numRegs == 1 ? v.name : string.Format("{0}[{1}]", v.name, r);
-
-                            name = prefix + name;
-
-                            var replacement = string.Format(", {0}{1}.{2}{3}",
-                                                    match.Groups[1].Value, name, new string(swizzle), match.Groups[3].Value);
-
-                            disasm = disasm.Remove(match.Index, match.Length);
-
-                            disasm = disasm.Insert(match.Index, replacement);
-
-                            match = Regex.Match(disasm, regexp);
-                        }
-                    }
-                }
-            }
-
-            return disasm;
-        }
-
         private List<ScintillaNET.Scintilla> m_Scintillas = new List<ScintillaNET.Scintilla>();
         private SaveMethod m_SaveCallback = null;
         private CloseMethod m_CloseCallback = null;
@@ -259,7 +195,7 @@ namespace renderdocui.Windows
             m_CloseCallback = closeCallback;
 
             if (m_Core.LogLoaded)
-                pointLinearSamplersToolStripMenuItem.Visible = (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11);
+                pointLinearSamplersToolStripMenuItem.Visible = m_Core.APIProps.pipelineType.IsD3D();
 
             DockContent sel = null;
 
@@ -370,6 +306,12 @@ namespace renderdocui.Windows
             if (m_FindAll == null)
                 m_FindAll = new FindAllDialog(FindAllFiles);
 
+            if (m_FindAll.Visible)
+            {
+                m_FindAll.Activate();
+                return;
+            }
+
             m_FindAll.Show(this);
         }
 
@@ -478,54 +420,8 @@ namespace renderdocui.Windows
             else
                 Text = m_Core.CurPipelineState.GetShaderName(stage);
 
-            var disasm = shader != null ? shader.Disassembly : "";
-
-            if (m_Core.Config.ShaderViewer_FriendlyNaming && m_ShaderDetails != null &&
-                m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
             {
-                for (int i = 0; i < m_ShaderDetails.ConstantBlocks.Length; i++)
-                {
-                    var stem = string.Format("cb{0}", i);
-
-                    var cbuf = m_ShaderDetails.ConstantBlocks[i];
-
-                    if (cbuf.variables.Length == 0)
-                        continue;
-
-                    disasm = FriendlyName(disasm, stem, "", cbuf.variables);
-                }
-
-                foreach (var r in m_ShaderDetails.ReadOnlyResources)
-                {
-                    if (r.IsSRV)
-                    {
-                        var needle = string.Format(", t{0}([^0-9])", r.bindPoint);
-                        var replacement = string.Format(", {0}$1", r.name);
-
-                        Regex rgx = new Regex(needle);
-                        disasm = rgx.Replace(disasm, replacement);
-                    }
-                    if (r.IsSampler)
-                    {
-                        var needle = string.Format(", s{0}([^0-9])", r.bindPoint);
-                        var replacement = string.Format(", {0}$1", r.name);
-
-                        Regex rgx = new Regex(needle);
-                        disasm = rgx.Replace(disasm, replacement);
-                    }
-                }
-                foreach (var r in m_ShaderDetails.ReadWriteResources)
-                {
-                    var needle = string.Format(", u{0}([^0-9])", r.bindPoint);
-                    var replacement = string.Format(", {0}$1", r.name);
-
-                    Regex rgx = new Regex(needle);
-                    disasm = rgx.Replace(disasm, replacement);
-                }
-            }
-
-            {
-                m_DisassemblyView = MakeEditor("scintillaDisassem", disasm, m_Core.APIProps.pipelineType == GraphicsAPI.Vulkan);
+                m_DisassemblyView = MakeEditor("scintillaDisassem", "", m_Core.APIProps.pipelineType == GraphicsAPI.Vulkan);
                 m_DisassemblyView.IsReadOnly = true;
                 m_DisassemblyView.TabIndex = 0;
 
@@ -562,9 +458,48 @@ namespace renderdocui.Windows
                     m_DisassemblyView.MouseDown += new MouseEventHandler(contextMouseDown);
                 }
 
+                TableLayoutPanel disasmLayoutPanel = new TableLayoutPanel();
+
+                ToolStrip disasmToolStrip = new ToolStrip();
+
+                ToolStripLabel disasmTypeLabel = new ToolStripLabel();
+                disasmTypeLabel.Text = "Disassembly type: ";
+
+                ToolStripComboBox disasmType = new ToolStripComboBox();
+
+                disasmType.DropDownStyle = ComboBoxStyle.DropDownList;
+
+                // force creation of the handle so we can use BeginInvoke.
+                if (!IsHandleCreated)
+                    CreateHandle();
+
+                m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
+                {
+                    string[] targets = r.GetDisassemblyTargets();
+
+                    this.BeginInvoke((MethodInvoker)delegate
+                    {
+                        disasmType.Items.AddRange(targets);
+                        disasmType.SelectedIndex = 0;
+                        disasmType.SelectedIndexChanged += new System.EventHandler(disasmType_SelectedIndexChanged);
+                    });
+                });
+
+                disasmToolStrip.Dock = DockStyle.None;
+                disasmToolStrip.GripStyle = ToolStripGripStyle.Hidden;
+                disasmToolStrip.Items.AddRange(new ToolStripItem[] { disasmTypeLabel, disasmType });
+                disasmToolStrip.Margin = new Padding(0, 0, 12, 0);
+
+                disasmLayoutPanel.ColumnCount = 1;
+                disasmLayoutPanel.Controls.Add(disasmToolStrip, 0, 0);
+                disasmLayoutPanel.Controls.Add(m_DisassemblyView, 0, 1);
+                disasmLayoutPanel.RowCount = 2;
+                disasmLayoutPanel.RowStyles.Add(new RowStyle());
+                disasmLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
                 m_Scintillas.Add(m_DisassemblyView);
 
-                var w = Helpers.WrapDockContent(dockPanel, m_DisassemblyView, "Disassembly");
+                var w = Helpers.WrapDockContent(dockPanel, disasmLayoutPanel, "Disassembly");
                 w.DockState = DockState.Document;
                 w.Show();
 
@@ -572,12 +507,28 @@ namespace renderdocui.Windows
                 w.CloseButtonVisible = false;
             }
 
-            if (shader != null && shader.DebugInfo.entryFunc.Length > 0 && shader.DebugInfo.files.Length > 0)
+            if (shader != null)
+            {
+                m_Core.Renderer.BeginInvoke((ReplayRenderer replay) =>
+                {
+                    var disasm = replay.DisassembleShader(m_ShaderDetails, "");
+
+                    this.BeginInvoke((MethodInvoker)delegate
+                    {
+                        m_DisassemblyView.IsReadOnly = false;
+                        m_DisassemblyView.Text = disasm;
+                        m_DisassemblyView.UndoRedo.EmptyUndoBuffer();
+                        m_DisassemblyView.IsReadOnly = true;
+                    });
+                });
+            }
+
+            if (shader != null && shader.DebugInfo.files.Length > 0)
             {
                 if(trace != null)
-                    Text = String.Format("Debug {0}() - {1}", shader.DebugInfo.entryFunc, debugContext);
+                    Text = String.Format("Debug {0}() - {1}", shader.EntryPoint, debugContext);
                 else
-                    Text = String.Format("{0}()", shader.DebugInfo.entryFunc);
+                    Text = String.Format("{0}()", shader.EntryPoint);
 
                 int fileIdx = 0;
 
@@ -600,15 +551,8 @@ namespace renderdocui.Windows
 
                     m_Scintillas.Add(scintilla1);
 
-                    if (shader.DebugInfo.entryFile >= 0 && shader.DebugInfo.entryFile < shader.DebugInfo.files.Length)
-                    {
-                        if (fileIdx == shader.DebugInfo.entryFile)
-                            sel = w;
-                    }
-                    else if (f.filetext.Contains(shader.DebugInfo.entryFunc))
-                    {
+                    if (sel == null)
                         sel = w;
-                    }
 
                     fileIdx++;
                 }
@@ -712,6 +656,27 @@ namespace renderdocui.Windows
             CurrentStep = 0;
 
             this.ResumeLayout(false);
+        }
+
+        private void disasmType_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            ToolStripComboBox disasmType = sender as ToolStripComboBox;
+            if (disasmType == null)
+                return;
+
+            string target = disasmType.Items[disasmType.SelectedIndex].ToString();
+            m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
+            {
+                string disasm = r.DisassembleShader(m_ShaderDetails, target);
+
+                this.BeginInvoke((MethodInvoker)delegate
+                {
+                    m_DisassemblyView.IsReadOnly = false;
+                    m_DisassemblyView.Text = disasm;
+                    m_DisassemblyView.UndoRedo.EmptyUndoBuffer();
+                    m_DisassemblyView.IsReadOnly = true;
+                });
+            });
         }
 
         private ListBox m_FileList = null;
@@ -1708,7 +1673,7 @@ namespace renderdocui.Windows
 
         public void OnLogfileLoaded()
         {
-            pointLinearSamplersToolStripMenuItem.Visible = (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11);
+            pointLinearSamplersToolStripMenuItem.Visible = (m_Core.APIProps.pipelineType.IsD3D());
         }
 
         public void OnEventSelected(UInt32 eventID)
@@ -1858,6 +1823,22 @@ namespace renderdocui.Windows
             RunToCursor();
         }
 
+        private void runToSample_Click(object sender, EventArgs e)
+        {
+            if (m_Trace == null || m_Trace.states == null)
+                return;
+
+            RunToSample();
+        }
+
+        private void runToNanOrInf_Click(object sender, EventArgs e)
+        {
+            if (m_Trace == null || m_Trace.states == null)
+                return;
+
+            RunToNanOrInf();
+        }
+
         private bool StepBack()
         {
             if (m_Trace == null || m_Trace.states == null)
@@ -1958,6 +1939,46 @@ namespace renderdocui.Windows
 
                 i++;
             }
+        }
+
+        private void RunToCondition(ShaderDebugStateFlags condition)
+        {
+            if (m_Trace == null || m_Trace.states == null)
+                return;
+
+            int step = CurrentStep;
+
+            bool firstStep = true;
+
+            while (step < m_Trace.states.Length)
+            {
+                int nextStep = step + 1;
+
+                if (nextStep >= m_Trace.states.Length)
+                    break;
+
+                if (!firstStep && m_Trace.states[nextStep].flags.HasFlag(condition))
+                    break;
+
+                if (!firstStep && m_Breakpoints.Contains((int)m_Trace.states[step].nextInstruction))
+                    break;
+
+                firstStep = false;
+
+                step = nextStep;
+            }
+
+            CurrentStep = step;
+        }
+
+        private void RunToSample()
+        {
+            RunToCondition(ShaderDebugStateFlags.SampleLoadGather);
+        }
+
+        private void RunToNanOrInf()
+        {
+            RunToCondition(ShaderDebugStateFlags.GeneratedNanOrInf);
         }
 
         private void autosToolStripMenuItem_Click(object sender, EventArgs e)
@@ -2066,7 +2087,7 @@ namespace renderdocui.Windows
 
         private int GetPostVersionInsertPosition()
         {
-            if (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            if (m_Core.APIProps.pipelineType.IsD3D())
                 return 0;
 
             int ver = CurrentScintilla.Text.IndexOf("#version");
@@ -2097,7 +2118,7 @@ namespace renderdocui.Windows
             if (CurrentScintilla == null)
                 return;
 
-            if (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            if (m_Core.APIProps.pipelineType.IsD3D())
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uint4 RENDERDOC_TexDim; // xyz == width, height, depth. w == # mips" + Environment.NewLine + Environment.NewLine);
             else if (m_Core.APIProps.pipelineType == GraphicsAPI.OpenGL)
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uniform uvec4 RENDERDOC_TexDim; // xyz == width, height, depth. w == # mips" + Environment.NewLine + Environment.NewLine);
@@ -2113,7 +2134,7 @@ namespace renderdocui.Windows
 
             if (m_Core.APIProps.pipelineType == GraphicsAPI.Vulkan)
                 InsertVulkanUBO();
-            else if (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            else if (m_Core.APIProps.pipelineType.IsD3D())
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uint RENDERDOC_SelectedMip; // selected mip in UI" + Environment.NewLine + Environment.NewLine);
             else if (m_Core.APIProps.pipelineType == GraphicsAPI.OpenGL)
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uniform uint RENDERDOC_SelectedMip; // selected mip in UI" + Environment.NewLine + Environment.NewLine);
@@ -2127,7 +2148,7 @@ namespace renderdocui.Windows
 
             if (m_Core.APIProps.pipelineType == GraphicsAPI.Vulkan)
                 InsertVulkanUBO();
-            else if (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            else if (m_Core.APIProps.pipelineType.IsD3D())
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uint RENDERDOC_SelectedSliceFace; // selected array slice or cubemap face in UI" + Environment.NewLine + Environment.NewLine);
             else if (m_Core.APIProps.pipelineType == GraphicsAPI.OpenGL)
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uniform uint RENDERDOC_SelectedSliceFace; // selected array slice or cubemap face in UI" + Environment.NewLine + Environment.NewLine);
@@ -2141,7 +2162,7 @@ namespace renderdocui.Windows
 
             if (m_Core.APIProps.pipelineType == GraphicsAPI.Vulkan)
                 InsertVulkanUBO();
-            else if (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            else if (m_Core.APIProps.pipelineType.IsD3D())
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "int RENDERDOC_SelectedSample; // selected MSAA sample or -numSamples for resolve. See docs" + Environment.NewLine + Environment.NewLine);
             else if (m_Core.APIProps.pipelineType == GraphicsAPI.OpenGL)
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uniform int RENDERDOC_SelectedSample; // selected MSAA sample or -numSamples for resolve. See docs" + Environment.NewLine + Environment.NewLine);
@@ -2153,7 +2174,7 @@ namespace renderdocui.Windows
             if (CurrentScintilla == null)
                 return;
 
-            if(m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            if(m_Core.APIProps.pipelineType.IsD3D())
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uint RENDERDOC_TextureType; // 1 = 1D, 2 = 2D, 3 = 3D, 4 = Depth, 5 = Depth + Stencil, 6 = Depth (MS), 7 = Depth + Stencil (MS)" + Environment.NewLine + Environment.NewLine);
             else if (m_Core.APIProps.pipelineType == GraphicsAPI.OpenGL)
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "uniform uint RENDERDOC_TextureType; // 1 = 1D, 2 = 2D, 3 = 3D, 4 = Cube, 5 = 1DArray, 6 = 2DArray, 7 = CubeArray, 8 = Rect, 9 = Buffer, 10 = 2DMS" + Environment.NewLine + Environment.NewLine);
@@ -2167,7 +2188,7 @@ namespace renderdocui.Windows
             if (CurrentScintilla == null)
                 return;
 
-            if (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            if (m_Core.APIProps.pipelineType.IsD3D())
             {
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "// Samplers" + Environment.NewLine +
                                                 "SamplerState pointSampler : register(s0);" + Environment.NewLine +
@@ -2182,7 +2203,7 @@ namespace renderdocui.Windows
             if (CurrentScintilla == null)
                 return;
 
-            if (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            if (m_Core.APIProps.pipelineType.IsD3D())
             {
                 CurrentScintilla.InsertText(GetPostVersionInsertPosition(), "// Textures" + Environment.NewLine +
                                                 "Texture1DArray<float4> texDisplayTex1DArray : register(t1);" + Environment.NewLine +
@@ -2192,7 +2213,6 @@ namespace renderdocui.Windows
                                                 "Texture2DArray<uint2> texDisplayTexStencilArray : register(t5);" + Environment.NewLine +
                                                 "Texture2DMSArray<float2> texDisplayTexDepthMSArray : register(t6);" + Environment.NewLine +
                                                 "Texture2DMSArray<uint2> texDisplayTexStencilMSArray : register(t7);" + Environment.NewLine +
-                                                "Texture2DArray<float4> texDisplayTexCubeArray : register(t8);" + Environment.NewLine +
                                                 "Texture2DMSArray<float4> texDisplayTex2DMSArray : register(t9);" + Environment.NewLine +
                                                 "" + Environment.NewLine +
                                                 "Texture1DArray<uint4> texDisplayUIntTex1DArray : register(t11);" + Environment.NewLine +

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,6 @@
 
 #include "renderdoccmd.h"
 #include <locale.h>
-#include <replay/renderdoc_replay.h>
 #include <string.h>
 #include <unistd.h>
 #include <string>
@@ -35,7 +34,7 @@ void Daemonise()
 {
 }
 
-void DisplayRendererPreview(ReplayRenderer *renderer, TextureDisplay &displayCfg, uint32_t width,
+void DisplayRendererPreview(IReplayController *renderer, TextureDisplay &displayCfg, uint32_t width,
                             uint32_t height)
 {
 }
@@ -48,5 +47,5 @@ int main(int argc, char *argv[])
 
   // process any apple-specific arguments here
 
-  return renderdoccmd(argc, argv);
+  return renderdoccmd(GlobalEnvironment(), argc, argv);
 }

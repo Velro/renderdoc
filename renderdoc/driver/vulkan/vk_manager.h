@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -236,10 +236,18 @@ public:
       // ID and if the resource isn't ever referenced elsewhere, it will just be
       // a non-live ID to be ignored.
 
-      if(IsDispatchableRes(GetWrapped(obj)))
-        ((WrappedVkDispRes *)GetWrapped(obj))->id = ResourceId();
+      if(IsDispatchable(obj))
+      {
+        WrappedVkDispRes *res = (WrappedVkDispRes *)GetWrapped(obj);
+        res->id = ResourceId();
+        res->record = NULL;
+      }
       else
-        ((WrappedVkNonDispRes *)GetWrapped(obj))->id = ResourceId();
+      {
+        WrappedVkNonDispRes *res = (WrappedVkNonDispRes *)GetWrapped(obj);
+        res->id = ResourceId();
+        res->record = NULL;
+      }
     }
     delete GetWrapped(obj);
   }

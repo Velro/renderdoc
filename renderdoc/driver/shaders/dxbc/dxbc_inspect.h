@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -131,7 +131,22 @@ struct ShaderInputBind
     TYPE_UAV_RWSTRUCTURED_WITH_COUNTER,
   } type;
 
-  uint32_t bindPoint;
+  constexpr bool IsCBuffer() const { return type == TYPE_CBUFFER; }
+  constexpr bool IsSampler() const { return type == TYPE_SAMPLER; }
+  constexpr bool IsROResource() const
+  {
+    return type == TYPE_TBUFFER || type == TYPE_TEXTURE || type == TYPE_STRUCTURED ||
+           type == TYPE_BYTEADDRESS;
+  }
+  constexpr bool IsUAV() const
+  {
+    return type == TYPE_UAV_RWTYPED || type == TYPE_UAV_RWSTRUCTURED ||
+           type == TYPE_UAV_RWBYTEADDRESS || type == TYPE_UAV_APPEND_STRUCTURED ||
+           type == TYPE_UAV_CONSUME_STRUCTURED || type == TYPE_UAV_RWSTRUCTURED_WITH_COUNTER;
+  }
+
+  uint32_t space;
+  uint32_t reg;
   uint32_t bindCount;
 
   uint32_t flags;
@@ -283,6 +298,10 @@ struct CBuffer
 {
   string name;
 
+  uint32_t space;
+  uint32_t reg;
+  uint32_t bindCount;
+
   struct Descriptor
   {
     string name;
@@ -339,6 +358,7 @@ public:
 
   vector<uint32_t> m_Immediate;
 
+  bool m_GuessedResources;
   vector<ShaderInputBind> m_Resources;
 
   vector<CBuffer> m_CBuffers;
@@ -385,11 +405,10 @@ private:
   void GuessResources();
 
   // these functions modify tokenStream pointer to point after the item
-  bool ExtractOperation(
-      uint32_t *&tokenStream,
-      ASMOperation &op);    // returns false if not an operation (ie. it's a declaration)
-  bool ExtractDecl(uint32_t *&tokenStream, ASMDecl &decl);    // as above
-  bool ExtractOperand(uint32_t *&tokenStream, ASMOperand &oper);
+  // ExtractOperation/ExtractDecl returns false if not an operation (ie. it's a declaration)
+  bool ExtractOperation(uint32_t *&tokenStream, ASMOperation &op, bool friendlyName);
+  bool ExtractDecl(uint32_t *&tokenStream, ASMDecl &decl, bool friendlyName);
+  bool ExtractOperand(uint32_t *&tokenStream, ToString flags, ASMOperand &oper);
 
   bool IsDeclaration(OpcodeType op);
 

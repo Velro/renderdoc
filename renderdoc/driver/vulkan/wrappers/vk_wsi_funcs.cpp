@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -65,6 +65,116 @@ VkResult WrappedVulkan::vkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevi
   return ObjDisp(physicalDevice)
       ->GetPhysicalDeviceSurfacePresentModesKHR(Unwrap(physicalDevice), Unwrap(surface),
                                                 pPresentModeCount, pPresentModes);
+}
+
+VkResult WrappedVulkan::vkGetPhysicalDeviceSurfaceCapabilities2EXT(
+    VkPhysicalDevice physicalDevice, VkSurfaceKHR surface,
+    VkSurfaceCapabilities2EXT *pSurfaceCapabilities)
+{
+  return ObjDisp(physicalDevice)
+      ->GetPhysicalDeviceSurfaceCapabilities2EXT(Unwrap(physicalDevice), Unwrap(surface),
+                                                 pSurfaceCapabilities);
+}
+
+VkResult WrappedVulkan::vkDisplayPowerControlEXT(VkDevice device, VkDisplayKHR display,
+                                                 const VkDisplayPowerInfoEXT *pDisplayPowerInfo)
+{
+  // displays are not wrapped
+  return ObjDisp(device)->DisplayPowerControlEXT(Unwrap(device), display, pDisplayPowerInfo);
+}
+
+VkResult WrappedVulkan::vkGetSwapchainCounterEXT(VkDevice device, VkSwapchainKHR swapchain,
+                                                 VkSurfaceCounterFlagBitsEXT counter,
+                                                 uint64_t *pCounterValue)
+{
+  return ObjDisp(device)->GetSwapchainCounterEXT(Unwrap(device), Unwrap(swapchain), counter,
+                                                 pCounterValue);
+}
+
+VkResult WrappedVulkan::vkRegisterDeviceEventEXT(VkDevice device,
+                                                 const VkDeviceEventInfoEXT *pDeviceEventInfo,
+                                                 const VkAllocationCallbacks *pAllocator,
+                                                 VkFence *pFence)
+{
+  // for now we emulate this on replay as just a regular fence create, since we don't faithfully
+  // replay sync events anyway.
+  VkResult ret =
+      ObjDisp(device)->RegisterDeviceEventEXT(Unwrap(device), pDeviceEventInfo, pAllocator, pFence);
+
+  if(ret == VK_SUCCESS)
+  {
+    ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), *pFence);
+
+    if(m_State >= WRITING)
+    {
+      Chunk *chunk = NULL;
+
+      {
+        CACHE_THREAD_SERIALISER();
+
+        VkFenceCreateInfo createInfo = {
+            VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+
+        SCOPED_SERIALISE_CONTEXT(CREATE_FENCE);
+        Serialise_vkCreateFence(localSerialiser, device, &createInfo, NULL, pFence);
+
+        chunk = scope.Get();
+      }
+
+      VkResourceRecord *record = GetResourceManager()->AddResourceRecord(*pFence);
+      record->AddChunk(chunk);
+    }
+    else
+    {
+      GetResourceManager()->AddLiveResource(id, *pFence);
+    }
+  }
+
+  return ret;
+}
+
+VkResult WrappedVulkan::vkRegisterDisplayEventEXT(VkDevice device, VkDisplayKHR display,
+                                                  const VkDisplayEventInfoEXT *pDisplayEventInfo,
+                                                  const VkAllocationCallbacks *pAllocator,
+                                                  VkFence *pFence)
+{
+  // for now we emulate this on replay as just a regular fence create, since we don't faithfully
+  // replay sync events anyway.
+  VkResult ret = ObjDisp(device)->RegisterDisplayEventEXT(Unwrap(device), display,
+                                                          pDisplayEventInfo, pAllocator, pFence);
+
+  if(ret == VK_SUCCESS)
+  {
+    ResourceId id = GetResourceManager()->WrapResource(Unwrap(device), *pFence);
+
+    if(m_State >= WRITING)
+    {
+      Chunk *chunk = NULL;
+
+      {
+        CACHE_THREAD_SERIALISER();
+
+        VkFenceCreateInfo createInfo = {
+            VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+
+        SCOPED_SERIALISE_CONTEXT(CREATE_FENCE);
+        Serialise_vkCreateFence(localSerialiser, device, &createInfo, NULL, pFence);
+
+        chunk = scope.Get();
+      }
+
+      VkResourceRecord *record = GetResourceManager()->AddResourceRecord(*pFence);
+      record->AddChunk(chunk);
+    }
+    else
+    {
+      GetResourceManager()->AddLiveResource(id, *pFence);
+    }
+  }
+
+  return ret;
 }
 
 bool WrappedVulkan::Serialise_vkGetSwapchainImagesKHR(Serialiser *localSerialiser, VkDevice device,
@@ -190,6 +300,13 @@ bool WrappedVulkan::Serialise_vkCreateSwapchainKHR(Serialiser *localSerialiser, 
   SERIALISE_ELEMENT(uint32_t, numSwapImages, numIms);
   SERIALISE_ELEMENT(VkSharingMode, sharingMode, pCreateInfo->imageSharingMode);
 
+  // default to 0 for old logs, in most cases this doesn't change anything
+  VkImageUsageFlags usage = pCreateInfo ? pCreateInfo->imageUsage : 0;
+  if(m_State >= WRITING || GetLogVersion() >= 0x0000006)
+  {
+    localSerialiser->Serialise("usage", usage);
+  }
+
   if(m_State == READING)
   {
     // use original ID because we don't create a live version of the swapchain
@@ -215,7 +332,7 @@ bool WrappedVulkan::Serialise_vkCreateSwapchainKHR(Serialiser *localSerialiser, 
         VK_SAMPLE_COUNT_1_BIT,
         VK_IMAGE_TILING_OPTIMAL,
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | usage,
         sharingMode,
         0,
         NULL,
@@ -269,7 +386,8 @@ bool WrappedVulkan::Serialise_vkCreateSwapchainKHR(Serialiser *localSerialiser, 
       iminfo.extent.depth = 1;
       iminfo.mipLevels = 1;
       iminfo.arrayLayers = info.imageArrayLayers;
-      iminfo.creationFlags = eTextureCreate_SRV | eTextureCreate_RTV | eTextureCreate_SwapBuffer;
+      iminfo.creationFlags =
+          TextureCategory::ShaderRead | TextureCategory::ColorTarget | TextureCategory::SwapBuffer;
       iminfo.cube = false;
       iminfo.samples = VK_SAMPLE_COUNT_1_BIT;
 
@@ -283,8 +401,6 @@ bool WrappedVulkan::Serialise_vkCreateSwapchainKHR(Serialiser *localSerialiser, 
 
       m_ImageLayouts[liveId].extent = iminfo.extent;
       m_ImageLayouts[liveId].format = iminfo.format;
-      m_ImageLayouts[liveId].layerCount = 1;
-      m_ImageLayouts[liveId].levelCount = 1;
 
       m_ImageLayouts[liveId].subresourceStates.clear();
       m_ImageLayouts[liveId].subresourceStates.push_back(
@@ -539,33 +655,6 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
 
   if(m_State == WRITING_IDLE)
   {
-    m_FrameTimes.push_back(m_FrameTimer.GetMilliseconds());
-    m_TotalTime += m_FrameTimes.back();
-    m_FrameTimer.Restart();
-
-    // update every second
-    if(m_TotalTime > 1000.0)
-    {
-      m_MinFrametime = 10000.0;
-      m_MaxFrametime = 0.0;
-      m_AvgFrametime = 0.0;
-
-      m_TotalTime = 0.0;
-
-      for(size_t i = 0; i < m_FrameTimes.size(); i++)
-      {
-        m_AvgFrametime += m_FrameTimes[i];
-        if(m_FrameTimes[i] < m_MinFrametime)
-          m_MinFrametime = m_FrameTimes[i];
-        if(m_FrameTimes[i] > m_MaxFrametime)
-          m_MaxFrametime = m_FrameTimes[i];
-      }
-
-      m_AvgFrametime /= double(m_FrameTimes.size());
-
-      m_FrameTimes.clear();
-    }
-
     uint32_t overlay = RenderDoc::Inst().GetOverlayBits();
 
     if(overlay & eRENDERDOC_Overlay_Enabled)
@@ -603,106 +692,11 @@ VkResult WrappedVulkan::vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR 
 
       GetDebugManager()->BeginText(textstate);
 
-      if(activeWindow)
-      {
-        vector<RENDERDOC_InputButton> keys = RenderDoc::Inst().GetCaptureKeys();
+      int flags = activeWindow ? RenderDoc::eOverlay_ActiveWindow : 0;
+      string overlayText = RenderDoc::Inst().GetOverlayText(RDC_Vulkan, m_FrameCounter, flags);
 
-        string overlayText = "Vulkan. ";
-
-        if(Keyboard::PlatformHasKeyInput())
-        {
-          for(size_t i = 0; i < keys.size(); i++)
-          {
-            if(i > 0)
-              overlayText += ", ";
-
-            overlayText += ToStr::Get(keys[i]);
-          }
-
-          if(!keys.empty())
-            overlayText += " to capture.";
-        }
-        else
-        {
-          if(RenderDoc::Inst().IsTargetControlConnected())
-          {
-            overlayText += "Connected by " + RenderDoc::Inst().GetTargetControlUsername() + ".";
-          }
-          else
-          {
-            uint32_t port = RenderDoc::Inst().GetTargetControlIdent();
-            if(port)
-              overlayText +=
-                  StringFormat::Fmt("Listening for remote access connection on port %i.", port);
-            else
-              overlayText += "No remote access socket.";
-          }
-        }
-
-        if(overlay & eRENDERDOC_Overlay_FrameNumber)
-        {
-          overlayText += StringFormat::Fmt(" Frame: %d.", m_FrameCounter);
-        }
-        if(overlay & eRENDERDOC_Overlay_FrameRate)
-        {
-          overlayText += StringFormat::Fmt(" %.2lf ms (%.2lf .. %.2lf) (%.0lf FPS)", m_AvgFrametime,
-                                           m_MinFrametime, m_MaxFrametime, 1000.0f / m_AvgFrametime);
-        }
-
-        float y = 0.0f;
-
-        if(!overlayText.empty())
-        {
-          GetDebugManager()->RenderText(textstate, 0.0f, y, overlayText.c_str());
-          y += 1.0f;
-        }
-
-        if(overlay & eRENDERDOC_Overlay_CaptureList)
-        {
-          GetDebugManager()->RenderText(textstate, 0.0f, y, "%d Captures saved.\n",
-                                        (uint32_t)m_CapturedFrames.size());
-          y += 1.0f;
-
-          uint64_t now = Timing::GetUnixTimestamp();
-          for(size_t i = 0; i < m_CapturedFrames.size(); i++)
-          {
-            if(now - m_CapturedFrames[i].captureTime < 20)
-            {
-              GetDebugManager()->RenderText(textstate, 0.0f, y, "Captured frame %d.\n",
-                                            m_CapturedFrames[i].frameNumber);
-              y += 1.0f;
-            }
-          }
-        }
-
-#if !defined(RELEASE)
-        GetDebugManager()->RenderText(textstate, 0.0f, y, "%llu chunks - %.2f MB",
-                                      Chunk::NumLiveChunks(),
-                                      float(Chunk::TotalMem()) / 1024.0f / 1024.0f);
-        y += 1.0f;
-#endif
-      }
-      else
-      {
-        vector<RENDERDOC_InputButton> keys = RenderDoc::Inst().GetFocusKeys();
-
-        string str = "Vulkan. Inactive swapchain.";
-
-        for(size_t i = 0; i < keys.size(); i++)
-        {
-          if(i == 0)
-            str += " ";
-          else
-            str += ", ";
-
-          str += ToStr::Get(keys[i]);
-        }
-
-        if(!keys.empty())
-          str += " to cycle between swapchains";
-
-        GetDebugManager()->RenderText(textstate, 0.0f, 0.0f, str.c_str());
-      }
+      if(!overlayText.empty())
+        GetDebugManager()->RenderText(textstate, 0.0f, 0.0f, overlayText.c_str());
 
       GetDebugManager()->EndText(textstate);
 
@@ -837,6 +831,21 @@ VkResult WrappedVulkan::vkCreateDisplayPlaneSurfaceKHR(VkInstance instance,
     // we must wrap surfaces to be consistent with the rest of the code and surface handling,
     // but there's nothing actually to do here - no meaningful data we care about here.
     GetResourceManager()->WrapResource(Unwrap(instance), *pSurface);
+
+    WrappedVkSurfaceKHR *wrapped = GetWrapped(*pSurface);
+
+    // we don't have an actual OS handle to identify this window. Instead construct something
+    // that should be unique and hopefully not clashing/overlapping with other window handles
+    // in use.
+    uintptr_t fakeWindowHandle;
+    fakeWindowHandle = (uintptr_t)NON_DISP_TO_UINT64(pCreateInfo->displayMode);
+    fakeWindowHandle += pCreateInfo->planeIndex;
+    fakeWindowHandle += pCreateInfo->planeStackIndex << 4;
+
+    // since there's no point in allocating a full resource record and storing the window
+    // handle under there somewhere, we just cast. We won't use the resource record for anything
+
+    wrapped->record = (VkResourceRecord *)fakeWindowHandle;
   }
 
   return ret;
@@ -867,4 +876,10 @@ VkResult WrappedVulkan::vkCreateSharedSwapchainsKHR(VkDevice device, uint32_t sw
   }
 
   return ret;
+}
+
+VkResult WrappedVulkan::vkReleaseDisplayEXT(VkPhysicalDevice physicalDevice, VkDisplayKHR display)
+{
+  // displays are not wrapped
+  return ObjDisp(physicalDevice)->ReleaseDisplayEXT(Unwrap(physicalDevice), display);
 }

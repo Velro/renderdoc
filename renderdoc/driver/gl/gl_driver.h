@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -43,7 +43,7 @@ using std::list;
 struct GLInitParams : public RDCInitParams
 {
   GLInitParams();
-  ReplayCreateStatus Serialise();
+  ReplayStatus Serialise();
 
   uint32_t colorBits;
   uint32_t depthBits;
@@ -53,10 +53,10 @@ struct GLInitParams : public RDCInitParams
   uint32_t width;
   uint32_t height;
 
-  static const uint32_t GL_SERIALISE_VERSION = 0x0000012;
+  static const uint32_t GL_SERIALISE_VERSION = 0x0000016;
 
   // backwards compatibility for old logs described at the declaration of this array
-  static const uint32_t GL_NUM_SUPPORTED_OLD_VERSIONS = 2;
+  static const uint32_t GL_NUM_SUPPORTED_OLD_VERSIONS = 6;
   static const uint32_t GL_OLD_VERSIONS[GL_NUM_SUPPORTED_OLD_VERSIONS];
 
   // version number internal to opengl stream
@@ -72,19 +72,19 @@ enum CaptureFailReason
 struct DrawcallTreeNode
 {
   DrawcallTreeNode() {}
-  explicit DrawcallTreeNode(const FetchDrawcall &d) : draw(d) {}
-  FetchDrawcall draw;
+  explicit DrawcallTreeNode(const DrawcallDescription &d) : draw(d) {}
+  DrawcallDescription draw;
   vector<DrawcallTreeNode> children;
 
-  DrawcallTreeNode &operator=(const FetchDrawcall &d)
+  DrawcallTreeNode &operator=(const DrawcallDescription &d)
   {
     *this = DrawcallTreeNode(d);
     return *this;
   }
 
-  vector<FetchDrawcall> Bake()
+  vector<DrawcallDescription> Bake()
   {
-    vector<FetchDrawcall> ret;
+    vector<DrawcallDescription> ret;
     if(children.empty())
       return ret;
 
@@ -110,6 +110,7 @@ class WrappedOpenGL : public IFrameCapturer
 {
 private:
   const GLHookSet &m_Real;
+  GLPlatform &m_Platform;
 
   friend class GLReplay;
   friend class GLResourceManager;
@@ -149,6 +150,7 @@ private:
   bool m_AppControlledCapture;
 
   GLReplay m_Replay;
+  RDCDriver m_DriverType;
 
   GLInitParams m_InitParams;
 
@@ -156,7 +158,16 @@ private:
 
   vector<GLWindowingData> m_LastContexts;
 
-  bool m_ActiveQueries[8][8];    // first index type, second index (for some, always 0)
+public:
+  enum
+  {
+    MAX_QUERIES = 17,
+    MAX_QUERY_INDICES = 8
+  };
+
+private:
+  bool m_ActiveQueries[MAX_QUERIES]
+                      [MAX_QUERY_INDICES];    // first index type, second index (for some, always 0)
   bool m_ActiveConditional;
   bool m_ActiveFeedback;
 
@@ -171,16 +182,13 @@ private:
   GLResourceManager *m_ResourceManager;
 
   uint32_t m_FrameCounter;
+  uint32_t m_NoCtxFrames;
   uint32_t m_FailedFrame;
   CaptureFailReason m_FailedReason;
   uint32_t m_Failures;
 
   CaptureFailReason m_FailureReason;
   bool m_SuccessfulCapture;
-
-  PerformanceTimer m_FrameTimer;
-  vector<double> m_FrameTimes;
-  double m_TotalTime, m_AvgFrametime, m_MinFrametime, m_MaxFrametime;
 
   set<ResourceId> m_HighTrafficResources;
 
@@ -205,13 +213,13 @@ private:
       PersistentMapMemoryBarrier(m_CoherentMaps);
   }
 
-  vector<FetchFrameInfo> m_CapturedFrames;
-  FetchFrameRecord m_FrameRecord;
-  vector<FetchDrawcall *> m_Drawcalls;
+  vector<FrameDescription> m_CapturedFrames;
+  FrameRecord m_FrameRecord;
+  vector<DrawcallDescription *> m_Drawcalls;
 
   // replay
 
-  vector<FetchAPIEvent> m_CurEvents, m_Events;
+  vector<APIEvent> m_CurEvents, m_Events;
   bool m_AddedDrawcall;
 
   uint64_t m_CurChunkOffset;
@@ -225,6 +233,8 @@ private:
 
   map<ResourceId, vector<EventUsage> > m_ResourceUses;
 
+  bool m_FetchCounters;
+
   // buffer used
   vector<byte> m_ScratchBuf;
 
@@ -232,6 +242,7 @@ private:
   {
     GLResource resource;
     GLenum curType;
+    BufferCategory creationFlags;
     uint64_t size;
   };
 
@@ -248,7 +259,7 @@ private:
           height(0),
           depth(0),
           samples(0),
-          creationFlags(0),
+          creationFlags(TextureCategory::NoFlags),
           internalFormat(eGL_NONE),
           renderbufferReadTex(0)
     {
@@ -259,7 +270,7 @@ private:
     GLint dimension;
     bool emulated, view;
     GLint width, height, depth, samples;
-    uint32_t creationFlags;
+    TextureCategory creationFlags;
     GLenum internalFormat;
 
     // since renderbuffers cannot be read from, we have to create a texture of identical
@@ -269,6 +280,11 @@ private:
     // bound to the second.
     GLuint renderbufferReadTex;
     GLuint renderbufferFBOs[2];
+
+    // since compressed textures cannot be read back on GLES we have to store them during the
+    // uploading
+    // level -> data
+    map<int, vector<byte> > compressedData;
   };
 
   map<ResourceId, TextureData> m_Textures;
@@ -280,10 +296,11 @@ private:
     vector<string> sources;
     vector<string> includepaths;
     SPVModule spirv;
+    std::string disassembly;
     ShaderReflection reflection;
     GLuint prog;
 
-    void Compile(WrappedOpenGL &gl);
+    void Compile(WrappedOpenGL &gl, ResourceId id);
   };
 
   struct ProgramData
@@ -293,6 +310,13 @@ private:
 
     map<GLint, GLint> locationTranslate;
 
+    // this flag indicates the program was created with glCreateShaderProgram and cannot be relinked
+    // again (because that function implicitly detaches and destroys the shader). However we only
+    // need to relink when restoring things like frag data or attrib bindings which must be relinked
+    // to apply - and since the application *also* could not have relinked them, they must be
+    // unchanged since creation. So in this case, we can skip the relink since it was impossible for
+    // the application to modify anything.
+    bool shaderProgramUnlinkable = false;
     bool linked;
     ResourceId stageShaders[6];
   };
@@ -325,18 +349,16 @@ private:
   GLuint m_FakeBB_Color;
   GLuint m_FakeBB_DepthStencil;
   GLuint m_FakeVAO;
-  GLuint m_FakeIdxBuf;
   GLsizeiptr m_FakeIdxSize;
 
   ResourceId m_FakeVAOID;
 
-  uint32_t GetLogVersion() { return m_InitParams.SerialiseVersion; }
   void ProcessChunk(uint64_t offset, GLChunkType context);
   void ContextReplayLog(LogState readType, uint32_t startEventID, uint32_t endEventID, bool partial);
   void ContextProcessChunk(uint64_t offset, GLChunkType chunk);
-  void AddUsage(const FetchDrawcall &d);
-  void AddDrawcall(const FetchDrawcall &d, bool hasEvents);
-  void AddEvent(GLChunkType type, string description, ResourceId ctx = ResourceId());
+  void AddUsage(const DrawcallDescription &d);
+  void AddDrawcall(const DrawcallDescription &d, bool hasEvents);
+  void AddEvent(string description);
 
   void Serialise_CaptureScope(uint64_t offset);
   bool HasSuccessfulCapture(CaptureFailReason &reason)
@@ -373,6 +395,8 @@ private:
       m_Renderbuffer = ResourceId();
       m_TextureUnit = 0;
       m_ProgramPipeline = m_Program = 0;
+      RDCEraseEl(m_ClientMemoryVBOs);
+      m_ClientMemoryIBO = 0;
     }
 
     void *ctx;
@@ -398,7 +422,10 @@ private:
 
     void CreateDebugData(const GLHookSet &gl);
 
-    bool Legacy() { return !attribsCreate || version < 32; }
+    bool Legacy()
+    {
+      return !attribsCreate || (!IsGLES && version < 32) || (IsGLES && version < 20);
+    }
     bool Modern() { return !Legacy(); }
     GLuint Program;
     GLuint GeneralUBO, StringUBO, GlyphUBO;
@@ -425,7 +452,32 @@ private:
     GLuint m_Program;
 
     GLResourceRecord *GetActiveTexRecord() { return m_TextureRecord[m_TextureUnit]; }
+    // GLES allows drawing from client memory, in which case we will copy to
+    // temporary VBOs so that input mesh data is recorded. See struct ClientMemoryData
+    GLuint m_ClientMemoryVBOs[16];
+    GLuint m_ClientMemoryIBO;
   };
+
+  struct ClientMemoryData
+  {
+    struct VertexAttrib
+    {
+      GLuint index;
+      GLint size;
+      GLenum type;
+      GLboolean normalized;
+      GLsizei stride;
+      void *pointer;
+    };
+    std::vector<VertexAttrib> attribs;
+    GLuint prevArrayBufferBinding;
+  };
+  ClientMemoryData *CopyClientMemoryArrays(GLint first, GLsizei count, GLenum indexType,
+                                           const void *&indices);
+  void RestoreClientMemoryArrays(ClientMemoryData *clientMemoryArrays, GLenum indexType);
+
+  // used to match serialisation with older GL captures
+  void Legacy_preElements(GLenum Type, uint32_t Count);
 
   map<void *, ContextData> m_ContextData;
 
@@ -470,23 +522,37 @@ private:
   BackbufferImage *SaveBackbufferImage();
   map<void *, BackbufferImage *> m_BackbufferImages;
 
-  vector<string> globalExts;
+  void BuildGLExtensions();
+  void BuildGLESExtensions();
+
+  vector<string> m_GLExtensions;
+  vector<string> m_GLESExtensions;
+
+  void StoreCompressedTexData(ResourceId texId, GLenum target, GLint level, GLint xoffset,
+                              GLint yoffset, GLint zoffset, GLsizei width, GLsizei height,
+                              GLsizei depth, GLenum format, GLsizei imageSize, const void *pixels);
 
   // no copy semantics
   WrappedOpenGL(const WrappedOpenGL &);
   WrappedOpenGL &operator=(const WrappedOpenGL &);
 
 public:
-  WrappedOpenGL(const char *logfile, const GLHookSet &funcs);
+  WrappedOpenGL(const char *logfile, const GLHookSet &funcs, GLPlatform &platform);
   virtual ~WrappedOpenGL();
 
+  uint32_t GetLogVersion() { return m_InitParams.SerialiseVersion; }
   static const char *GetChunkName(uint32_t idx);
   GLResourceManager *GetResourceManager() { return m_ResourceManager; }
   ResourceId GetDeviceResourceID() { return m_DeviceResourceID; }
   ResourceId GetContextResourceID() { return m_ContextResourceID; }
   GLReplay *GetReplay() { return &m_Replay; }
+  void SetDriverType(RDCDriver type) { m_DriverType = type; }
+  bool isGLESMode() { return m_DriverType == RDC_OpenGLES; }
+  RDCDriver GetDriverType() { return m_DriverType; }
+  GLInitParams &GetInitParams() { return m_InitParams; }
   void *GetCtx();
 
+  void SetFetchCounters(bool in) { m_FetchCounters = in; };
   const GLHookSet &GetHookset() { return m_Real; }
   void SetDebugMsgContext(const char *context) { m_DebugMsgContext = context; }
   void AddDebugMessage(DebugMessage msg)
@@ -494,8 +560,7 @@ public:
     if(m_State < WRITING)
       m_DebugMessages.push_back(msg);
   }
-  void AddDebugMessage(DebugMessageCategory c, DebugMessageSeverity sv, DebugMessageSource src,
-                       std::string d);
+  void AddDebugMessage(MessageCategory c, MessageSeverity sv, MessageSource src, std::string d);
 
   void AddMissingTrack(ResourceId id) { m_MissingTracks.insert(id); }
   // replay interface
@@ -506,11 +571,11 @@ public:
   Serialiser *GetSerialiser() { return m_pSerialiser; }
   GLuint GetFakeBBFBO() { return m_FakeBB_FBO; }
   GLuint GetFakeVAO() { return m_FakeVAO; }
-  FetchFrameRecord &GetFrameRecord() { return m_FrameRecord; }
-  FetchAPIEvent GetEvent(uint32_t eventID);
+  FrameRecord &GetFrameRecord() { return m_FrameRecord; }
+  APIEvent GetEvent(uint32_t eventID);
 
   const DrawcallTreeNode &GetRootDraw() { return m_ParentDrawcall; }
-  const FetchDrawcall *GetDrawcall(uint32_t eventID);
+  const DrawcallDescription *GetDrawcall(uint32_t eventID);
 
   void SuppressDebugMessages(bool suppress) { m_SuppressDebugMessages = suppress; }
   vector<EventUsage> GetUsage(ResourceId id) { return m_ResourceUses[id]; }
@@ -521,6 +586,10 @@ public:
   void ActivateContext(GLWindowingData winData);
   void WindowSize(void *windowHandle, uint32_t w, uint32_t h);
   void SwapBuffers(void *windowHandle);
+  void CreateVRAPITextureSwapChain(GLuint tex, GLenum textureType, GLenum internalformat,
+                                   GLsizei width, GLsizei height);
+
+  void FirstFrame(void *ctx, void *wndHandle);
 
   void StartFrameCapture(void *dev, void *wnd);
   bool EndFrameCapture(void *dev, void *wnd);
@@ -548,6 +617,7 @@ public:
   IMPLEMENT_FUNCTION_SERIALISED(void, glBlendEquationSeparatei(GLuint buf, GLenum modeRGB,
                                                                GLenum modeAlpha));
   IMPLEMENT_FUNCTION_SERIALISED(void, glBlendBarrierKHR());
+  IMPLEMENT_FUNCTION_SERIALISED(void, glBlendBarrier());
   IMPLEMENT_FUNCTION_SERIALISED(void, glLogicOp(GLenum opcode));
   IMPLEMENT_FUNCTION_SERIALISED(void, glStencilFunc(GLenum func, GLint ref, GLuint mask));
   IMPLEMENT_FUNCTION_SERIALISED(void, glStencilMask(GLuint mask));
@@ -986,6 +1056,9 @@ public:
                                 glInvalidateTexSubImage(GLuint texture, GLint level, GLint xoffset,
                                                         GLint yoffset, GLint zoffset, GLsizei width,
                                                         GLsizei height, GLsizei depth));
+
+  IMPLEMENT_FUNCTION_SERIALISED(void, glDiscardFramebufferEXT(GLenum target, GLsizei numAttachments,
+                                                              const GLenum *attachments));
 
   enum AttribType
   {
@@ -1681,12 +1754,6 @@ public:
                                                                   GLsizei count, GLboolean transpose,
                                                                   const GLdouble *value));
 
-  // utility handling functions for glDraw*Elements* to handle pointers to indices being
-  // passed directly, with no index buffer bound. It's not allowed in core profile but
-  // it's fairly common and not too hard to support
-  byte *Common_preElements(GLsizei Count, GLenum Type, uint64_t &IdxOffset);
-  void Common_postElements(byte *idxDelete);
-
   // final check function to ensure we don't try and render with no index buffer bound
   bool Check_preElements();
 
@@ -2371,6 +2438,30 @@ public:
                                                                  GLsizei count, const GLuint *buffers,
                                                                  const GLintptr *offsets,
                                                                  const GLsizei *strides));
+
+  bool Serialise_wglDXRegisterObjectNV(GLResource res, GLenum type, void *dxObject);
+  bool Serialise_wglDXLockObjectsNV(GLResource res);
+
+  BOOL wglDXSetResourceShareHandleNV(void *dxObject, HANDLE shareHandle);
+  HANDLE wglDXOpenDeviceNV(void *dxDevice);
+  BOOL wglDXCloseDeviceNV(HANDLE hDevice);
+  HANDLE wglDXRegisterObjectNV(HANDLE hDevice, void *dxObject, GLuint name, GLenum type,
+                               GLenum access);
+  BOOL wglDXUnregisterObjectNV(HANDLE hDevice, HANDLE hObject);
+  BOOL wglDXObjectAccessNV(HANDLE hObject, GLenum access);
+  BOOL wglDXLockObjectsNV(HANDLE hDevice, GLint count, HANDLE *hObjects);
+  BOOL wglDXUnlockObjectsNV(HANDLE hDevice, GLint count, HANDLE *hObjects);
+
+  IMPLEMENT_FUNCTION_SERIALISED(void,
+                                glPrimitiveBoundingBox(GLfloat minX, GLfloat minY, GLfloat minZ,
+                                                       GLfloat minW, GLfloat maxX, GLfloat maxY,
+                                                       GLfloat maxZ, GLfloat maxW));
+
+  bool Serialise_glFramebufferTexture2DMultisampleEXT(GLuint framebuffer, GLenum target,
+                                                      GLenum attachment, GLenum textarget,
+                                                      GLuint texture, GLint level, GLsizei samples);
+  void glFramebufferTexture2DMultisampleEXT(GLenum target, GLenum attachment, GLenum textarget,
+                                            GLuint texture, GLint level, GLsizei samples);
 };
 
 class ScopedDebugContext

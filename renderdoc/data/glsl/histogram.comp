@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2014-2016 Baldur Karlsson
+ * Copyright (c) 2014-2017 Baldur Karlsson
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,7 @@
 
 //#include "texsample.h" // while includes aren't supported in glslang, this will be added in code
 
-layout(binding=0, std140) writeonly buffer minmaxresultdest
+layout(binding=0, std140) buffer minmaxresultdest
 {
 	uvec4 result[HGRAM_NUM_BUCKETS];
 } dest;

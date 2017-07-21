@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -89,9 +89,14 @@ namespace renderdoc
             private void PostMarshal()
             {
                 if (_ptr_ShaderDetails != IntPtr.Zero)
+                {
                     ShaderDetails = (ShaderReflection)CustomMarshal.PtrToStructure(_ptr_ShaderDetails, typeof(ShaderReflection), false);
+                    ShaderDetails.origPtr = _ptr_ShaderDetails;
+                }
                 else
+                {
                     ShaderDetails = null;
+                }
 
                 _ptr_ShaderDetails = IntPtr.Zero;
             }
@@ -160,23 +165,24 @@ namespace renderdoc
         public class Sampler
         {
             public ResourceId Samp;
-            [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-            public string AddressS, AddressT, AddressR;
+            public AddressMode AddressS, AddressT, AddressR;
             [CustomMarshalAs(CustomUnmanagedType.FixedArray, FixedLength = 4)]
             public float[] BorderColor;
-            [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-            public string Comparison;
-            [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-            public string MinFilter;
-            [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-            public string MagFilter;
-            public bool UseBorder;
-            public bool UseComparison;
+            public CompareFunc Comparison;
+            [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
+            public TextureFilter Filter;
             public bool SeamlessCube;
             public float MaxAniso;
             public float MaxLOD;
             public float MinLOD;
             public float MipLODBias;
+
+            public bool UseBorder()
+            {
+                return AddressS == AddressMode.ClampBorder ||
+                       AddressT == AddressMode.ClampBorder ||
+                       AddressR == AddressMode.ClampBorder;
+            }
         };
         [CustomMarshalAs(CustomUnmanagedType.TemplatedArray)]
         public Sampler[] Samplers;
@@ -236,7 +242,6 @@ namespace renderdoc
                 public float Left, Bottom;
                 public float Width, Height;
                 public double MinDepth, MaxDepth;
-                public bool Enabled;
             };
             [CustomMarshalAs(CustomUnmanagedType.TemplatedArray)]
             public Viewport[] Viewports;
@@ -289,8 +294,7 @@ namespace renderdoc
         public class DepthState
         {
             public bool DepthEnable;
-            [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-            public string DepthFunc;
+            public CompareFunc DepthFunc;
             public bool DepthWrites;
             public bool DepthBounds;
             public double NearBound;
@@ -305,22 +309,18 @@ namespace renderdoc
             public bool StencilEnable;
 
             [StructLayout(LayoutKind.Sequential)]
-            public class StencilOp
+            public class StencilFace
             {
-                [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                public string FailOp;
-                [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                public string DepthFailOp;
-                [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                public string PassOp;
-                [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                public string Func;
-                public UInt32 Ref;
-                public UInt32 ValueMask;
-                public UInt32 WriteMask;
+                public StencilOp FailOp;
+                public StencilOp DepthFailOp;
+                public StencilOp PassOp;
+                public CompareFunc Func;
+                public byte Ref;
+                public byte ValueMask;
+                public byte WriteMask;
             };
             [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
-            public StencilOp m_FrontFace, m_BackFace;
+            public StencilFace m_FrontFace, m_BackFace;
         };
         [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
         public StencilState m_StencilState;
@@ -336,6 +336,8 @@ namespace renderdoc
                 public ResourceId Obj;
                 public UInt32 Layer;
                 public UInt32 Mip;
+                [CustomMarshalAs(CustomUnmanagedType.FixedArray, FixedLength = 4)]
+                public TextureSwizzle[] Swizzle;
             };
 
             [StructLayout(LayoutKind.Sequential)]
@@ -345,7 +347,9 @@ namespace renderdoc
 
                 [CustomMarshalAs(CustomUnmanagedType.TemplatedArray)]
                 public Attachment[] Color;
+                [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
                 public Attachment Depth;
+                [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
                 public Attachment Stencil;
 
                 [CustomMarshalAs(CustomUnmanagedType.TemplatedArray)]
@@ -362,20 +366,16 @@ namespace renderdoc
                 public class RTBlend
                 {
                     [StructLayout(LayoutKind.Sequential)]
-                    public class BlendOp
+                    public class BlendEquation
                     {
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string Source;
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string Destination;
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string Operation;
+                        public BlendMultiplier Source;
+                        public BlendMultiplier Destination;
+                        public BlendOp Operation;
                     };
                     [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
-                    public BlendOp m_Blend, m_AlphaBlend;
+                    public BlendEquation m_Blend, m_AlphaBlend;
 
-                    [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                    public string LogicOp;
+                    public LogicOp Logic;
 
                     public bool Enabled;
                     public byte WriteMask;

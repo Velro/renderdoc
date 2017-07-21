@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -56,14 +56,16 @@ namespace renderdocui.Windows.PipelineState
 
         private struct IABufferTag
         {
-            public IABufferTag(ResourceId i, ulong offs)
+            public IABufferTag(ResourceId i, ulong offs, int vb)
             {
                 id = i;
                 offset = offs;
+                vbindex = vb;
             }
 
             public ResourceId id;
             public ulong offset;
+            public int vbindex;
         };
 
         private Core m_Core;
@@ -450,7 +452,7 @@ namespace renderdocui.Windows.PipelineState
                             string addPrefix = "";
                             string addVal = "";
 
-                            string[] addr = { s.AddressS, s.AddressT, s.AddressR };
+                            string[] addr = { s.AddressS.ToString(), s.AddressT.ToString(), s.AddressR.ToString() };
 
                             // arrange like either STR: WRAP or ST: WRAP, R: CLAMP
                             for (int a = 0; a < 3; a++)
@@ -472,7 +474,7 @@ namespace renderdocui.Windows.PipelineState
 
                             addressing += addPrefix + ": " + addVal;
 
-                            if (s.UseBorder)
+                            if (s.UseBorder())
                                 addressing += String.Format("<{0}>", borderColor);
 
                             if (r.ResType == ShaderResourceType.TextureCube ||
@@ -481,16 +483,18 @@ namespace renderdocui.Windows.PipelineState
                                 addressing += s.SeamlessCube ? " Seamless" : " Non-Seamless";
                             }
 
-                            string minfilter = s.MinFilter;
+                            string filter = s.Filter.ToString();
 
                             if (s.MaxAniso > 1)
-                                minfilter += String.Format(" Aniso{0}x", s.MaxAniso);
+                                filter += String.Format(" Aniso{0}x", s.MaxAniso);
 
-                            if (s.UseComparison)
-                                minfilter = String.Format("{0}", s.Comparison);
+                            if (s.Filter.func == FilterFunc.Comparison)
+                                filter += String.Format(" {0}", s.Comparison);
+                            else if (s.Filter.func != FilterFunc.Normal)
+                                filter += String.Format(" ({0})", s.Filter.func);
 
                             var node = samplers.Nodes.Add(new object[] { slotname, addressing,
-                                                            minfilter, s.MagFilter,
+                                                            filter,
                                                             (s.MinLOD == -float.MaxValue ? "0" : s.MinLOD.ToString()) + " - " +
                                                             (s.MaxLOD == float.MaxValue ? "FLT_MAX" : s.MaxLOD.ToString()),
                                                             s.MipLODBias.ToString() });
@@ -1014,7 +1018,7 @@ namespace renderdocui.Windows.PipelineState
 
                     node.Image = global::renderdocui.Properties.Resources.action;
                     node.HoverImage = global::renderdocui.Properties.Resources.action_hover;
-                    node.Tag = new IABufferTag(state.m_VtxIn.ibuffer, draw != null ? draw.indexOffset : 0);
+                    node.Tag = new IABufferTag(state.m_VtxIn.ibuffer, draw != null ? draw.indexOffset : 0, -1);
 
                     if (!ibufferUsed)
                         InactiveRow(node);
@@ -1031,7 +1035,7 @@ namespace renderdocui.Windows.PipelineState
 
                     node.Image = global::renderdocui.Properties.Resources.action;
                     node.HoverImage = global::renderdocui.Properties.Resources.action_hover;
-                    node.Tag = new IABufferTag(state.m_VtxIn.ibuffer, draw != null ? draw.indexOffset : 0);
+                    node.Tag = new IABufferTag(state.m_VtxIn.ibuffer, draw != null ? draw.indexOffset : 0, -1);
 
                     EmptyRow(node);
 
@@ -1078,7 +1082,7 @@ namespace renderdocui.Windows.PipelineState
 
                         node.Image = global::renderdocui.Properties.Resources.action;
                         node.HoverImage = global::renderdocui.Properties.Resources.action_hover;
-                        node.Tag = new IABufferTag(v.Buffer, v.Offset);
+                        node.Tag = new IABufferTag(v.Buffer, v.Offset, i);
 
                         if (!filledSlot)
                             EmptyRow(node);
@@ -1087,6 +1091,10 @@ namespace renderdocui.Windows.PipelineState
                             InactiveRow(node);
 
                         m_VBNodes.Add(node);
+                    }
+                    else
+                    {
+                        m_VBNodes.Add(null);
                     }
 
                     i++;
@@ -1255,6 +1263,8 @@ namespace renderdocui.Windows.PipelineState
                                 indexstring = String.Format("{0}-{1}", prev, i - 1);
                             var node = scissors.Nodes.Add(new object[] { indexstring, s1.Left, s1.Bottom, s1.Width, s1.Height, s1.Enabled });
 
+                            anyScissorEnable = anyScissorEnable || s1.Enabled;
+
                             if (s1.Width == 0 || s1.Height == 0)
                                 EmptyRow(node);
 
@@ -1277,6 +1287,8 @@ namespace renderdocui.Windows.PipelineState
                         if (prev < state.m_RS.Scissors.Length - 1)
                             indexstring = String.Format("{0}-{1}", prev, state.m_RS.Scissors.Length - 1);
                         var node = scissors.Nodes.Add(new object[] { indexstring, s1.Left, s1.Bottom, s1.Width, s1.Height, s1.Enabled });
+
+                        anyScissorEnable = anyScissorEnable || s1.Enabled;
 
                         if (s1.Width == 0 || s1.Height == 0)
                             EmptyRow(node);
@@ -1333,7 +1345,7 @@ namespace renderdocui.Windows.PipelineState
             else
                 clipDistances.Text += " enabled";
 
-            depthClamp.Image = state.m_RS.m_State.DepthClamp ? cross : tick;
+            depthClamp.Image = state.m_RS.m_State.DepthClamp ? tick : cross;
             depthBias.Text = Formatter.Format(state.m_RS.m_State.DepthBias);
             slopeScaledBias.Text = Formatter.Format(state.m_RS.m_State.SlopeScaledDepthBias);
             if (state.m_RS.m_State.OffsetClamp == 0.0f || float.IsNaN(state.m_RS.m_State.OffsetClamp))
@@ -1347,11 +1359,11 @@ namespace renderdocui.Windows.PipelineState
                 offsetClamp.Image = null;
             }
 
-            multisampleEnable.Image = state.m_RS.m_State.MultisampleEnable ? cross : tick;
-            sampleShading.Image = state.m_RS.m_State.SampleShading ? cross : tick;
+            multisampleEnable.Image = state.m_RS.m_State.MultisampleEnable ? tick : cross;
+            sampleShading.Image = state.m_RS.m_State.SampleShading ? tick : cross;
             minSampleShadingRate.Text = Formatter.Format(state.m_RS.m_State.MinSampleShadingRate);
-            alphaToCoverage.Image = state.m_RS.m_State.SampleAlphaToCoverage ? cross : tick;
-            alphaToOne.Image = state.m_RS.m_State.SampleAlphaToOne ? cross : tick;
+            alphaToCoverage.Image = state.m_RS.m_State.SampleAlphaToCoverage ? tick : cross;
+            alphaToOne.Image = state.m_RS.m_State.SampleAlphaToOne ? tick : cross;
             if (state.m_RS.m_State.SampleCoverage)
             {
                 sampleCoverage.Text = Formatter.Format(state.m_RS.m_State.SampleCoverageValue);
@@ -1391,8 +1403,13 @@ namespace renderdocui.Windows.PipelineState
                 foreach (var db in state.m_FB.m_DrawFBO.DrawBuffers)
                 {
                     ResourceId p = ResourceId.Null;
+                    GLPipelineState.FrameBuffer.Attachment r = null;
 
-                    if (db >= 0) p = state.m_FB.m_DrawFBO.Color[db].Obj;
+                    if (db >= 0)
+                    {
+                        p = state.m_FB.m_DrawFBO.Color[db].Obj;
+                        r = state.m_FB.m_DrawFBO.Color[db];
+                    }
 
                     if (p != ResourceId.Null || showEmpty.Checked)
                     {
@@ -1427,6 +1444,21 @@ namespace renderdocui.Windows.PipelineState
 
                                 if (texs[t].format.srgbCorrected && !state.m_FB.FramebufferSRGB)
                                     name += " (GL_FRAMEBUFFER_SRGB = 0)";
+
+                                if (r != null)
+                                {
+                                    if (r.Swizzle[0] != TextureSwizzle.Red ||
+                                        r.Swizzle[1] != TextureSwizzle.Green ||
+                                        r.Swizzle[2] != TextureSwizzle.Blue ||
+                                        r.Swizzle[3] != TextureSwizzle.Alpha)
+                                    {
+                                        format += String.Format(" swizzle[{0}{1}{2}{3}]",
+                                            r.Swizzle[0].Str(),
+                                            r.Swizzle[1].Str(),
+                                            r.Swizzle[2].Str(),
+                                            r.Swizzle[3].Str());
+                                    }
+                                }
                             }
                         }
 
@@ -1512,7 +1544,7 @@ namespace renderdocui.Windows.PipelineState
             blendOperations.Nodes.Clear();
             if(state.m_FB.m_BlendState.Blends.Length > 0)
             {
-                bool logic = (state.m_FB.m_BlendState.Blends[0].LogicOp != "");
+                bool logic = (state.m_FB.m_BlendState.Blends[0].Logic != LogicOp.NoOp);
 
                 int i = 0;
                 foreach (var blend in state.m_FB.m_BlendState.Blends)
@@ -1538,7 +1570,7 @@ namespace renderdocui.Windows.PipelineState
 
                                                         "-",
                                                         "-",
-                                                        blend.LogicOp,
+                                                        blend.Logic,
 
                                                         "-",
                                                         "-",
@@ -1591,7 +1623,7 @@ namespace renderdocui.Windows.PipelineState
                                 state.m_FB.m_BlendState.BlendFactor[3].ToString("F2");
 
             depthEnable.Image = state.m_DepthState.DepthEnable ? tick : cross;
-            depthFunc.Text = state.m_DepthState.DepthFunc;
+            depthFunc.Text = state.m_DepthState.DepthFunc.ToString();
             depthWrite.Image = state.m_DepthState.DepthWrites ? tick : cross;
 
             depthBounds.Image = state.m_DepthState.DepthBounds ? tick : cross;
@@ -1705,7 +1737,15 @@ namespace renderdocui.Windows.PipelineState
                         viewer.ViewTexture(tex.ID, true);
                 }
             }
-            else if(tag is ReadWriteTag)
+            else if (tag is FetchBuffer)
+            {
+                FetchBuffer buf = (FetchBuffer)tag;
+
+                var viewer = new BufferViewer(m_Core, false);
+                viewer.ViewRawBuffer(true, 0, ulong.MaxValue, buf.ID);
+                viewer.Show(m_DockContent.DockPanel);
+            }
+            else if (tag is ReadWriteTag)
             {
                 ReadWriteTag rwtag = (ReadWriteTag)tag;
                 FetchBuffer buf = rwtag.buf;
@@ -1776,7 +1816,9 @@ namespace renderdocui.Windows.PipelineState
                 }
                 else if (sender is TreelistView.TreeListView)
                 {
-                    TreelistView.NodesSelection sel = ((TreelistView.TreeListView)sender).NodesSelection;
+                    TreelistView.TreeListView view = (TreelistView.TreeListView)sender;
+                    view.SortNodesSelection();
+                    TreelistView.NodesSelection sel = view.NodesSelection;
 
                     if (sel.Count > 0)
                     {
@@ -2217,17 +2259,17 @@ namespace renderdocui.Windows.PipelineState
             if (hoverNode != null)
             {
                 if(hoverNode.Tag != null && hoverNode.Tag is uint) 
-                    HighlightVtxAttribSlot((uint)hoverNode.Tag);
+                    HighlightVtxBufferSlot((uint)hoverNode.Tag);
             }
         }
 
-        private void HighlightVtxAttribSlot(uint slot)
+        private void HighlightVtxBufferSlot(uint slot)
         {
             var VtxIn = m_Core.CurGLPipelineState.m_VtxIn;
         
             Color c = HSLColor(GetHueForVB((int)slot), 1.0f, 0.95f);
 
-            if (slot < m_VBNodes.Count)
+            if (slot < m_VBNodes.Count && m_VBNodes[(int)slot] != null)
                 m_VBNodes[(int)slot].DefaultBackColor = c;
 
             for (int i = 0; i < inputLayouts.Nodes.Count; i++)
@@ -2269,7 +2311,7 @@ namespace renderdocui.Windows.PipelineState
             {
                 int idx = m_VBNodes.IndexOf(hoverNode);
                 if (idx >= 0)
-                    HighlightVtxAttribSlot((uint)idx);
+                    HighlightVtxBufferSlot((uint)idx);
                 else
                     hoverNode.DefaultBackColor = SystemColors.ControlLight;
             }
@@ -2658,7 +2700,7 @@ namespace renderdocui.Windows.PipelineState
                             string addPrefix = "";
                             string addVal = "";
 
-                            string[] addr = { s.AddressS, s.AddressT, s.AddressR };
+                            string[] addr = { s.AddressS.ToString(), s.AddressT.ToString(), s.AddressR.ToString() };
 
                             // arrange like either STR: WRAP or ST: WRAP, R: CLAMP
                             for (int a = 0; a < 3; a++)
@@ -2680,7 +2722,7 @@ namespace renderdocui.Windows.PipelineState
 
                             addressing += addPrefix + ": " + addVal;
 
-                            if (s.UseBorder)
+                            if (s.UseBorder())
                                 addressing += String.Format("<{0}>", borderColor);
 
                             if (r.ResType == ShaderResourceType.TextureCube ||
@@ -2689,16 +2731,18 @@ namespace renderdocui.Windows.PipelineState
                                 addressing += s.SeamlessCube ? " Seamless" : " Non-Seamless";
                             }
 
-                            string minfilter = s.MinFilter;
+                            string filter = s.Filter.ToString();
 
                             if (s.MaxAniso > 1)
-                                minfilter += String.Format(" Aniso{0}x", s.MaxAniso);
+                                filter += String.Format(" Aniso{0}x", s.MaxAniso);
 
-                            if (s.UseComparison)
-                                minfilter = String.Format("{0}", s.Comparison);
+                            if (s.Filter.func == FilterFunc.Comparison)
+                                filter += String.Format(" {0}", s.Comparison);
+                            else if (s.Filter.func != FilterFunc.Normal)
+                                filter += String.Format(" ({0})", s.Filter.func);
 
                             samplerRows.Add(new object[] { slotname, addressing,
-                                                            minfilter, s.MagFilter,
+                                                            filter,
                                                             (s.MinLOD == -float.MaxValue ? "0" : s.MinLOD.ToString()) + " - " +
                                                             (s.MaxLOD == float.MaxValue ? "FLT_MAX" : s.MaxLOD.ToString()),
                                                             s.MipLODBias.ToString() });
@@ -3108,12 +3152,12 @@ namespace renderdocui.Windows.PipelineState
                 int i = 0;
                 foreach (var v in rs.Viewports)
                 {
-                    rows.Add(new object[] { i, v.Enabled, v.Left, v.Bottom, v.Width, v.Height, v.MinDepth, v.MaxDepth });
+                    rows.Add(new object[] { i, v.Left, v.Bottom, v.Width, v.Height, v.MinDepth, v.MaxDepth });
 
                     i++;
                 }
 
-                ExportHTMLTable(writer, new string[] { "Slot", "Enabled", "Left", "Bottom", "Width", "Height", "Min Depth", "Max Depth" }, rows.ToArray());
+                ExportHTMLTable(writer, new string[] { "Slot", "Left", "Bottom", "Width", "Height", "Min Depth", "Max Depth" }, rows.ToArray());
             }
 
             {
@@ -3167,7 +3211,7 @@ namespace renderdocui.Windows.PipelineState
                         b.Enabled ? "Yes" : "No",
                         b.m_Blend.Source, b.m_Blend.Destination, b.m_Blend.Operation,
                         b.m_AlphaBlend.Source, b.m_AlphaBlend.Destination, b.m_AlphaBlend.Operation,
-                        b.LogicOp,
+                        b.Logic,
                         ((b.WriteMask & 0x1) == 0 ? "_" : "R") +
                         ((b.WriteMask & 0x2) == 0 ? "_" : "G") +
                         ((b.WriteMask & 0x4) == 0 ? "_" : "B") +
@@ -3362,7 +3406,7 @@ namespace renderdocui.Windows.PipelineState
                     writer.WriteStartElement("html");
                     writer.WriteAttributeString("lang", "en");
 
-                    var title = String.Format("{0} EID {1} - D3D11 Pipeline export", Path.GetFileName(m_Core.LogFileName), m_Core.CurEvent);
+                    var title = String.Format("{0} EID {1} - OpenGL Pipeline export", Path.GetFileName(m_Core.LogFileName), m_Core.CurEvent);
 
                     var css = @"
 /* If you think this css is ugly/bad, open a pull request! */

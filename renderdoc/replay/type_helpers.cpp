@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -41,47 +41,9 @@ string ToStrHelper<false, ResourceId>::Get(const ResourceId &el)
 {
   char tostrBuf[256] = {0};
 
-  StringFormat::snprintf(tostrBuf, 255, "ResID_%llu", el.id);
+  RDCCOMPILE_ASSERT(sizeof(el) == sizeof(uint64_t), "ResourceId is no longer 1:1 with uint64_t");
+
+  StringFormat::snprintf(tostrBuf, 255, "ResID_%llu", (uint64_t &)el);
 
   return tostrBuf;
 }
-
-namespace rdctype
-{
-str &str::operator=(const std::string &in)
-{
-  Delete();
-  count = (int32_t)in.size();
-  if(count == 0)
-  {
-    elems = (char *)allocate(sizeof(char));
-    elems[0] = 0;
-  }
-  else
-  {
-    elems = (char *)allocate(sizeof(char) * (count + 1));
-    memcpy(elems, &in[0], sizeof(char) * in.size());
-    elems[count] = 0;
-  }
-  return *this;
-}
-
-str &str::operator=(const char *const in)
-{
-  Delete();
-  count = (int32_t)strlen(in);
-  if(count == 0)
-  {
-    elems = (char *)allocate(sizeof(char));
-    elems[0] = 0;
-  }
-  else
-  {
-    elems = (char *)allocate(sizeof(char) * (count + 1));
-    memcpy(elems, &in[0], sizeof(char) * count);
-    elems[count] = 0;
-  }
-  return *this;
-}
-
-};    // namespace rdctype

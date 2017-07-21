@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,27 +25,29 @@
 layout (location = 0) in vec4 position;
 layout (location = 1) in vec4 IN_secondary;
 
+#ifndef OPENGL_ES
 out gl_PerVertex
 {
 	vec4 gl_Position;
 	float gl_PointSize;
 };
+#endif
 
 layout (location = 0) out vec4 OUT_secondary;
 layout (location = 1) out vec4 norm;
 
 void main(void)
 {
-	vec2 psprite[4] =
-	{
+	vec2 psprite[4] = vec2[]
+	(
 		vec2(-1.0f, -1.0f),
 		vec2(-1.0f,  1.0f),
 		vec2( 1.0f, -1.0f),
 		vec2( 1.0f,  1.0f)
-	};
+	);
 
 	vec4 pos = position;
-	if(Mesh.homogenousInput == 0)
+	if(Mesh.homogenousInput == 0u)
 	{
 		pos = vec4(position.xyz, 1);
 	}

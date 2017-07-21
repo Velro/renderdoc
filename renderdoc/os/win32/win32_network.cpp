@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -349,7 +349,6 @@ Socket *CreateClientSocket(const char *host, uint16_t port, int timeoutMS)
     return new Socket((ptrdiff_t)s);
   }
 
-  RDCWARN("Failed to connect to %s:%d", host, port);
   return NULL;
 }
 

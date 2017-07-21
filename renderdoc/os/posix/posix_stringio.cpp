@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,11 +25,13 @@
 #include <dirent.h>
 #include <dlfcn.h>    // for dladdr
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -57,6 +59,11 @@ string GetHomeFolderFilename()
   return homedir;
 }
 
+string GetTempFolderFilename()
+{
+  return string(GetTempRootPath()) + "/";
+}
+
 void CreateParentDirectory(const string &filename)
 {
   string fn = dirname(filename);
@@ -79,6 +86,14 @@ void CreateParentDirectory(const string &filename)
 
     offs = fn.find_first_of('/', offs + 1);
   }
+}
+
+bool IsRelativePath(const string &path)
+{
+  if(path.empty())
+    return false;
+
+  return path.front() != '/';
 }
 
 string GetFullPathname(const string &filename)
@@ -168,17 +183,22 @@ void GetDefaultFiles(const char *logBaseName, string &capture_filename, string &
 
   char temp_filename[2048] = {0};
 
-  snprintf(temp_filename, sizeof(temp_filename) - 1, "%s/%s_%04d.%02d.%02d_%02d.%02d.rdc",
+  snprintf(temp_filename, sizeof(temp_filename) - 1, "%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.rdc",
            temp_folder, mod, 1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour,
            now.tm_min);
 
   capture_filename = string(temp_filename);
 
-  snprintf(temp_filename, sizeof(temp_filename) - 1, "%s/%s_%04d.%02d.%02d_%02d.%02d.%02d.log",
-           temp_folder, logBaseName, 1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour,
-           now.tm_min, now.tm_sec);
+  snprintf(temp_filename, sizeof(temp_filename) - 1,
+           "%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.%02d.log", temp_folder, logBaseName,
+           1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec);
 
-  logging_filename = string(temp_filename);
+  // set by UI when launching programs so all logging goes to the same file
+  char *logfile_override = getenv("RENDERDOC_DEBUG_LOG_FILE");
+  if(logfile_override)
+    logging_filename = string(logfile_override);
+  else
+    logging_filename = string(temp_filename);
 }
 
 uint64_t GetModifiedTimestamp(const string &filename)
@@ -245,22 +265,22 @@ void Delete(const char *path)
   unlink(path);
 }
 
-vector<FoundFile> GetFilesInDirectory(const char *path)
+std::vector<PathEntry> GetFilesInDirectory(const char *path)
 {
-  vector<FoundFile> ret;
+  std::vector<PathEntry> ret;
 
   DIR *d = opendir(path);
 
   if(d == NULL)
   {
-    uint32_t flags = eFileProp_ErrorUnknown;
+    PathProperty flags = PathProperty::ErrorUnknown;
 
     if(errno == ENOENT)
-      flags = eFileProp_ErrorInvalidPath;
+      flags = PathProperty::ErrorInvalidPath;
     else if(errno == EACCES)
-      flags = eFileProp_ErrorAccessDenied;
+      flags = PathProperty::ErrorAccessDenied;
 
-    ret.push_back(FoundFile(path, flags));
+    ret.push_back(PathEntry(path, flags));
     return ret;
   }
 
@@ -288,18 +308,23 @@ vector<FoundFile> GetFilesInDirectory(const char *path)
     if(res != 0)
       continue;
 
-    uint32_t flags = 0;
+    PathProperty flags = PathProperty::NoFlags;
 
     // make directory/executable mutually exclusive for clarity's sake
     if(S_ISDIR(st.st_mode))
-      flags |= eFileProp_Directory;
+      flags |= PathProperty::Directory;
     else if(st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))
-      flags |= eFileProp_Executable;
+      flags |= PathProperty::Executable;
 
     if(ent->d_name[0] == '.')
-      flags |= eFileProp_Hidden;
+      flags |= PathProperty::Hidden;
 
-    ret.push_back(FoundFile(ent->d_name, flags));
+    PathEntry f(ent->d_name, flags);
+
+    f.lastmod = (uint32_t)st.st_mtime;
+    f.size = (uint64_t)st.st_size;
+
+    ret.push_back(f);
   }
 
   // don't care if we hit an error or enumerated all files, just finish
@@ -312,6 +337,17 @@ vector<FoundFile> GetFilesInDirectory(const char *path)
 FILE *fopen(const char *filename, const char *mode)
 {
   return ::fopen(filename, mode);
+}
+
+std::string ErrorString()
+{
+  int err = errno;
+
+  char buf[256] = {0};
+
+  strerror_r(err, buf, 256);
+
+  return buf;
 }
 
 string getline(FILE *f)
@@ -361,6 +397,90 @@ int fclose(FILE *f)
 {
   return ::fclose(f);
 }
+
+bool exists(const char *filename)
+{
+  struct ::stat st;
+  int res = stat(filename, &st);
+
+  return (res == 0);
+}
+
+static int logfileFD = -1;
+
+// this is used in posix_process.cpp, so that we can close the handle any time that we fork()
+void ReleaseFDAfterFork()
+{
+  // we do NOT release the shared lock here, since the file descriptor is shared so we'd be
+  // releasing the parent process's lock. Just close our file descriptor
+  close(logfileFD);
+}
+
+bool logfile_open(const char *filename)
+{
+  logfileFD = open(filename, O_APPEND | O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+  // acquire a shared lock. Every process acquires a shared lock to the common logfile. Each time a
+  // process shuts down and wants to close the logfile, it releases its shared lock and tries to
+  // acquire an exclusive lock, to see if it can delete the file. See logfile_close.
+  int err = flock(logfileFD, LOCK_SH | LOCK_NB);
+
+  if(err < 0)
+    RDCWARN("Couldn't acquire shared lock to %s: %d", filename, (int)errno);
+
+  return logfileFD >= 0;
+}
+
+void logfile_append(const char *msg, size_t length)
+{
+  if(logfileFD)
+    write(logfileFD, msg, (unsigned int)length);
+}
+
+void logfile_close(const char *filename)
+{
+  if(logfileFD)
+  {
+    // release our shared lock
+    int err = flock(logfileFD, LOCK_UN | LOCK_NB);
+
+    if(err == 0 && filename)
+    {
+      // now try to acquire an exclusive lock. If this succeeds, no other processes are using the
+      // file (since no other shared locks exist), so we can delete it. If it fails, some other
+      // shared lock still exists so we can just close our fd and exit.
+      // NOTE: there is a race here between acquiring the exclusive lock and unlinking, but we
+      // aren't interested in this kind of race - we're interested in whether an application is
+      // still running when the UI closes, or vice versa, or similar cases.
+      err = flock(logfileFD, LOCK_EX | LOCK_NB);
+
+      if(err == 0)
+      {
+        // we got the exclusive lock. Now release it, close fd, and unlink the file
+        err = flock(logfileFD, LOCK_UN | LOCK_NB);
+
+        // can't really error handle here apart from retrying
+        if(err != 0)
+          RDCWARN("Couldn't release exclusive lock to %s: %d", filename, (int)errno);
+
+        close(logfileFD);
+
+        unlink(filename);
+
+        // return immediately so we don't close again below.
+        return;
+      }
+    }
+    else
+    {
+      RDCWARN("Couldn't release shared lock to %s: %d", filename, (int)errno);
+      // nothing to do, we won't try again, just exit. The log might lie around, but that's
+      // relatively harmless.
+    }
+
+    close(logfileFD);
+  }
+}
 };
 
 namespace StringFormat
@@ -373,29 +493,5 @@ void sntimef(char *str, size_t bufSize, const char *format)
   tm *tmv = localtime(&tim);
 
   strftime(str, bufSize, format, tmv);
-}
-
-string Fmt(const char *format, ...)
-{
-  va_list args;
-  va_start(args, format);
-
-  va_list args2;
-  va_copy(args2, args);
-
-  int size = StringFormat::vsnprintf(NULL, 0, format, args2);
-
-  char *buf = new char[size + 1];
-  StringFormat::vsnprintf(buf, size + 1, format, args);
-  buf[size] = 0;
-
-  va_end(args);
-  va_end(args2);
-
-  string ret = buf;
-
-  delete[] buf;
-
-  return ret;
 }
 };

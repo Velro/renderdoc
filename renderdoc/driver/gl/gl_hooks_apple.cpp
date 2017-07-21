@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,6 +33,8 @@
 
 #include "driver/gl/gl_hookset_defs.h"
 
+Threading::CriticalSection glLock;
+
 class OpenGLHook : LibraryHook
 {
 public:
@@ -41,6 +43,39 @@ public:
   bool CreateHooks(const char *libName) { return false; }
   void EnableHooks(const char *libName, bool enable) {}
   void OptionsUpdated(const char *libName) {}
+  virtual GLWindowingData MakeContext(GLWindowingData share)
+  {
+    RDCUNIMPLEMENTED("MakeContext");
+    return GLWindowingData();
+  }
+  virtual void DeleteContext(GLWindowingData context) { RDCUNIMPLEMENTED("DeleteContext"); }
+  virtual void DeleteReplayContext(GLWindowingData context)
+  {
+    RDCUNIMPLEMENTED("DeleteReplayContext");
+  }
+  virtual void MakeContextCurrent(GLWindowingData data) { RDCUNIMPLEMENTED("MakeContextCurrent"); }
+  virtual void SwapBuffers(GLWindowingData context) { RDCUNIMPLEMENTED("SwapBuffers"); }
+  virtual void GetOutputWindowDimensions(GLWindowingData context, int32_t &w, int32_t &h)
+  {
+    RDCUNIMPLEMENTED("GetOutputWindowDimensions");
+  }
+  virtual bool IsOutputWindowVisible(GLWindowingData context)
+  {
+    RDCUNIMPLEMENTED("IsOutputWindowVisible");
+    return true;
+  }
+  virtual GLWindowingData MakeOutputWindow(WindowingSystem system, void *data, bool depth,
+                                           GLWindowingData share_context)
+  {
+    RDCUNIMPLEMENTED("MakeOutputWindow");
+    return GLWindowingData();
+  }
+
+  virtual bool DrawQuads(float width, float height, const std::vector<Vec4f> &vertices)
+  {
+    RDCUNIMPLEMENTED("DrawQuads");
+    return false;
+  }
 };
 
 const GLHookSet &GetRealGLFunctions()
@@ -50,34 +85,7 @@ const GLHookSet &GetRealGLFunctions()
   return dummyHookset;
 }
 
-void MakeContextCurrent(GLWindowingData data)
+Threading::CriticalSection &GetGLLock()
 {
-  RDCUNIMPLEMENTED("MakeContextCurrent");
-}
-
-GLWindowingData MakeContext(GLWindowingData share)
-{
-  RDCUNIMPLEMENTED("MakeContext");
-  return GLWindowingData();
-}
-
-void DeleteContext(GLWindowingData context)
-{
-  RDCUNIMPLEMENTED("DeleteContext");
-}
-
-bool immediateBegin(GLenum mode, float width, float height)
-{
-  RDCUNIMPLEMENTED("immediateBegin");
-  return false;
-}
-
-void immediateVert(float x, float y, float u, float v)
-{
-  RDCUNIMPLEMENTED("immediateVert");
-}
-
-void immediateEnd()
-{
-  RDCUNIMPLEMENTED("immediateEnd");
+  return glLock;
 }

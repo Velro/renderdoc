@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -45,21 +45,27 @@ bool WrappedOpenGL::Serialise_glObjectLabel(GLenum identifier, GLuint name, GLsi
     switch(identifier)
     {
       case eGL_TEXTURE: liveid = GetResourceManager()->GetID(TextureRes(GetCtx(), name)); break;
-      case eGL_BUFFER_OBJECT_EXT: extvariant = true;
+      case eGL_BUFFER_OBJECT_EXT:
+        extvariant = true;    // intentional fallthrough
       case eGL_BUFFER: liveid = GetResourceManager()->GetID(BufferRes(GetCtx(), name)); break;
-      case eGL_PROGRAM_OBJECT_EXT: extvariant = true;
+      case eGL_PROGRAM_OBJECT_EXT:
+        extvariant = true;    // intentional fallthrough
       case eGL_PROGRAM: liveid = GetResourceManager()->GetID(ProgramRes(GetCtx(), name)); break;
-      case eGL_PROGRAM_PIPELINE_OBJECT_EXT: extvariant = true;
+      case eGL_PROGRAM_PIPELINE_OBJECT_EXT:
+        extvariant = true;    // intentional fallthrough
       case eGL_PROGRAM_PIPELINE:
         liveid = GetResourceManager()->GetID(ProgramPipeRes(GetCtx(), name));
         break;
-      case eGL_VERTEX_ARRAY_OBJECT_EXT: extvariant = true;
+      case eGL_VERTEX_ARRAY_OBJECT_EXT:
+        extvariant = true;    // intentional fallthrough
       case eGL_VERTEX_ARRAY:
         liveid = GetResourceManager()->GetID(VertexArrayRes(GetCtx(), name));
         break;
-      case eGL_SHADER_OBJECT_EXT: extvariant = true;
+      case eGL_SHADER_OBJECT_EXT:
+        extvariant = true;    // intentional fallthrough
       case eGL_SHADER: liveid = GetResourceManager()->GetID(ShaderRes(GetCtx(), name)); break;
-      case eGL_QUERY_OBJECT_EXT: extvariant = true;
+      case eGL_QUERY_OBJECT_EXT:
+        extvariant = true;    // intentional fallthrough
       case eGL_QUERY: liveid = GetResourceManager()->GetID(QueryRes(GetCtx(), name)); break;
       case eGL_TRANSFORM_FEEDBACK:
         liveid = GetResourceManager()->GetID(FeedbackRes(GetCtx(), name));
@@ -83,14 +89,7 @@ bool WrappedOpenGL::Serialise_glObjectLabel(GLenum identifier, GLuint name, GLsi
   m_pSerialiser->SerialiseString("label", Label);
 
   if(m_State == READING && GetResourceManager()->HasLiveResource(id))
-  {
-    GLResource res = GetResourceManager()->GetLiveResource(id);
-
-    if(extvariant && m_Real.glLabelObjectEXT)
-      m_Real.glLabelObjectEXT(Identifier, res.name, Length, HasLabel ? Label.c_str() : NULL);
-    else
-      m_Real.glObjectLabel(Identifier, res.name, Length, HasLabel ? Label.c_str() : NULL);
-  }
+    GetResourceManager()->SetName(id, HasLabel ? Label : "");
 
   return true;
 }
@@ -161,9 +160,9 @@ bool WrappedOpenGL::Serialise_glDebugMessageInsert(GLenum source, GLenum type, G
 
   if(m_State == READING)
   {
-    FetchDrawcall draw;
+    DrawcallDescription draw;
     draw.name = name;
-    draw.flags |= eDraw_SetMarker;
+    draw.flags |= DrawFlags::SetMarker;
 
     AddDrawcall(draw, false);
   }
@@ -243,9 +242,9 @@ bool WrappedOpenGL::Serialise_glPushDebugGroup(GLenum source, GLuint id, GLsizei
 
   if(m_State == READING)
   {
-    FetchDrawcall draw;
+    DrawcallDescription draw;
     draw.name = name;
-    draw.flags |= eDraw_PushMarker;
+    draw.flags |= DrawFlags::PushMarker;
 
     AddDrawcall(draw, false);
   }
@@ -270,9 +269,9 @@ bool WrappedOpenGL::Serialise_glPopDebugGroup()
 {
   if(m_State == READING && !m_CurEvents.empty())
   {
-    FetchDrawcall draw;
+    DrawcallDescription draw;
     draw.name = "API Calls";
-    draw.flags |= eDraw_SetMarker;
+    draw.flags |= DrawFlags::SetMarker | DrawFlags::APICalls;
 
     AddDrawcall(draw, true);
   }

@@ -47,9 +47,9 @@
   <widget class="QFrame" name="rangeToolbar">
    <property name="geometry">
     <rect>
-     <x>20</x>
-     <y>190</y>
-     <width>255</width>
+     <x>10</x>
+     <y>120</y>
+     <width>558</width>
      <height>28</height>
     </rect>
    </property>
@@ -89,18 +89,12 @@
      </widget>
     </item>
     <item>
-     <widget class="QLineEdit" name="rangeBlack">
+     <widget class="RDLineEdit" name="rangeBlack">
       <property name="sizePolicy">
        <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
         <horstretch>0</horstretch>
         <verstretch>0</verstretch>
        </sizepolicy>
-      </property>
-      <property name="maximumSize">
-       <size>
-        <width>50</width>
-        <height>16777215</height>
-       </size>
       </property>
       <property name="text">
        <string>0.0</string>
@@ -108,18 +102,28 @@
      </widget>
     </item>
     <item>
-     <widget class="QLineEdit" name="rangeWhite">
+     <widget class="RangeHistogram" name="rangeHistogram" native="true">
+      <property name="minimumSize">
+       <size>
+        <width>200</width>
+        <height>0</height>
+       </size>
+      </property>
+      <property name="baseSize">
+       <size>
+        <width>0</width>
+        <height>0</height>
+       </size>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="RDLineEdit" name="rangeWhite">
       <property name="sizePolicy">
        <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
         <horstretch>0</horstretch>
         <verstretch>0</verstretch>
        </sizepolicy>
-      </property>
-      <property name="maximumSize">
-       <size>
-        <width>50</width>
-        <height>16777215</height>
-       </size>
       </property>
       <property name="text">
        <string>1.0</string>
@@ -128,12 +132,21 @@
     </item>
     <item>
      <widget class="QToolButton" name="zoomRange">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Fixed" vsizetype="MinimumExpanding">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="toolTip">
+       <string>Zoom the visible range controls to the current black and white points</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/zoom.png</normaloff>:/Resources/zoom.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/zoom.png</normaloff>:/zoom.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -142,12 +155,21 @@
     </item>
     <item>
      <widget class="QToolButton" name="autoFit">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Fixed" vsizetype="MinimumExpanding">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="toolTip">
+       <string>Automatically fit the black and white points of the range to the minimum and maximum values contained in the texture</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/wand.png</normaloff>:/Resources/wand.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/wand.png</normaloff>:/wand.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -156,12 +178,21 @@
     </item>
     <item>
      <widget class="QToolButton" name="reset01">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Fixed" vsizetype="MinimumExpanding">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="toolTip">
+       <string>Reset to [0, 1]</string>
+      </property>
       <property name="text">
        <string>...</string>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/arrow_undo.png</normaloff>:/Resources/arrow_undo.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/arrow_undo.png</normaloff>:/arrow_undo.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -170,12 +201,21 @@
     </item>
     <item>
      <widget class="QToolButton" name="visualiseRange">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Fixed" vsizetype="MinimumExpanding">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="toolTip">
+       <string>Show a histogram with the distribution of values on top of the visible range</string>
+      </property>
       <property name="text">
        <string>...</string>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/chart_curve.png</normaloff>:/Resources/chart_curve.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/chart_curve.png</normaloff>:/chart_curve.png</iconset>
       </property>
       <property name="checkable">
        <bool>true</bool>
@@ -190,8 +230,8 @@
   <widget class="QFrame" name="overlayToolbar">
    <property name="geometry">
     <rect>
-     <x>240</x>
-     <y>140</y>
+     <x>490</x>
+     <y>40</y>
      <width>129</width>
      <height>28</height>
     </rect>
@@ -243,8 +283,8 @@
   <widget class="QFrame" name="zoomToolbar">
    <property name="geometry">
     <rect>
-     <x>3</x>
-     <y>145</y>
+     <x>10</x>
+     <y>80</y>
      <width>221</width>
      <height>28</height>
     </rect>
@@ -289,6 +329,9 @@
       <property name="enabled">
        <bool>true</bool>
       </property>
+      <property name="toolTip">
+       <string>Reset the zoom to 100%</string>
+      </property>
       <property name="text">
        <string>1:1</string>
       </property>
@@ -311,12 +354,15 @@
       <property name="enabled">
        <bool>true</bool>
       </property>
+      <property name="toolTip">
+       <string>Fit the current texture to the window</string>
+      </property>
       <property name="text">
        <string>Fit</string>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/fit_window.png</normaloff>:/Resources/fit_window.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/arrow_out.png</normaloff>:/arrow_out.png</iconset>
       </property>
       <property name="checkable">
        <bool>true</bool>
@@ -350,12 +396,15 @@
     </item>
     <item>
      <widget class="QToolButton" name="flip_y">
+      <property name="toolTip">
+       <string>Flip the texture in the Y axis</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/flip_y.png</normaloff>:/Resources/flip_y.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/flip_y.png</normaloff>:/flip_y.png</iconset>
       </property>
       <property name="checkable">
        <bool>true</bool>
@@ -413,12 +462,15 @@
     </item>
     <item>
      <widget class="QToolButton" name="saveTex">
+      <property name="toolTip">
+       <string>Save selected Texture</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/save.png</normaloff>:/Resources/save.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/save.png</normaloff>:/save.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -427,12 +479,15 @@
     </item>
     <item>
      <widget class="QToolButton" name="texListShow">
+      <property name="toolTip">
+       <string>Open Texture List</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/page_white_link.png</normaloff>:/Resources/page_white_link.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/page_white_link.png</normaloff>:/page_white_link.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -441,12 +496,15 @@
     </item>
     <item>
      <widget class="QToolButton" name="viewTexBuffer">
+      <property name="toolTip">
+       <string>Open the texture contents in a raw buffer viewer</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/page_white_code.png</normaloff>:/Resources/page_white_code.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/page_white_code.png</normaloff>:/page_white_code.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -454,13 +512,16 @@
      </widget>
     </item>
     <item>
-     <widget class="QToolButton" name="texListShow_2">
+     <widget class="QToolButton" name="locationGoto">
+      <property name="toolTip">
+       <string>Enter co-ordinates to select a specific pixel location</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/find.png</normaloff>:/Resources/find.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/find.png</normaloff>:/find.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -567,7 +628,7 @@
     <rect>
      <x>3</x>
      <y>3</y>
-     <width>701</width>
+     <width>696</width>
      <height>28</height>
     </rect>
    </property>
@@ -620,14 +681,17 @@
      </widget>
     </item>
     <item>
-     <widget class="Line" name="depthStencilSep">
+     <widget class="Line" name="line_2">
       <property name="orientation">
        <enum>Qt::Vertical</enum>
       </property>
      </widget>
     </item>
     <item>
-     <widget class="QToolButton" name="channelRed">
+     <widget class="RDToolButton" name="channelRed">
+      <property name="toolTip">
+       <string>Show Red (Right click to toggle solo)</string>
+      </property>
       <property name="text">
        <string>R</string>
       </property>
@@ -643,7 +707,10 @@
      </widget>
     </item>
     <item>
-     <widget class="QToolButton" name="channelGreen">
+     <widget class="RDToolButton" name="channelGreen">
+      <property name="toolTip">
+       <string>Show Green (Right click to toggle solo)</string>
+      </property>
       <property name="text">
        <string>G</string>
       </property>
@@ -659,7 +726,10 @@
      </widget>
     </item>
     <item>
-     <widget class="QToolButton" name="channelBlue">
+     <widget class="RDToolButton" name="channelBlue">
+      <property name="toolTip">
+       <string>Show Blue (Right click to toggle solo)</string>
+      </property>
       <property name="text">
        <string>B</string>
       </property>
@@ -678,7 +748,10 @@
      </widget>
     </item>
     <item>
-     <widget class="QToolButton" name="channelAlpha">
+     <widget class="RDToolButton" name="channelAlpha">
+      <property name="toolTip">
+       <string>Show Alpha (Right click to toggle solo)</string>
+      </property>
       <property name="text">
        <string>A</string>
       </property>
@@ -718,12 +791,6 @@
         <height>0</height>
        </size>
       </property>
-      <property name="maximumSize">
-       <size>
-        <width>16777215</width>
-        <height>16777215</height>
-       </size>
-      </property>
       <property name="editable">
        <bool>true</bool>
       </property>
@@ -732,13 +799,6 @@
       </property>
       <property name="insertPolicy">
        <enum>QComboBox::NoInsert</enum>
-      </property>
-     </widget>
-    </item>
-    <item>
-     <widget class="Line" name="line_2">
-      <property name="orientation">
-       <enum>Qt::Vertical</enum>
       </property>
      </widget>
     </item>
@@ -770,16 +830,25 @@
         <height>0</height>
        </size>
       </property>
+      <property name="editable">
+       <bool>true</bool>
+      </property>
+      <property name="insertPolicy">
+       <enum>QComboBox::NoInsert</enum>
+      </property>
      </widget>
     </item>
     <item>
      <widget class="QToolButton" name="customCreate">
+      <property name="toolTip">
+       <string>Create New Custom Shader</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/add.png</normaloff>:/Resources/add.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/add.png</normaloff>:/add.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -788,12 +857,15 @@
     </item>
     <item>
      <widget class="QToolButton" name="customEdit">
+      <property name="toolTip">
+       <string>Edit Selected Shader</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/page_white_edit.png</normaloff>:/Resources/page_white_edit.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/page_white_edit.png</normaloff>:/page_white_edit.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -802,12 +874,15 @@
     </item>
     <item>
      <widget class="QToolButton" name="customDelete">
+      <property name="toolTip">
+       <string>Delete Custom Shader</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/delete.png</normaloff>:/Resources/delete.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/del.png</normaloff>:/del.png</iconset>
       </property>
       <property name="autoRaise">
        <bool>true</bool>
@@ -816,12 +891,15 @@
     </item>
     <item>
      <widget class="QToolButton" name="backcolorPick">
+      <property name="toolTip">
+       <string>Alpha: Pick Solid Background Color</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/color_wheel.png</normaloff>:/Resources/color_wheel.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/color_wheel.png</normaloff>:/color_wheel.png</iconset>
       </property>
       <property name="checkable">
        <bool>true</bool>
@@ -833,12 +911,15 @@
     </item>
     <item>
      <widget class="QToolButton" name="checkerBack">
+      <property name="toolTip">
+       <string>Alpha: Show Checkerboard Background</string>
+      </property>
       <property name="text">
        <string/>
       </property>
       <property name="icon">
-       <iconset resource="../resources.qrc">
-        <normaloff>:/Resources/crosshatch.png</normaloff>:/Resources/crosshatch.png</iconset>
+       <iconset resource="../Resources/resources.qrc">
+        <normaloff>:/checkerboard.png</normaloff>:/checkerboard.png</iconset>
       </property>
       <property name="checkable">
        <bool>true</bool>
@@ -866,6 +947,11 @@
         <height>22</height>
        </size>
       </property>
+      <property name="toolTip">
+       <string>Override display of linear data in gamma space
+
+See FAQ on &quot;Gamma display of linear data&quot;</string>
+      </property>
       <property name="text">
        <string>γ</string>
       </property>
@@ -885,10 +971,10 @@
   <widget class="QWidget" name="renderContainer" native="true">
    <property name="geometry">
     <rect>
-     <x>290</x>
-     <y>190</y>
+     <x>250</x>
+     <y>220</y>
      <width>291</width>
-     <height>241</height>
+     <height>231</height>
     </rect>
    </property>
    <property name="sizePolicy">
@@ -903,7 +989,7 @@
      <height>100</height>
     </size>
    </property>
-   <layout class="QVBoxLayout" name="verticalLayout">
+   <layout class="QVBoxLayout" name="renderLayout">
     <property name="spacing">
      <number>0</number>
     </property>
@@ -979,12 +1065,6 @@
          </sizepolicy>
         </property>
         <property name="minimumSize">
-         <size>
-          <width>32</width>
-          <height>14</height>
-         </size>
-        </property>
-        <property name="maximumSize">
          <size>
           <width>32</width>
           <height>14</height>
@@ -1072,8 +1152,8 @@
   <widget class="ThumbnailStrip" name="inputThumbs" native="true">
    <property name="geometry">
     <rect>
-     <x>300</x>
-     <y>460</y>
+     <x>40</x>
+     <y>470</y>
      <width>120</width>
      <height>80</height>
     </rect>
@@ -1082,19 +1162,114 @@
   <widget class="ThumbnailStrip" name="outputThumbs" native="true">
    <property name="geometry">
     <rect>
-     <x>440</x>
-     <y>460</y>
+     <x>210</x>
+     <y>470</y>
      <width>120</width>
      <height>80</height>
     </rect>
    </property>
+  </widget>
+  <widget class="QFrame" name="textureListFrame">
+   <property name="geometry">
+    <rect>
+     <x>550</x>
+     <y>210</y>
+     <width>221</width>
+     <height>244</height>
+    </rect>
+   </property>
+   <property name="frameShape">
+    <enum>QFrame::NoFrame</enum>
+   </property>
+   <property name="frameShadow">
+    <enum>QFrame::Plain</enum>
+   </property>
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <property name="spacing">
+     <number>6</number>
+    </property>
+    <property name="leftMargin">
+     <number>3</number>
+    </property>
+    <property name="topMargin">
+     <number>3</number>
+    </property>
+    <property name="rightMargin">
+     <number>3</number>
+    </property>
+    <property name="bottomMargin">
+     <number>3</number>
+    </property>
+    <item>
+     <layout class="QHBoxLayout" name="textureListControls">
+      <property name="spacing">
+       <number>0</number>
+      </property>
+      <item>
+       <widget class="QComboBox" name="textureListFilter">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="MinimumExpanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="editable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="cancelTextureListFilter">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="icon">
+         <iconset resource="../Resources/resources.qrc">
+          <normaloff>:/cross.png</normaloff>:/cross.png</iconset>
+        </property>
+        <property name="autoRaise">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="RDListView" name="textureList">
+      <property name="frameShape">
+       <enum>QFrame::Box</enum>
+      </property>
+      <property name="frameShadow">
+       <enum>QFrame::Sunken</enum>
+      </property>
+      <property name="editTriggers">
+       <set>QAbstractItemView::NoEditTriggers</set>
+      </property>
+      <property name="showDropIndicator" stdset="0">
+       <bool>false</bool>
+      </property>
+      <property name="defaultDropAction">
+       <enum>Qt::CopyAction</enum>
+      </property>
+      <property name="selectionMode">
+       <enum>QAbstractItemView::NoSelection</enum>
+      </property>
+      <property name="viewMode">
+       <enum>QListView::ListMode</enum>
+      </property>
+      <property name="uniformItemSizes">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+   </layout>
   </widget>
  </widget>
  <customwidgets>
   <customwidget>
    <class>ToolWindowManager</class>
    <extends>QWidget</extends>
-   <header>ToolWindowManager.h</header>
+   <header>3rdparty/toolwindowmanager/ToolWindowManager.h</header>
   </customwidget>
   <customwidget>
    <class>CustomPaintWidget</class>
@@ -1102,14 +1277,35 @@
    <header>Widgets/CustomPaintWidget.h</header>
   </customwidget>
   <customwidget>
+   <class>RDLineEdit</class>
+   <extends>QLineEdit</extends>
+   <header>Widgets/Extended/RDLineEdit.h</header>
+  </customwidget>
+  <customwidget>
    <class>ThumbnailStrip</class>
    <extends>QWidget</extends>
    <header>Widgets/ThumbnailStrip.h</header>
    <container>1</container>
   </customwidget>
+  <customwidget>
+   <class>RDListView</class>
+   <extends>QListView</extends>
+   <header>Widgets/Extended/RDListView.h</header>
+  </customwidget>
+  <customwidget>
+   <class>RangeHistogram</class>
+   <extends>QWidget</extends>
+   <header>Widgets/RangeHistogram.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>RDToolButton</class>
+   <extends>QToolButton</extends>
+   <header>Widgets/Extended/RDToolButton.h</header>
+  </customwidget>
  </customwidgets>
  <resources>
-  <include location="../resources.qrc"/>
+  <include location="../Resources/resources.qrc"/>
  </resources>
  <connections/>
 </ui>

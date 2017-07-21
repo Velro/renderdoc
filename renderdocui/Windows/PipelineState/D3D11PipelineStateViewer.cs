@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -310,18 +310,8 @@ namespace renderdocui.Windows.PipelineState
             else
                 shader.Text = stage.ShaderName;
 
-            if (shaderDetails != null && shaderDetails.DebugInfo.entryFunc.Length > 0 && shaderDetails.DebugInfo.files.Length > 0)
-            {
-                string shaderfn = "";
-
-                int entryFile = shaderDetails.DebugInfo.entryFile;
-                if (entryFile < 0 || entryFile >= shaderDetails.DebugInfo.files.Length)
-                    entryFile = 0;
-
-                shaderfn = shaderDetails.DebugInfo.files[entryFile].BaseFilename;
-
-                shader.Text = shaderDetails.DebugInfo.entryFunc + "()" + " - " + shaderfn;
-            }
+            if (shaderDetails != null && shaderDetails.DebugInfo.files.Length > 0)
+                shader.Text = shaderDetails.EntryPoint + "()" + " - " + shaderDetails.DebugInfo.files[0].BaseFilename;
 
             int vs = 0;
             
@@ -339,7 +329,7 @@ namespace renderdocui.Windows.PipelineState
                     {
                         foreach (var bind in shaderDetails.ReadOnlyResources)
                         {
-                            if (bind.IsSRV && bind.bindPoint == i)
+                            if (!bind.IsSampler && bind.IsSRV && bind.bindPoint == i)
                             {
                                 shaderInput = bind;
                                 break;
@@ -505,7 +495,7 @@ namespace renderdocui.Windows.PipelineState
                         }
                     }
 
-                    bool filledSlot = (s.AddressU.Length > 0);
+                    bool filledSlot = (s.Samp != ResourceId.Null);
                     bool usedSlot = (shaderInput != null);
                     
                     // show if
@@ -532,7 +522,7 @@ namespace renderdocui.Windows.PipelineState
                         string addPrefix = "";
                         string addVal = "";
 
-                        string[] addr = { s.AddressU, s.AddressV, s.AddressW };
+                        string[] addr = { s.AddressU.ToString(), s.AddressV.ToString(), s.AddressW.ToString() };
 
                         // arrange like either UVW: WRAP or UV: WRAP, W: CLAMP
                         for (int a = 0; a < 3; a++)
@@ -554,16 +544,18 @@ namespace renderdocui.Windows.PipelineState
 
                         addressing += addPrefix + ": " + addVal;
 
-                        if(s.UseBorder)
+                        if(s.UseBorder())
                             addressing += String.Format("<{0}>", borderColor);
 
-                        string filter = s.Filter;
+                        string filter = s.Filter.ToString();
 
                         if (s.MaxAniso > 0)
                             filter += String.Format(" {0}x", s.MaxAniso);
 
-                        if (s.UseComparison)
+                        if (s.Filter.func == FilterFunc.Comparison)
                             filter += String.Format(" ({0})", s.Comparison);
+                        else if(s.Filter.func != FilterFunc.Normal)
+                            filter += String.Format(" ({0})", s.Filter.func);
 
                         var node = samplers.Nodes.Add(new object[] { slotname, addressing,
                                                             filter,
@@ -595,8 +587,17 @@ namespace renderdocui.Windows.PipelineState
                 {
                     ConstantBlock shaderCBuf = null;
 
-                    if (shaderDetails != null && i < shaderDetails.ConstantBlocks.Length && shaderDetails.ConstantBlocks[i].name.Length > 0)
-                        shaderCBuf = shaderDetails.ConstantBlocks[i];
+                    if (shaderDetails != null)
+                    {
+                        foreach (var cb in shaderDetails.ConstantBlocks)
+                        {
+                            if (cb.bindPoint == i)
+                            {
+                                shaderCBuf = cb;
+                                break;
+                            }
+                        }
+                    }
 
                     bool filledSlot = (b.Buffer != ResourceId.Null);
                     bool usedSlot = (shaderCBuf != null);
@@ -757,8 +758,8 @@ namespace renderdocui.Windows.PipelineState
             else
                 iaBytecode.Text = state.m_IA.LayoutName;
 
-            if (state.m_IA.Bytecode != null && state.m_IA.Bytecode.DebugInfo != null && state.m_IA.Bytecode.DebugInfo.entryFunc.Length > 0)
-                iaBytecode.Text += " (" + state.m_IA.Bytecode.DebugInfo.entryFunc + ")";
+            if (state.m_IA.Bytecode != null && state.m_IA.Bytecode.DebugInfo != null)
+                iaBytecode.Text += " (" + state.m_IA.Bytecode.EntryPoint + ")";
 
             iaBytecodeMismatch.Text = "";
             iaBytecodeMismatch.Visible = false;
@@ -1441,14 +1442,22 @@ namespace renderdocui.Windows.PipelineState
                 {
                     ShaderResource shaderInput = null;
 
-                    if (state.m_PS.ShaderDetails != null)
+                    // any non-CS shader can use these. When that's not supported (Before feature level 11.1)
+                    // this search will just boil down to only PS.
+                    // When multiple stages use the UAV, we allow the last stage to 'win' and define its type,
+                    // although it would be very surprising if the types were actually different anyway.
+                    D3D11PipelineState.ShaderStage[] nonCS = { state.m_VS, state.m_DS, state.m_HS, state.m_GS, state.m_PS };
+                    foreach (var stage in nonCS)
                     {
-                        foreach (var bind in state.m_PS.ShaderDetails.ReadWriteResources)
+                        if (stage.ShaderDetails != null)
                         {
-                            if (bind.bindPoint == i + state.m_OM.UAVStartSlot)
+                            foreach (var bind in stage.ShaderDetails.ReadWriteResources)
                             {
-                                shaderInput = bind;
-                                break;
+                                if (bind.bindPoint == i + state.m_OM.UAVStartSlot)
+                                {
+                                    shaderInput = bind;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1676,7 +1685,7 @@ namespace renderdocui.Windows.PipelineState
                                                         blend.m_AlphaBlend.Destination,
                                                         blend.m_AlphaBlend.Operation,
 
-                                                        blend.LogicOp,
+                                                        blend.Logic,
 
                                                         ((blend.WriteMask & 0x1) == 0 ? "_" : "R") +
                                                         ((blend.WriteMask & 0x2) == 0 ? "_" : "G") +
@@ -1711,7 +1720,7 @@ namespace renderdocui.Windows.PipelineState
             sampleMask.Text = state.m_OM.m_BlendState.SampleMask.ToString("X8");
 
             depthEnable.Image = state.m_OM.m_State.DepthEnable ? tick : cross;
-            depthFunc.Text = state.m_OM.m_State.DepthFunc;
+            depthFunc.Text = state.m_OM.m_State.DepthFunc.ToString();
             depthWrite.Image = state.m_OM.m_State.DepthWrites ? tick : cross;
 
             stencilEnable.Image = state.m_OM.m_State.StencilEnable ? tick : cross;
@@ -1932,6 +1941,7 @@ namespace renderdocui.Windows.PipelineState
 
                 int bind = -1;
                 bool uav = false;
+                bool omuav = false;
 
                 if (view == null)
                 {
@@ -1988,7 +1998,35 @@ namespace renderdocui.Windows.PipelineState
                         {
                             bind = i + (int)m_Core.CurD3D11PipelineState.m_OM.UAVStartSlot;
                             uav = true;
+                            omuav = true;
                             break;
+                        }
+                    }
+                }
+
+                // for OM UAVs these can be bound to any non-CS stage, so make sure
+                // we have the right shader details for it.
+                // This search allows later stage bindings to override earlier stage bindings,
+                // which is a reasonable behaviour when the same resource can be referenced
+                // in multiple places. Most likely the bindings are equivalent anyway.
+                // The main point is that it allows us to pick up the binding if it's not
+                // bound in the PS but only in an earlier stage.
+                if (omuav)
+                {
+                    var state = m_Core.CurD3D11PipelineState;
+                    D3D11PipelineState.ShaderStage[] nonCS = { state.m_VS, state.m_DS, state.m_HS, state.m_GS, state.m_PS };
+                    foreach (var searchstage in nonCS)
+                    {
+                        if (searchstage.ShaderDetails != null)
+                        {
+                            foreach (var searchbind in searchstage.ShaderDetails.ReadWriteResources)
+                            {
+                                if (searchbind.bindPoint == bind)
+                                {
+                                    deets = searchstage.ShaderDetails;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -2024,7 +2062,7 @@ namespace renderdocui.Windows.PipelineState
                     ShaderResource[] resources = uav ? deets.ReadWriteResources : deets.ReadOnlyResources;
                     foreach (var r in resources)
                     {
-                        if (r.IsTexture)
+                        if (r.IsTexture || r.IsSampler)
                             continue;
 
                         if (r.bindPoint == bind)
@@ -2033,10 +2071,17 @@ namespace renderdocui.Windows.PipelineState
                             {
                                 if (view != null)
                                 {
-                                    if (view.Format.special && view.Format.specialFormat == SpecialFormat.R10G10B10A2)
+                                    if (view.Format.special)
                                     {
-                                        if (view.Format.compType == FormatComponentType.UInt) format = "uintten";
-                                        if (view.Format.compType == FormatComponentType.UNorm) format = "unormten";
+                                        if (view.Format.specialFormat == SpecialFormat.R10G10B10A2)
+                                        {
+                                            if (view.Format.compType == FormatComponentType.UInt) format = "uintten";
+                                            if (view.Format.compType == FormatComponentType.UNorm) format = "unormten";
+                                        }
+                                        else if (view.Format.specialFormat == SpecialFormat.R11G11B10)
+                                        {
+                                            format = "floateleven";
+                                        }
                                     }
                                     else if (!view.Format.special)
                                     {
@@ -2125,7 +2170,9 @@ namespace renderdocui.Windows.PipelineState
                 }
                 else if (sender is TreelistView.TreeListView)
                 {
-                    TreelistView.NodesSelection sel = ((TreelistView.TreeListView)sender).NodesSelection;
+                    TreelistView.TreeListView view = (TreelistView.TreeListView)sender;
+                    view.SortNodesSelection();
+                    TreelistView.NodesSelection sel = view.NodesSelection;
 
                     if (sel.Count > 0)
                     {
@@ -2358,14 +2405,14 @@ namespace renderdocui.Windows.PipelineState
 
             if (stage.Shader == ResourceId.Null || shaderDetails == null) return;
 
-            var entryFunc = String.Format("EditedShader{0}S", stage.stage.ToString()[0]);
+            var entryFunc = String.Format("EditedShader{0}S", stage.stage.Str(GraphicsAPI.D3D11)[0]);
 
             string mainfile = "";
 
             var files = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
-            if (shaderDetails.DebugInfo.entryFunc.Length > 0 && shaderDetails.DebugInfo.files.Length > 0)
+            if (shaderDetails.DebugInfo.files.Length > 0)
             {
-                entryFunc = shaderDetails.DebugInfo.entryFunc;
+                entryFunc = shaderDetails.EntryPoint;
 
                 foreach (var s in shaderDetails.DebugInfo.files)
                 {
@@ -2375,11 +2422,7 @@ namespace renderdocui.Windows.PipelineState
                         files.Add(s.FullFilename, s.filetext);
                 }
 
-                int entryFile = shaderDetails.DebugInfo.entryFile;
-                if (entryFile < 0 || entryFile >= shaderDetails.DebugInfo.files.Length)
-                    entryFile = 0;
-
-                mainfile = shaderDetails.DebugInfo.files[entryFile].FullFilename;
+                mainfile = shaderDetails.DebugInfo.files[0].FullFilename;
             }
             else
             {
@@ -2434,7 +2477,7 @@ namespace renderdocui.Windows.PipelineState
                 {
                     if (cbuf.name.Length > 0 && cbuf.variables.Length > 0)
                     {
-                        cbuffers += String.Format("cbuffer {0} : register(b{1}) {{", cbuf.name, cbufIdx) + nl;
+                        cbuffers += String.Format("cbuffer {0} : register(b{1}) {{", cbuf.name, cbuf.bindPoint) + nl;
                         MakeShaderVariablesHLSL(true, cbuf.variables, ref cbuffers, ref hlsl);
                         cbuffers += "};" + nl2;
                     }
@@ -2540,7 +2583,7 @@ namespace renderdocui.Windows.PipelineState
                         // if not, try and find the same filename (this is not proper include handling!)
                         foreach (var k in updatedfiles.Keys)
                         {
-                            if (renderdocui.Code.Helpers.SafeGetFileName(k) == search)
+                            if (String.Compare(renderdocui.Code.Helpers.SafeGetFileName(k), search, true) == 0)
                             {
                                 fileText = updatedfiles[k];
                                 break;
@@ -2600,20 +2643,36 @@ namespace renderdocui.Windows.PipelineState
             sv.Show(m_DockContent.DockPanel);
         }
 
-        private void ShowCBuffer(D3D11PipelineState.ShaderStage stage, UInt32 slot)
+        private void ShowCBuffer(D3D11PipelineState.ShaderStage stage, UInt32 bindPoint)
         {
-            if (stage.ShaderDetails != null &&
-                (stage.ShaderDetails.ConstantBlocks.Length <= slot ||
-                 stage.ShaderDetails.ConstantBlocks[slot].name.Length == 0)
-               )
+            bool found = false;
+            UInt32 slot = UInt32.MaxValue;
+
+            if (stage.ShaderDetails != null)
+            {
+                UInt32 i = 0;
+                foreach (var cb in stage.ShaderDetails.ConstantBlocks)
+                {
+                    if (cb.bindPoint == bindPoint)
+                    {
+                        slot = i;
+                        found = true;
+                        break;
+                    }
+
+                    i++;
+                }
+            }
+
+            if (!found)
             {
                 // unused cbuffer, open regular buffer viewer
                 var viewer = new BufferViewer(m_Core, false);
 
-                if (stage.ConstantBuffers.Length < slot)
+                if (stage.ConstantBuffers.Length < bindPoint)
                     return;
 
-                var buf = stage.ConstantBuffers[slot];
+                var buf = stage.ConstantBuffers[bindPoint];
                 viewer.ViewRawBuffer(true, buf.VecOffset * 4 * sizeof(float), buf.VecCount * 4 * sizeof(float), buf.Buffer);
                 viewer.Show(m_DockContent.DockPanel);
 
@@ -3261,8 +3320,8 @@ namespace renderdocui.Windows.PipelineState
                 else
                     shadername = sh.ShaderName;
 
-                if (shaderDetails != null && shaderDetails.DebugInfo.entryFunc.Length > 0 && shaderDetails.DebugInfo.files.Length > 0)
-                    shadername = shaderDetails.DebugInfo.entryFunc + "()" + " - " +
+                if (shaderDetails != null && shaderDetails.DebugInfo.files.Length > 0)
+                    shadername = shaderDetails.EntryPoint + "()" + " - " +
                                     shaderDetails.DebugInfo.files[0].BaseFilename;
 
                 writer.WriteStartElement("p");
@@ -3347,7 +3406,7 @@ namespace renderdocui.Windows.PipelineState
                     string addPrefix = "";
                     string addVal = "";
 
-                    string[] addr = { s.AddressU, s.AddressV, s.AddressW };
+                    string[] addr = { s.AddressU.ToString(), s.AddressV.ToString(), s.AddressW.ToString() };
 
                     // arrange like either UVW: WRAP or UV: WRAP, W: CLAMP
                     for (int a = 0; a < 3; a++)
@@ -3595,7 +3654,7 @@ namespace renderdocui.Windows.PipelineState
                         b.Enabled ? "Yes" : "No", b.LogicEnabled ? "Yes" : "No",
                         b.m_Blend.Source, b.m_Blend.Destination, b.m_Blend.Operation,
                         b.m_AlphaBlend.Source, b.m_AlphaBlend.Destination, b.m_AlphaBlend.Operation,
-                        b.LogicOp,
+                        b.Logic,
                         ((b.WriteMask & 0x1) == 0 ? "_" : "R") +
                         ((b.WriteMask & 0x2) == 0 ? "_" : "G") +
                         ((b.WriteMask & 0x4) == 0 ? "_" : "B") +

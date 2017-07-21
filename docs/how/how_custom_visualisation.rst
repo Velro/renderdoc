@@ -152,8 +152,8 @@ This variable will be set to a given integer value, depending on the type of the
 
 	The value varies depending on the API this shader will be used for, as each has different resource bindings.
 
-D3D11 / HLSL
-^^^^^^^^^^^^
+D3D11 or D3D12 / HLSL
+^^^^^^^^^^^^^^^^^^^^^
 
 #. 1D texture
 #. 2D texture
@@ -162,7 +162,7 @@ D3D11 / HLSL
 #. Depth + Stencil
 #. Depth (Multisampled)
 #. Depth + Stencil (Multisampled)
-#. Cubemap
+#. Legacy: used to be cubemap, removed as it's unused
 #. 2D texture (Multisampled)
 
 OpenGL / GLSL
@@ -187,8 +187,8 @@ Vulkan / GLSL
 #. 3D texture
 #. 2D texture (Multisampled)
 
-Samplers (D3D11 only)
-`````````````````````
+Samplers (D3D11/D3D12 only)
+```````````````````````````
 
 .. highlight:: c++
 .. code:: c++
@@ -201,8 +201,8 @@ These samplers are provided to allow you to sample from the resource as opposed 
 Resources
 `````````
 
-D3D11 / HLSL
-^^^^^^^^^^^^
+D3D11 or D3D12 / HLSL
+^^^^^^^^^^^^^^^^^^^^^
 
 .. highlight:: c++
 .. code:: c++
@@ -214,7 +214,6 @@ D3D11 / HLSL
 	Texture2DArray<uint2> texDisplayTexStencilArray : register(t5);
 	Texture2DMSArray<float2> texDisplayTexDepthMSArray : register(t6);
 	Texture2DMSArray<uint2> texDisplayTexStencilMSArray : register(t7);
-	Texture2DArray<float4> texDisplayTexCubeArray : register(t8);
 	Texture2DMSArray<float4> texDisplayTex2DMSArray : register(t9);
 
 	Texture1DArray<uint4> texDisplayUIntTex1DArray : register(t11);

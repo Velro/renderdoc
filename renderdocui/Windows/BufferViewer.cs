@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -203,7 +203,6 @@ namespace renderdocui.Windows
 
         private byte[] m_Zeroes = null;
 
-        private OutputConfig m_OutConfig = new OutputConfig();
         private MeshDisplay m_MeshDisplay = new MeshDisplay();
 
         private IntPtr RenderHandle = IntPtr.Zero;
@@ -301,8 +300,6 @@ namespace renderdocui.Windows
 
         private void ResetConfig()
         {
-            m_OutConfig.m_Type = OutputType.MeshDisplay;
-
             m_MeshDisplay = new MeshDisplay();
             m_MeshDisplay.type = MeshDataStage.VSIn;
             m_MeshDisplay.fov = 90.0f;
@@ -558,7 +555,6 @@ namespace renderdocui.Windows
                         return;
 
                     m_Output = r.CreateOutput(RenderHandle, OutputType.MeshDisplay);
-                    m_Output.SetOutputConfig(m_OutConfig);
                     RT_UpdateRenderOutput(r);
                     m_Output.Display(); // pump the display once, this will fetch postvs data
 
@@ -824,7 +820,7 @@ namespace renderdocui.Windows
                 if (IsDisposed || MeshView) return int.MaxValue;
                 int maxrows = 0;
                 int.TryParse(rowRange.Text, out maxrows);
-                return maxrows;
+                return Math.Max(0, maxrows);
             }
         }
 
@@ -979,7 +975,6 @@ namespace renderdocui.Windows
                     f[i].format.compCount = sig.compCount;
                     f[i].format.compType = sig.compType;
                     f[i].format.special = false;
-                    f[i].format.rawType = 0;
                     f[i].perinstance = false;
                     f[i].instancerate = 1;
                     f[i].rowmajor = false;
@@ -1553,6 +1548,11 @@ namespace renderdocui.Windows
         {
             var state = GetUIState(type);
 
+            var bufView = state.m_GridView;
+
+            if(bufView.IsDisposed)
+                return;
+
             // only do this once, VSIn is guaranteed to be set (even if it's empty data)
             if(type == MeshDataStage.VSIn)
                 CalcCellFloatWidth();
@@ -1561,8 +1561,6 @@ namespace renderdocui.Windows
 
             if(data.Buffers == null)
                 return;
-
-            var bufView = state.m_GridView;
 
             bufView.RowCount = 0;
             state.m_Data = data;
@@ -1855,6 +1853,7 @@ namespace renderdocui.Windows
             state.m_DataParseThread = th;
         }
 
+        private int m_QueuedRowSelect = -1;
         private bool SuppressCaching = false;
 
         private void UI_ShowRows(UIState state, int horizScroll)
@@ -1877,6 +1876,19 @@ namespace renderdocui.Windows
                     largeBufferWarning.Visible = true;
 
                 ScrollToRow(bufView, RowOffset);
+
+                if (m_QueuedRowSelect != -1 && state.m_Stage == m_MeshDisplay.type)
+                {
+                    ScrollToRow(bufView, m_QueuedRowSelect);
+
+                    bufView.ClearSelection();
+                    if(m_QueuedRowSelect < bufView.RowCount)
+                        bufView.Rows[m_QueuedRowSelect].Selected = true;
+
+                    SyncViews(bufView, true, true);
+
+                    m_QueuedRowSelect = -1;
+                }
 
                 SuppressCaching = false;
 
@@ -2374,30 +2386,43 @@ namespace renderdocui.Windows
             if (!m_Core.LogLoaded)
                 return;
 
-            m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
+            m_Core.Renderer.BeginInvoke("PickVertex", (ReplayRenderer r) =>
             {
-                UInt32 vertSelected = m_Output.PickVertex(m_Core.CurEvent, (UInt32)p.X, (UInt32)p.Y);
+                UInt32 instanceSelected = 0;
+                UInt32 vertSelected = m_Output.PickVertex(m_Core.CurEvent, (UInt32)p.X, (UInt32)p.Y, out instanceSelected);
 
                 if (vertSelected != UInt32.MaxValue)
                 {
                     this.BeginInvoke(new Action(() =>
                     {
-                        var ui = GetUIState(m_MeshDisplay.type);
-
-                        int row = (int)vertSelected;
-
-                        if (row >= 0 && row < ui.m_GridView.RowCount)
+                        if (instanceSelected != m_MeshDisplay.curInstance)
                         {
-                            if (ui.m_GridView.SelectedRows.Count == 0 || ui.m_GridView.SelectedRows[0] != ui.m_GridView.Rows[row])
-                            {
-                                ScrollToRow(ui.m_GridView, row);
-
-                                ui.m_GridView.ClearSelection();
-                                ui.m_GridView.Rows[row].Selected = true;
-                            }
-
-                            SyncViews(ui.m_GridView, true, true);
+                            m_MeshDisplay.curInstance = instanceSelected;
+                            instanceIdx.Text = instanceSelected.ToString();
+                            instanceIdxToolitem.Text = instanceIdx.Text;
+                            OnEventSelected(m_Core.CurEvent);
+                            m_QueuedRowSelect = (int)vertSelected;
                         }
+                        else
+                        {
+                            var ui = GetUIState(m_MeshDisplay.type);
+
+                            int row = (int)vertSelected;
+
+                            if (row >= 0 && row < ui.m_GridView.RowCount)
+                            {
+                                if (ui.m_GridView.SelectedRows.Count == 0 || ui.m_GridView.SelectedRows[0] != ui.m_GridView.Rows[row])
+                                {
+                                    ScrollToRow(ui.m_GridView, row);
+
+                                    ui.m_GridView.ClearSelection();
+                                    ui.m_GridView.Rows[row].Selected = true;
+                                }
+
+                                SyncViews(ui.m_GridView, true, true);
+                            }
+                        }
+
                     }));
                 }
             });
@@ -2568,7 +2593,7 @@ namespace renderdocui.Windows
                 return;
             }
 
-            m_Core.Renderer.InvokeForPaint((ReplayRenderer r) => { RT_UpdateRenderOutput(r); if (m_Output != null) m_Output.Display(); });
+            m_Core.Renderer.InvokeForPaint("bufferpaint", (ReplayRenderer r) => { RT_UpdateRenderOutput(r); if (m_Output != null) m_Output.Display(); });
         }
 
         private void BufferViewer_Load(object sender, EventArgs e)

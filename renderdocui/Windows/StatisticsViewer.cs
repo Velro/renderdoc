@@ -664,8 +664,6 @@ namespace renderdocui.Windows
         {
             statisticsLog.Clear();
 
-            long fileSize = (new FileInfo(m_Core.LogFileName)).Length;
-
             var lastDraw = m_Core.CurDrawcalls[m_Core.CurDrawcalls.Length - 1];
             while (lastDraw.children != null && lastDraw.children.Length > 0)
                 lastDraw = lastDraw.children[lastDraw.children.Length - 1];
@@ -739,14 +737,14 @@ namespace renderdocui.Windows
 
             UInt64 persistentData = frameInfo.persistentSize;
 
-            float compressedMB = (float)fileSize / (1024.0f * 1024.0f);
-            float uncompressedMB = (float)frameInfo.fileSize / (1024.0f * 1024.0f);
+            float compressedMB = (float)frameInfo.compressedFileSize / (1024.0f * 1024.0f);
+            float uncompressedMB = (float)frameInfo.uncompressedFileSize / (1024.0f * 1024.0f);
             float compressRatio = uncompressedMB / compressedMB;
             float persistentMB = (float)frameInfo.persistentSize / (1024.0f * 1024.0f);
             float initDataMB = (float)frameInfo.initDataSize / (1024.0f * 1024.0f);
 
             string header = String.Format("Stats for {0}.\n\nFile size: {1:N2}MB ({2:N2}MB uncompressed, compression ratio {3:N2}:1)\nPersistent Data (approx): {4:N2}MB, Frame-initial data (approx): {5:N2}MB\n",
-                              Path.GetFileName(m_Core.LogFileName), compressedMB, uncompressedMB, compressRatio, persistentMB, initDataMB);
+                              Helpers.SafeGetFileName(m_Core.LogFileName), compressedMB, uncompressedMB, compressRatio, persistentMB, initDataMB);
             string draws = String.Format("Draw calls: {0}\nDispatch calls: {1}\n",
                               drawCount, dispatchCount);
             string calls = AppendAPICallSummary(frameInfo, numAPIcalls);

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -23,9 +23,10 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#if USE_BREAKPAD && defined(RENDERDOC_OFFICIAL_BUILD)
+// currently breakpad crash-handler is only available on windows
+#if ENABLED(RDOC_RELEASE) && RENDERDOC_OFFICIAL_BUILD && ENABLED(RDOC_WIN32)
 
-#define CRASH_HANDLER_ENABLED
+#define RDOC_CRASH_HANDLER OPTION_ON
 
 // breakpad
 #include "breakpad/client/windows/common/ipc_protocol.h"
@@ -51,7 +52,7 @@ public:
     GetTempPathW(MAX_PATH - 1, tempPath);
 
     wstring dumpFolder = tempPath;
-    dumpFolder += L"RenderDocDumps";
+    dumpFolder += L"RenderDoc/dumps";
 
     CreateDirectoryW(dumpFolder.c_str(), NULL);
 
@@ -108,7 +109,7 @@ public:
         google_breakpad::CustomInfoEntry(L"gitcommit", L""),
     };
 
-    wstring wideStr = StringFormat::UTF82Wide(string(RENDERDOC_VERSION_STRING));
+    wstring wideStr = StringFormat::UTF82Wide(string(MAJOR_MINOR_VERSION_STRING));
     breakpadCustomInfo[0].set_value(wideStr.c_str());
     wideStr = StringFormat::UTF82Wide(string(RDCGETLOGFILE()));
     breakpadCustomInfo[1].set_value(wideStr.c_str());
@@ -141,5 +142,9 @@ public:
 private:
   google_breakpad::ExceptionHandler *m_ExHandler;
 };
+
+#else
+
+#define RDOC_CRASH_HANDLER OPTION_OFF
 
 #endif

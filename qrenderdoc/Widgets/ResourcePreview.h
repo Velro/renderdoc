@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,8 +22,7 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#ifndef RESOURCEPREVIEW_H
-#define RESOURCEPREVIEW_H
+#pragma once
 
 #include <QFrame>
 
@@ -33,24 +32,26 @@ class ResourcePreview;
 }
 
 struct IReplayOutput;
-class CaptureContext;
+struct ICaptureContext;
 
 class ResourcePreview : public QFrame
 {
   Q_OBJECT
 
 public:
-  explicit ResourcePreview(CaptureContext *c, IReplayOutput *output, QWidget *parent = 0);
+  explicit ResourcePreview(ICaptureContext &c, IReplayOutput *output, QWidget *parent = 0);
   ~ResourcePreview();
 
 signals:
   void clicked(QMouseEvent *e);
+  void doubleClicked(QMouseEvent *e);
 
 public:
   void setSlotName(const QString &n);
   void setResourceName(const QString &n);
 
   void clickEvent(QMouseEvent *e);
+  void doubleClickEvent(QMouseEvent *e);
 
   WId thumbWinId();
 
@@ -72,5 +73,3 @@ private:
 
   bool m_Active;
 };
-
-#endif    // RESOURCEPREVIEW_H

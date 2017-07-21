@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -123,6 +123,7 @@ public:
   WrappedID3D12Device *GetWrappedDevice() { return m_pDevice; }
   D3D12ResourceRecord *GetResourceRecord() { return m_ListRecord; }
   ID3D12GraphicsCommandList *GetList(ResourceId id);
+  ID3D12GraphicsCommandList *GetCrackedList(ResourceId id);
 
   void SetCommandData(D3D12CommandData *cmd) { m_Cmd = cmd; }
   void SetInitParams(REFIID riid, UINT nodeMask, D3D12_COMMAND_LIST_TYPE type)
@@ -131,6 +132,8 @@ public:
     m_Init.nodeMask = nodeMask;
     m_Init.type = type;
   }
+
+  bool ValidateRootGPUVA(ResourceId buffer);
 
   //////////////////////////////
   // implement IUnknown
@@ -408,6 +411,10 @@ public:
                                 BeginEvent(UINT Metadata, const void *pData, UINT Size));
 
   IMPLEMENT_FUNCTION_SERIALISED(virtual void STDMETHODCALLTYPE, EndEvent());
+
+  void ReserveExecuteIndirect(ID3D12GraphicsCommandList *list, ResourceId sig, UINT maxCount);
+  void PatchExecuteIndirect(BakedCmdListInfo &info, uint32_t executeIndex);
+  void ReplayExecuteIndirect(ID3D12GraphicsCommandList *list, BakedCmdListInfo &info);
 
   IMPLEMENT_FUNCTION_SERIALISED(virtual void STDMETHODCALLTYPE,
                                 ExecuteIndirect(ID3D12CommandSignature *pCommandSignature,

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -37,6 +37,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "api/replay/renderdoc_replay.h"
 #include "common/common.h"
 
 using std::string;
@@ -47,45 +48,28 @@ struct CaptureOptions;
 
 namespace Process
 {
-enum ModificationType
-{
-  eEnvModification_Replace = 0,
-
-  // prepend/append options will replace if there is no existing variable
-  eEnvModification_AppendPlatform,     // append, separated by colons for linux & semi-colons for
-                                       // windows
-  eEnvModification_AppendSemiColon,    // append, separated by semi-colons
-  eEnvModification_AppendColon,        // append, separated by colons
-  eEnvModification_Append,             // append with no separators
-
-  eEnvModification_PrependPlatform,     // prepend, separated by colons for linux & semi-colons for
-                                        // windows
-  eEnvModification_PrependSemiColon,    // prepend, separated by semi-colons
-  eEnvModification_PrependColon,        // prepend, separated by colons
-  eEnvModification_Prepend,             // prepend with no separators
-};
-struct EnvironmentModification
-{
-  EnvironmentModification() : type(eEnvModification_Replace), name(""), value("") {}
-  EnvironmentModification(ModificationType t, const char *n, const char *v)
-      : type(t), name(n), value(v)
-  {
-  }
-  ModificationType type;
-  string name;
-  string value;
-};
 void RegisterEnvironmentModification(EnvironmentModification modif);
 
 void ApplyEnvironmentModification();
 
-void StartGlobalHook(const char *pathmatch, const char *logfile, const CaptureOptions *opts);
-uint32_t InjectIntoProcess(uint32_t pid, EnvironmentModification *env, const char *logfile,
-                           const CaptureOptions *opts, bool waitForExit);
-uint32_t LaunchProcess(const char *app, const char *workingDir, const char *cmdLine);
+bool CanGlobalHook();
+bool StartGlobalHook(const char *pathmatch, const char *logfile, const CaptureOptions &opts);
+bool IsGlobalHookActive();
+void StopGlobalHook();
+
+uint32_t InjectIntoProcess(uint32_t pid, const rdctype::array<EnvironmentModification> &env,
+                           const char *logfile, const CaptureOptions &opts, bool waitForExit);
+struct ProcessResult
+{
+  string strStdout, strStderror;
+  int retCode;
+};
+uint32_t LaunchProcess(const char *app, const char *workingDir, const char *cmdLine,
+                       ProcessResult *result = NULL);
 uint32_t LaunchAndInjectIntoProcess(const char *app, const char *workingDir, const char *cmdLine,
-                                    EnvironmentModification *env, const char *logfile,
-                                    const CaptureOptions *opts, bool waitForExit);
+                                    const rdctype::array<EnvironmentModification> &env,
+                                    const char *logfile, const CaptureOptions &opts,
+                                    bool waitForExit);
 void *LoadModule(const char *module);
 void *GetFunctionAddress(void *module, const char *function);
 uint32_t GetCurrentPID();
@@ -253,10 +237,12 @@ void GetDefaultFiles(const char *logBaseName, string &capture_filename, string &
                      string &target);
 string GetHomeFolderFilename();
 string GetAppFolderFilename(const string &filename);
+string GetTempFolderFilename();
 string GetReplayAppFilename();
 
 void CreateParentDirectory(const string &filename);
 
+bool IsRelativePath(const string &path);
 string GetFullPathname(const string &filename);
 
 void GetExecutableFilename(string &selfName);
@@ -265,32 +251,16 @@ uint64_t GetModifiedTimestamp(const string &filename);
 
 void Copy(const char *from, const char *to, bool allowOverwrite);
 void Delete(const char *path);
-
-enum
-{
-  eFileProp_Directory = 0x1,
-  eFileProp_Hidden = 0x2,
-  eFileProp_Executable = 0x4,
-
-  eFileProp_ErrorUnknown = 0x2000,
-  eFileProp_ErrorAccessDenied = 0x4000,
-  eFileProp_ErrorInvalidPath = 0x8000,
-};
-
-struct FoundFile
-{
-  FoundFile() : flags(0) {}
-  FoundFile(string fn, uint32_t f) : filename(fn), flags(f) {}
-  string filename;
-  uint32_t flags;
-};
-
-vector<FoundFile> GetFilesInDirectory(const char *path);
+std::vector<PathEntry> GetFilesInDirectory(const char *path);
 
 FILE *fopen(const char *filename, const char *mode);
 
 size_t fread(void *buf, size_t elementSize, size_t count, FILE *f);
 size_t fwrite(const void *buf, size_t elementSize, size_t count, FILE *f);
+
+bool exists(const char *filename);
+
+std::string ErrorString();
 
 std::string getline(FILE *f);
 
@@ -300,6 +270,12 @@ void fseek64(FILE *f, uint64_t offset, int origin);
 bool feof(FILE *f);
 
 int fclose(FILE *f);
+
+// functions for atomically appending to a log that may be in use in multiple
+// processes
+bool logfile_open(const char *filename);
+void logfile_append(const char *msg, size_t length);
+void logfile_close(const char *filename);
 
 // utility functions
 inline bool dump(const char *filename, const void *buffer, size_t size)
@@ -349,9 +325,6 @@ namespace StringFormat
 {
 void sntimef(char *str, size_t bufSize, const char *format);
 
-// forwards to vsnprintf below, needed to be here due to va_copy differences
-string Fmt(const char *format, ...);
-
 string Wide2UTF8(const std::wstring &s);
 };
 
@@ -361,6 +334,8 @@ namespace StringFormat
 {
 int vsnprintf(char *str, size_t bufSize, const char *format, va_list v);
 int snprintf(char *str, size_t bufSize, const char *format, ...);
+
+string Fmt(const char *format, ...);
 
 int Wide2UTF8(wchar_t chr, char mbchr[4]);
 };
@@ -418,7 +393,7 @@ string MakeMachineIdentString(uint64_t ident);
 namespace Bits
 {
 inline uint32_t CountLeadingZeroes(uint32_t value);
-#if RDC64BIT
+#if ENABLED(RDOC_X64)
 inline uint64_t CountLeadingZeroes(uint64_t value);
 #endif
 };
@@ -430,10 +405,18 @@ inline uint64_t CountLeadingZeroes(uint64_t value);
 // OS_DEBUG_BREAK() - instruction that debugbreaks the debugger - define instead of function to
 // preserve callstacks
 
-#if defined(RENDERDOC_PLATFORM_WIN32)
+#if ENABLED(RDOC_WIN32)
 #include "win32/win32_specific.h"
-#elif defined(RENDERDOC_PLATFORM_POSIX)
+#elif ENABLED(RDOC_POSIX)
 #include "posix/posix_specific.h"
 #else
 #error Undefined Platform!
 #endif
+
+namespace Android
+{
+bool IsHostADB(const char *hostname);
+uint32_t StartAndroidPackageForCapture(const char *host, const char *package);
+string adbExecCommand(const string &deviceID, const string &args);
+void extractDeviceIDAndIndex(const string &hostname, int &index, string &deviceID);
+}

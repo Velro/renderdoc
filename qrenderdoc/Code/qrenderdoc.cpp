@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,20 +27,24 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QStandardPaths>
 #include "Code/CaptureContext.h"
+#include "Code/QRDUtils.h"
+#include "Code/Resources.h"
+#include "Code/pyrenderdoc/PythonContext.h"
 #include "Windows/MainWindow.h"
 
 void sharedLogOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
-  LogMessageType logtype = eLogType_Comment;
+  LogType logtype = LogType::Comment;
 
   switch(type)
   {
-    case QtDebugMsg: logtype = eLogType_Debug; break;
-    case QtInfoMsg: logtype = eLogType_Comment; break;
-    case QtWarningMsg: logtype = eLogType_Warning; break;
-    case QtCriticalMsg: logtype = eLogType_Error; break;
-    case QtFatalMsg: logtype = eLogType_Fatal; break;
+    case QtDebugMsg: logtype = LogType::Debug; break;
+    case QtInfoMsg: logtype = LogType::Comment; break;
+    case QtWarningMsg: logtype = LogType::Warning; break;
+    case QtCriticalMsg: logtype = LogType::Error; break;
+    case QtFatalMsg: logtype = LogType::Fatal; break;
   }
 
   RENDERDOC_LogMessage(logtype, "QTRD", context.file, context.line, msg.toUtf8().data());
@@ -48,35 +52,51 @@ void sharedLogOutput(QtMsgType type, const QMessageLogContext &context, const QS
 
 int main(int argc, char *argv[])
 {
+  // call this as the very first thing - no-op on other platforms, but on linux it means
+  // XInitThreads will be called allowing driver access to xlib on multiple threads.
+  QCoreApplication::setAttribute(Qt::AA_X11InitThreads);
+
   qInstallMessageHandler(sharedLogOutput);
 
   qInfo() << "QRenderDoc initialising.";
 
-  QString filename = "";
+  QString filename;
   bool temp = false;
 
   for(int i = 0; i < argc; i++)
   {
-    if(!QString::compare(argv[i], "--tempfile", Qt::CaseInsensitive))
+    if(!QString::compare(QString::fromUtf8(argv[i]), lit("--tempfile"), Qt::CaseInsensitive))
       temp = true;
   }
 
-  QString remoteHost = "";
+  for(int i = 0; i < argc; i++)
+  {
+    if(!QString::compare(QString::fromUtf8(argv[i]), lit("--install_vulkan_layer")) && i + 1 < argc)
+    {
+      if(!QString::compare(QString::fromUtf8(argv[i + 1]), lit("root")))
+        RENDERDOC_UpdateVulkanLayerRegistration(true);
+      else
+        RENDERDOC_UpdateVulkanLayerRegistration(false);
+      return 0;
+    }
+  }
+
+  QString remoteHost;
   uint remoteIdent = 0;
 
   for(int i = 0; i + 1 < argc; i++)
   {
-    if(!QString::compare(argv[i], "--REMOTEACCESS", Qt::CaseInsensitive))
+    if(!QString::compare(QString::fromUtf8(argv[i]), lit("--remoteaccess"), Qt::CaseInsensitive))
     {
-      QRegularExpression regexp("^([a-zA-Z0-9_-]+:)?([0-9]+)$");
+      QRegularExpression regexp(lit("^([a-zA-Z0-9_-]+:)?([0-9]+)$"));
 
-      QRegularExpressionMatch match = regexp.match(argv[i + 1]);
+      QRegularExpressionMatch match = regexp.match(QString::fromUtf8(argv[i + 1]));
 
       if(match.hasMatch())
       {
         QString host = match.captured(1);
 
-        if(host.length() > 0 && host[host.length() - 1] == ':')
+        if(host.length() > 0 && host[host.length() - 1] == QLatin1Char(':'))
           host.chop(1);
 
         bool ok = false;
@@ -91,58 +111,130 @@ int main(int argc, char *argv[])
     }
   }
 
-  if(argc > 1)
+  QList<QString> pyscripts;
+
+  for(int i = 0; i + 1 < argc; i++)
   {
-    filename = argv[argc - 1];
-    QFileInfo checkFile(filename);
-    if(!checkFile.exists() || !checkFile.isFile())
-      filename = "";
+    QString a = QString::fromUtf8(argv[i]);
+    if(!QString::compare(a, lit("--python"), Qt::CaseInsensitive) ||
+       !QString::compare(a, lit("--py"), Qt::CaseInsensitive) ||
+       !QString::compare(a, lit("--script"), Qt::CaseInsensitive))
+    {
+      QString f = QString::fromUtf8(argv[i + 1]);
+      QFileInfo checkFile(f);
+      if(checkFile.exists() && checkFile.isFile())
+      {
+        pyscripts.push_back(f);
+      }
+    }
   }
 
-  argc += 2;
+  if(argc > 1)
+  {
+    filename = QString::fromUtf8(argv[argc - 1]);
+    QFileInfo checkFile(filename);
+    if(!checkFile.exists() || !checkFile.isFile() || checkFile.suffix().toLower() == lit("py"))
+      filename = QString();
+  }
 
-  char **argv_mod = new char *[argc];
+  QGuiApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+  QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
-  for(int i = 0; i < argc - 2; i++)
-    argv_mod[i] = argv[i];
-
-  char arg[] = "-platformpluginpath";
-  QString path = QFileInfo(argv[0]).absoluteDir().absolutePath();
-  QByteArray pathChars = path.toUtf8();
-
-  argv_mod[argc - 2] = arg;
-  argv_mod[argc - 1] = pathChars.data();
-
-  QApplication application(argc, argv_mod);
+  QApplication application(argc, argv);
 
   {
     PersistantConfig config;
 
-    QString configFilename = CaptureContext::ConfigFile("UI.config");
+    {
+      QString configPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+      QDir dir(configPath);
 
-    if(!config.Deserialize(configFilename))
+      if(!dir.exists())
+        dir.mkpath(configPath);
+    }
+
+    QString configFilename = ConfigFilePath(lit("UI.config"));
+
+    if(!config.Load(configFilename))
     {
       RDDialog::critical(
-          NULL, "Error loading config",
-          QString(
+          NULL, CaptureContext::tr("Error loading config"),
+          CaptureContext::tr(
               "Error loading config file\n%1\nA default config is loaded and will be saved out.")
               .arg(configFilename));
     }
 
     config.SetupFormatting();
 
-    CaptureContext ctx(filename, remoteHost, remoteIdent, temp, config);
+    Resources::Initialise();
 
-    while(ctx.isRunning())
+    GUIInvoke::init();
+
+    PythonContext::GlobalInit();
+
     {
-      application.processEvents(QEventLoop::WaitForMoreEvents);
-      QCoreApplication::sendPostedEvents();
+      GlobalEnvironment env;
+#if defined(RENDERDOC_PLATFORM_LINUX)
+      env.xlibDisplay = QX11Info::display();
+#endif
+      RENDERDOC_InitGlobalEnv(env, rdctype::array<rdctype::str>());
     }
 
-    config.Serialize(configFilename);
-  }
+    {
+      CaptureContext ctx(filename, remoteHost, remoteIdent, temp, config);
 
-  delete[] argv_mod;
+      if(!pyscripts.isEmpty())
+      {
+        PythonContextHandle py;
+
+        py.ctx().setGlobal("pyrenderdoc", (ICaptureContext *)&ctx);
+
+        QObject::connect(&py.ctx(), &PythonContext::exception,
+                         [](const QString &type, const QString &value, QList<QString> frames) {
+
+                           QString exString;
+
+                           if(!frames.isEmpty())
+                           {
+                             exString += QApplication::translate(
+                                 "qrenderdoc", "Traceback (most recent call last):\n");
+                             for(const QString &f : frames)
+                               exString += QFormatStr("  %1\n").arg(f);
+                           }
+
+                           exString += QFormatStr("%1: %2\n").arg(type).arg(value);
+
+                           qCritical("%s", exString.toUtf8().data());
+                         });
+
+        QObject::connect(&py.ctx(), &PythonContext::textOutput,
+                         [](bool isStdError, const QString &output) {
+                           if(isStdError)
+                             qCritical("%s", output.toUtf8().data());
+                           else
+                             qInfo("%s", output.toUtf8().data());
+                         });
+
+        for(const QString &f : pyscripts)
+        {
+          qInfo() << "running" << f;
+          py.ctx().executeFile(f);
+        }
+      }
+
+      while(ctx.isRunning())
+      {
+        application.processEvents(QEventLoop::WaitForMoreEvents);
+        QCoreApplication::sendPostedEvents();
+        QCoreApplication::sendPostedEvents(NULL, QEvent::DeferredDelete);
+      }
+
+      config.Save();
+    }
+    PythonContext::GlobalShutdown();
+
+    Formatter::shutdown();
+  }
 
   return 0;
 }

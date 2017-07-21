@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -67,7 +67,7 @@ inline uint32_t CountLeadingZeroes(uint32_t value)
   return __builtin_clz(value);
 }
 
-#if RDC64BIT
+#if ENABLED(RDOC_X64)
 inline uint64_t CountLeadingZeroes(uint64_t value)
 {
   return __builtin_clzl(value);

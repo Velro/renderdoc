@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -51,6 +51,11 @@ namespace renderdoc
         public static String Format(UInt32 u)
         {
             return String.Format("{0}", u);
+        }
+
+        public static String Format(UInt32 u, bool hex)
+        {
+            return String.Format(hex ? "{0:X8}" : "{0}", u);
         }
 
         public static String Format(Int32 i)

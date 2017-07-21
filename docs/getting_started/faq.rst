@@ -51,9 +51,9 @@ If .rdc files are associated with RenderDoc a thumbnail handler is set up, so th
 What APIs does RenderDoc support?
 ---------------------------------
 
-Currently RenderDoc supports D3D11 (including the D3D11.1/11.2 extensions where available), Vulkan, and core profile OpenGL. Note OpenGL is a complex sprawling API, so see the details of what is supported in :doc:`its own page <../behind_scenes/opengl_support>`. Since Vulkan support is in its early stages, it also has :doc:`its own page <../behind_scenes/vulkan_support>`.
+Currently RenderDoc supports Vulkan, D3D11 (including D3D11.x), D3D12, and core profile OpenGL. Note OpenGL is a complex sprawling API, so see the details of what is supported in :doc:`its own page <../behind_scenes/opengl_support>`. Vulkan support has :doc:`a few notes <../behind_scenes/vulkan_support>`, as does :doc:`D3D12 <../behind_scenes/d3d12_support>`.
 
-In future API support is planned for at D3D9 when time and scheduling allows. Higher priority is D3D12 now that Vulkan support is available. Mantle support will not happen as the API is not planned to be publically available anymore.
+Future API support is at this point not clear, GLES, Metal and perhaps D3D9 all being possible. Higher priority is better operating system/platform support which is currently underway, as well as feature improvements for existing platforms and APIs.
 
 How can I backup or restore my settings?
 ----------------------------------------
@@ -81,7 +81,7 @@ What are the requirements for RenderDoc?
 
 Currently RenderDoc expects Feature Level 11.0 hardware and above for D3D11. Lower levels will capture successfully, but on replay RenderDoc will fall back to WARP software emulation which will run quite slowly.
 
-For OpenGL RenderDoc will only capture core profile applications, in general, and expects to be able to create a core 4.3 context which includes ``EXT_direct_state_access`` and ``ARB_buffer_storage``. For more details see :doc:`../behind_scenes/opengl_support`.
+For OpenGL RenderDoc will only capture core profile applications, in general, and expects at minimum to be able to create a core 3.2 context which includes a few key extensions. For more details see :doc:`../behind_scenes/opengl_support`.
 
 With Vulkan, RenderDoc should fully support any Vulkan application. However replaying a Vulkan log may not work if the hardware used to capture it is different - portability of captures between hardware is not guaranteed.
 
@@ -155,6 +155,8 @@ I think I might be overwriting Map() boundaries, can I check this?
 Yes RenderDoc can be configured to insert a boundary marker at the end of the memory returned from a ``Map()`` call. If this marker gets overwritten during a captured frame then a message box will pop up alerting you, and clicking Yes will break into the program in the debugger so that you can investigate the callstack.
 
 To enable this behaviour, select the ``Verify Map() Writes`` option when :doc:`capturing <../window/capture_log_attach>`.
+
+Note this is only supported on D3D11 and OpenGL currently, since Vulkan and D3D12 are lower overhead and do not have the infrastructure to intercept map writes.
 
 RenderDoc is complaining about my OpenGL app in the overlay - what gives?
 -------------------------------------------------------------------------

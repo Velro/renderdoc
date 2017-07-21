@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,20 +24,12 @@
 
 #pragma once
 
+#include <replay/renderdoc_replay.h>
 #include "3rdparty/cmdline/cmdline.h"
-
-struct CaptureOptions;
-struct TextureDisplay;
-
-#ifdef __cplusplus
-struct IReplayRenderer;
-typedef IReplayRenderer ReplayRenderer;
-#else
-struct ReplayRenderer
-#endif
 
 struct Command
 {
+  Command(const GlobalEnvironment &env) { m_Env = env; }
   virtual ~Command() {}
   virtual void AddOptions(cmdline::parser &parser) = 0;
   virtual int Execute(cmdline::parser &parser, const CaptureOptions &opts) = 0;
@@ -45,6 +37,8 @@ struct Command
 
   virtual bool IsInternalOnly() = 0;
   virtual bool IsCaptureCommand() = 0;
+
+  GlobalEnvironment m_Env;
 };
 
 extern bool usingKillSignal;
@@ -55,12 +49,12 @@ void add_version_line(const std::string &str);
 void add_command(const std::string &name, Command *cmd);
 void add_alias(const std::string &alias, const std::string &command);
 
-int renderdoccmd(int argc, char **argv);
-int renderdoccmd(std::vector<std::string> &argv);
+int renderdoccmd(const GlobalEnvironment &env, int argc, char **argv);
+int renderdoccmd(const GlobalEnvironment &env, std::vector<std::string> &argv);
 
 void readCapOpts(const std::string &str, CaptureOptions *opts);
 
 // these must be defined in platform .cpps
-void DisplayRendererPreview(ReplayRenderer *renderer, TextureDisplay &displayCfg, uint32_t width,
+void DisplayRendererPreview(IReplayController *renderer, TextureDisplay &displayCfg, uint32_t width,
                             uint32_t height);
 void Daemonise();

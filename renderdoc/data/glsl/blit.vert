@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,11 +22,13 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#ifndef OPENGL_ES
 out gl_PerVertex
 {
 	vec4 gl_Position;
 	float gl_PointSize;
 };
+#endif
 
 layout (location = 0) out vec2 uv;
 

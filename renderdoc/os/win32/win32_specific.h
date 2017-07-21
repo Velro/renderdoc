@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -24,6 +24,9 @@
  ******************************************************************************/
 
 #pragma once
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 
 #include <intrin.h>
 #include <windows.h>
@@ -73,7 +76,7 @@ inline uint32_t CountLeadingZeroes(uint32_t value)
   return (result == TRUE) ? (index ^ 31) : 32;
 }
 
-#if RDC64BIT
+#if ENABLED(RDOC_X64)
 inline uint64_t CountLeadingZeroes(uint64_t value)
 {
   DWORD index;

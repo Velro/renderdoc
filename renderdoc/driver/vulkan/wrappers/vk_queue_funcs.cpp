@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -200,7 +200,7 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
       GetResourceManager()->ApplyBarriers(m_BakedCmdBufferInfo[cmd].imgbarriers, m_ImageLayouts);
     }
 
-    AddEvent(QUEUE_SUBMIT, desc);
+    AddEvent(desc);
 
     // we're adding multiple events, need to increment ourselves
     m_RootEventID++;
@@ -213,10 +213,10 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
                                       ToStr::Get(cmdIds[c]).c_str());
 
       // add a fake marker
-      FetchDrawcall draw;
+      DrawcallDescription draw;
       draw.name = name;
-      draw.flags |= eDraw_SetMarker;
-      AddEvent(SET_MARKER, name);
+      draw.flags |= DrawFlags::SetMarker;
+      AddEvent(name);
       AddDrawcall(draw, true);
       m_RootEventID++;
 
@@ -250,7 +250,7 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
       name = StringFormat::Fmt("=> %s[%u]: vkEndCommandBuffer(%s)", basename.c_str(), c,
                                ToStr::Get(cmdIds[c]).c_str());
       draw.name = name;
-      AddEvent(SET_MARKER, name);
+      AddEvent(name);
       AddDrawcall(draw, true);
       m_RootEventID++;
     }
@@ -283,13 +283,13 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
     }
     else if(m_LastEventID <= startEID)
     {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Queue Submit no replay %u == %u", m_LastEventID, startEID);
 #endif
     }
     else if(m_DrawcallCallback && m_DrawcallCallback->RecordAllCmds())
     {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Queue Submit re-recording from %u", m_RootEventID);
 #endif
 
@@ -299,7 +299,7 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
       {
         VkCommandBuffer cmd = RerecordCmdBuf(cmdIds[c]);
         ResourceId rerecord = GetResID(cmd);
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
         RDCDEBUG("Queue Submit fully re-recorded replay of %llu, using %llu", cmdIds[c], rerecord);
 #endif
         rerecordedCmds.push_back(Unwrap(cmd));
@@ -316,7 +316,7 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
     }
     else if(m_LastEventID > startEID && m_LastEventID < m_RootEventID)
     {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Queue Submit partial replay %u < %u", m_LastEventID, m_RootEventID);
 #endif
 
@@ -336,7 +336,7 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
         if(eid == m_Partial[Primary].baseEvent)
         {
           ResourceId partial = GetResID(RerecordCmdBuf(cmdIds[c], Primary));
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
           RDCDEBUG("Queue Submit partial replay of %llu at %u, using %llu", cmdIds[c], eid, partial);
 #endif
           trimmedCmdIds.push_back(partial);
@@ -344,7 +344,7 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
         }
         else if(m_LastEventID >= end)
         {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
           RDCDEBUG("Queue Submit full replay %llu", cmdIds[c]);
 #endif
           trimmedCmdIds.push_back(cmdIds[c]);
@@ -353,7 +353,7 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
         }
         else
         {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
           RDCDEBUG("Queue not submitting %llu", cmdIds[c]);
 #endif
         }
@@ -379,7 +379,7 @@ bool WrappedVulkan::Serialise_vkQueueSubmit(Serialiser *localSerialiser, VkQueue
     }
     else
     {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Queue Submit full replay %u >= %u", m_LastEventID, m_RootEventID);
 #endif
 
@@ -405,7 +405,7 @@ void WrappedVulkan::InsertDrawsAndRefreshIDs(vector<VulkanDrawcallTreeNode> &cmd
   // assign new drawcall IDs
   for(size_t i = 0; i < cmdBufNodes.size(); i++)
   {
-    if(cmdBufNodes[i].draw.flags & eDraw_PopMarker)
+    if(cmdBufNodes[i].draw.flags & DrawFlags::PopMarker)
     {
       // RDCASSERT(GetDrawcallStack().size() > 1);
       if(GetDrawcallStack().size() > 1)
@@ -444,7 +444,7 @@ void WrappedVulkan::InsertDrawsAndRefreshIDs(vector<VulkanDrawcallTreeNode> &cmd
     GetDrawcallStack().back()->children.push_back(n);
 
     // if this is a push marker too, step down the drawcall stack
-    if(cmdBufNodes[i].draw.flags & eDraw_PushMarker)
+    if(cmdBufNodes[i].draw.flags & DrawFlags::PushMarker)
       GetDrawcallStack().push_back(&GetDrawcallStack().back()->children.back());
   }
 }
@@ -462,6 +462,57 @@ VkResult WrappedVulkan::vkQueueSubmit(VkQueue queue, uint32_t submitCount,
     tempmemSize += pSubmits[i].commandBufferCount * sizeof(VkCommandBuffer);
     tempmemSize += pSubmits[i].signalSemaphoreCount * sizeof(VkSemaphore);
     tempmemSize += pSubmits[i].waitSemaphoreCount * sizeof(VkSemaphore);
+
+    VkGenericStruct *next = (VkGenericStruct *)pSubmits[i].pNext;
+    while(next)
+    {
+      if(next->sType == VK_STRUCTURE_TYPE_MAX_ENUM)
+      {
+        RDCERR("Invalid extension structure");
+      }
+      else if(next->sType == VK_STRUCTURE_TYPE_WIN32_KEYED_MUTEX_ACQUIRE_RELEASE_INFO_NV ||
+              next->sType == VK_STRUCTURE_TYPE_WIN32_KEYED_MUTEX_ACQUIRE_RELEASE_INFO_KHX)
+      {
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+        // make sure the structures are still identical
+        RDCCOMPILE_ASSERT(sizeof(VkWin32KeyedMutexAcquireReleaseInfoNV) ==
+                              sizeof(VkWin32KeyedMutexAcquireReleaseInfoKHX),
+                          "Structs are different!");
+
+#define NV_DUMMY ((VkWin32KeyedMutexAcquireReleaseInfoNV *)NULL)
+#define KHX_DUMMY ((VkWin32KeyedMutexAcquireReleaseInfoKHX *)NULL)
+        RDCCOMPILE_ASSERT(&NV_DUMMY->acquireCount == &KHX_DUMMY->acquireCount,
+                          "Structs are different!");
+        RDCCOMPILE_ASSERT(&NV_DUMMY->releaseCount == &KHX_DUMMY->releaseCount,
+                          "Structs are different!");
+        RDCCOMPILE_ASSERT(&NV_DUMMY->pAcquireSyncs == &KHX_DUMMY->pAcquireSyncs,
+                          "Structs are different!");
+        RDCCOMPILE_ASSERT(&NV_DUMMY->pReleaseSyncs == &KHX_DUMMY->pReleaseSyncs,
+                          "Structs are different!");
+#undef NV_DUMMY
+#undef KHX_DUMMY
+
+        tempmemSize += sizeof(VkWin32KeyedMutexAcquireReleaseInfoKHX);
+
+        VkWin32KeyedMutexAcquireReleaseInfoKHX *info = (VkWin32KeyedMutexAcquireReleaseInfoKHX *)next;
+        tempmemSize += info->acquireCount * sizeof(VkDeviceMemory);
+        tempmemSize += info->releaseCount * sizeof(VkDeviceMemory);
+#else
+        RDCERR("Unexpected use of Win32 Keyed Mutex extension without support compiled in");
+#endif
+      }
+      else if(next->sType == VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHX)
+      {
+        // nothing to do - this is plain old data with nothing to unwrap so we can keep it in the
+        // pNext chain as-is
+      }
+      else
+      {
+        RDCERR("Unexpected extension structure %d", next->sType);
+      }
+
+      next = (VkGenericStruct *)next->pNext;
+    }
   }
 
   byte *memory = GetTempMemory(tempmemSize);
@@ -471,7 +522,7 @@ VkResult WrappedVulkan::vkQueueSubmit(VkQueue queue, uint32_t submitCount,
 
   for(uint32_t i = 0; i < submitCount; i++)
   {
-    RDCASSERT(pSubmits[i].sType == VK_STRUCTURE_TYPE_SUBMIT_INFO && pSubmits[i].pNext == NULL);
+    RDCASSERT(pSubmits[i].sType == VK_STRUCTURE_TYPE_SUBMIT_INFO);
     unwrappedSubmits[i] = pSubmits[i];
 
     VkSemaphore *unwrappedWaitSems = (VkSemaphore *)memory;
@@ -498,6 +549,50 @@ VkResult WrappedVulkan::vkQueueSubmit(VkQueue queue, uint32_t submitCount,
         unwrappedSubmits[i].signalSemaphoreCount ? unwrappedSignalSems : NULL;
     for(uint32_t o = 0; o < unwrappedSubmits[i].signalSemaphoreCount; o++)
       unwrappedSignalSems[o] = Unwrap(pSubmits[i].pSignalSemaphores[o]);
+
+    VkGenericStruct **nextptr = (VkGenericStruct **)&unwrappedSubmits[i].pNext;
+    while(*nextptr)
+    {
+      VkGenericStruct *next = *nextptr;
+
+      if(next->sType == VK_STRUCTURE_TYPE_WIN32_KEYED_MUTEX_ACQUIRE_RELEASE_INFO_NV ||
+         next->sType == VK_STRUCTURE_TYPE_WIN32_KEYED_MUTEX_ACQUIRE_RELEASE_INFO_KHX)
+      {
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+        // allocate local unwrapped struct
+        VkWin32KeyedMutexAcquireReleaseInfoKHX *unwrappedMutexInfoKHX =
+            (VkWin32KeyedMutexAcquireReleaseInfoKHX *)memory;
+        memory += sizeof(VkWin32KeyedMutexAcquireReleaseInfoKHX);
+
+        // copy over info from original struct
+        VkWin32KeyedMutexAcquireReleaseInfoKHX *wrappedMutexInfoKHX =
+            (VkWin32KeyedMutexAcquireReleaseInfoKHX *)next;
+        *unwrappedMutexInfoKHX = *wrappedMutexInfoKHX;
+
+        // allocate unwrapped arrays
+        VkDeviceMemory *unwrappedAcquires = (VkDeviceMemory *)memory;
+        memory += sizeof(VkDeviceMemory) * unwrappedMutexInfoKHX->acquireCount;
+        VkDeviceMemory *unwrappedReleases = (VkDeviceMemory *)memory;
+        memory += sizeof(VkDeviceMemory) * unwrappedMutexInfoKHX->releaseCount;
+
+        // unwrap the arrays
+        for(uint32_t mem = 0; mem < unwrappedMutexInfoKHX->acquireCount; mem++)
+          unwrappedAcquires[mem] = Unwrap(wrappedMutexInfoKHX->pAcquireSyncs[mem]);
+        for(uint32_t mem = 0; mem < unwrappedMutexInfoKHX->releaseCount; mem++)
+          unwrappedReleases[mem] = Unwrap(wrappedMutexInfoKHX->pReleaseSyncs[mem]);
+
+        unwrappedMutexInfoKHX->pAcquireSyncs = unwrappedAcquires;
+        unwrappedMutexInfoKHX->pReleaseSyncs = unwrappedReleases;
+
+        // insert this struct into the chain.
+        // nextptr is pointing to the address of the pNext, so we can overwrite it to point to our
+        // locally-allocated unwrapped struct
+        *nextptr = (VkGenericStruct *)unwrappedMutexInfoKHX;
+#endif
+      }
+
+      nextptr = (VkGenericStruct **)&next->pNext;
+    }
   }
 
   VkResult ret =

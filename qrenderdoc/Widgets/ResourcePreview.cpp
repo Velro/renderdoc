@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,14 +24,15 @@
 
 #include "ResourcePreview.h"
 #include <QMouseEvent>
+#include "Code/QRDUtils.h"
 #include "ui_ResourcePreview.h"
 
-ResourcePreview::ResourcePreview(CaptureContext *c, IReplayOutput *output, QWidget *parent)
+ResourcePreview::ResourcePreview(ICaptureContext &c, IReplayOutput *output, QWidget *parent)
     : QFrame(parent), ui(new Ui::ResourcePreview)
 {
   ui->setupUi(this);
 
-  CustomPaintWidget *thumb = new CustomPaintWidget(c, this);
+  CustomPaintWidget *thumb = new CustomPaintWidget(&c, this);
   thumb->setOutput(output);
   thumb->setObjectName(ui->thumbnail->objectName());
   thumb->setSizePolicy(ui->thumbnail->sizePolicy());
@@ -50,12 +51,20 @@ ResourcePreview::ResourcePreview(CaptureContext *c, IReplayOutput *output, QWidg
 
   ui->slotLabel->setAutoFillBackground(true);
   ui->slotLabel->setPalette(Pal);
+  ui->slotLabel->setFont(Formatter::PreferredFont());
   ui->descriptionLabel->setAutoFillBackground(true);
   ui->descriptionLabel->setPalette(Pal);
+  ui->descriptionLabel->setFont(Formatter::PreferredFont());
 
   QObject::connect(ui->thumbnail, &CustomPaintWidget::clicked, this, &ResourcePreview::clickEvent);
   QObject::connect(ui->slotLabel, &RDLabel::clicked, this, &ResourcePreview::clickEvent);
   QObject::connect(ui->descriptionLabel, &RDLabel::clicked, this, &ResourcePreview::clickEvent);
+
+  QObject::connect(ui->thumbnail, &CustomPaintWidget::doubleClicked, this,
+                   &ResourcePreview::doubleClickEvent);
+  QObject::connect(ui->slotLabel, &RDLabel::doubleClicked, this, &ResourcePreview::doubleClickEvent);
+  QObject::connect(ui->descriptionLabel, &RDLabel::doubleClicked, this,
+                   &ResourcePreview::doubleClickEvent);
 }
 
 ResourcePreview::~ResourcePreview()
@@ -66,6 +75,11 @@ ResourcePreview::~ResourcePreview()
 void ResourcePreview::clickEvent(QMouseEvent *e)
 {
   emit clicked(e);
+}
+
+void ResourcePreview::doubleClickEvent(QMouseEvent *e)
+{
+  emit doubleClicked(e);
 }
 
 void ResourcePreview::setSlotName(const QString &n)

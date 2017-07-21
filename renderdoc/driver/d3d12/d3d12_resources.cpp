@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,14 +27,13 @@
 #include "d3d12_command_list.h"
 #include "d3d12_command_queue.h"
 
-std::vector<WrappedID3D12Resource::AddressRange> WrappedID3D12Resource::m_Addresses;
-std::map<ResourceId, WrappedID3D12Resource *> WrappedID3D12Resource::m_List;
-std::map<WrappedID3D12PipelineState::DXBCKey, WrappedID3D12PipelineState::ShaderEntry *>
-    WrappedID3D12PipelineState::m_Shaders;
+GPUAddressRangeTracker WrappedID3D12Resource::m_Addresses;
+std::map<ResourceId, WrappedID3D12Resource *> *WrappedID3D12Resource::m_List = NULL;
+std::map<WrappedID3D12PipelineState::DXBCKey, WrappedID3D12Shader *> WrappedID3D12Shader::m_Shaders;
 
 const GUID RENDERDOC_ID3D12ShaderGUID_ShaderDebugMagicValue = RENDERDOC_ShaderDebugMagicValue_struct;
 
-void WrappedID3D12PipelineState::ShaderEntry::TryReplaceOriginalByteCode()
+void WrappedID3D12Shader::TryReplaceOriginalByteCode()
 {
   if(!DXBC::DXBCFile::CheckForDebugInfo((const void *)&m_Bytecode[0], m_Bytecode.size()))
   {
@@ -145,7 +144,7 @@ void WrappedID3D12PipelineState::ShaderEntry::TryReplaceOriginalByteCode()
 
 ALL_D3D12_TYPES;
 
-WRAPPED_POOL_INST(WrappedID3D12PipelineState::ShaderEntry);
+WRAPPED_POOL_INST(WrappedID3D12Shader);
 
 D3D12ResourceType IdentifyTypeByPtr(ID3D12DeviceChild *ptr)
 {
@@ -169,7 +168,7 @@ D3D12ResourceType IdentifyTypeByPtr(ID3D12DeviceChild *ptr)
   return Resource_Unknown;
 }
 
-TrackedResource *GetTracked(ID3D12DeviceChild *ptr)
+TrackedResource12 *GetTracked(ID3D12DeviceChild *ptr)
 {
   if(ptr == NULL)
     return NULL;
@@ -177,12 +176,12 @@ TrackedResource *GetTracked(ID3D12DeviceChild *ptr)
 #undef D3D12_TYPE_MACRO
 #define D3D12_TYPE_MACRO(iface)         \
   if(UnwrapHelper<iface>::IsAlloc(ptr)) \
-    return (TrackedResource *)GetWrapped((iface *)ptr);
+    return (TrackedResource12 *)GetWrapped((iface *)ptr);
 
   ALL_D3D12_TYPES;
 
-  if(WrappedID3D12PipelineState::ShaderEntry::IsAlloc(ptr))
-    return (TrackedResource *)(WrappedID3D12PipelineState::ShaderEntry *)ptr;
+  if(WrappedID3D12Shader::IsAlloc(ptr))
+    return (TrackedResource12 *)(WrappedID3D12Shader *)ptr;
 
   return NULL;
 }
@@ -216,7 +215,7 @@ ResourceId GetResID(ID3D12DeviceChild *ptr)
   if(ptr == NULL)
     return ResourceId();
 
-  TrackedResource *res = GetTracked(ptr);
+  TrackedResource12 *res = GetTracked(ptr);
 
   if(res == NULL)
   {
@@ -239,7 +238,7 @@ D3D12ResourceRecord *GetRecord(ID3D12DeviceChild *ptr)
   if(ptr == NULL)
     return NULL;
 
-  TrackedResource *res = GetTracked(ptr);
+  TrackedResource12 *res = GetTracked(ptr);
 
   if(res == NULL)
   {
@@ -256,6 +255,175 @@ D3D12ResourceRecord *GetRecord(ID3D12DeviceChild *ptr)
   return res->GetResourceRecord();
 }
 
+WrappedID3D12Resource::~WrappedID3D12Resource()
+{
+  // perform an implicit unmap on release
+  if(GetResourceRecord())
+  {
+    vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+
+    // may not have a map if e.g. no pointer was requested
+    for(size_t i = 0; i < map.size(); i++)
+    {
+      if(map[i].refcount > 0)
+      {
+        m_pDevice->Unmap(this, (UINT)i, map[i].realPtr, NULL);
+
+        Serialiser::FreeAlignedBuffer(map[i].shadowPtr);
+        map[i].realPtr = NULL;
+        map[i].shadowPtr = NULL;
+      }
+    }
+  }
+
+  if(m_List)
+    (*m_List).erase(GetResourceID());
+
+  // assuming only valid for buffers
+  if(m_pReal->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    m_Addresses.RemoveFrom(m_pReal->GetGPUVirtualAddress());
+
+  Shutdown();
+
+  m_ID = ResourceId();
+}
+
+byte *WrappedID3D12Resource::GetMap(UINT Subresource)
+{
+  vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+
+  if(Subresource < map.size())
+    return map[Subresource].realPtr;
+
+  return NULL;
+}
+
+byte *WrappedID3D12Resource::GetShadow(UINT Subresource)
+{
+  vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+
+  if(Subresource >= map.size())
+    map.resize(Subresource + 1);
+
+  return map[Subresource].shadowPtr;
+}
+
+void WrappedID3D12Resource::AllocShadow(UINT Subresource, size_t size)
+{
+  vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+
+  if(Subresource >= map.size())
+    map.resize(Subresource + 1);
+
+  if(map[Subresource].shadowPtr == NULL)
+    map[Subresource].shadowPtr = Serialiser::AllocAlignedBuffer(size);
+}
+
+void WrappedID3D12Resource::FreeShadow()
+{
+  vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+
+  for(size_t i = 0; i < map.size(); i++)
+  {
+    Serialiser::FreeAlignedBuffer(map[i].shadowPtr);
+    map[i].shadowPtr = NULL;
+  }
+}
+
+HRESULT STDMETHODCALLTYPE WrappedID3D12Resource::Map(UINT Subresource,
+                                                     const D3D12_RANGE *pReadRange, void **ppData)
+{
+  // don't care about maps without returned pointers - we'll just intercept the WriteToSubresource
+  // calls
+  if(ppData == NULL)
+    return m_pReal->Map(Subresource, pReadRange, ppData);
+
+  void *mapPtr = NULL;
+
+  // pass a NULL range as we might want to read from the whole range
+  HRESULT hr = m_pReal->Map(Subresource, NULL, &mapPtr);
+
+  *ppData = mapPtr;
+
+  if(SUCCEEDED(hr) && GetResourceRecord())
+  {
+    vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+
+    if(Subresource >= map.size())
+      map.resize(Subresource + 1);
+
+    // the map pointer should be NULL or identical (if we are in a nested Map)
+    RDCASSERT(map[Subresource].realPtr == mapPtr || map[Subresource].realPtr == NULL);
+
+    map[Subresource].realPtr = (byte *)mapPtr;
+
+    int32_t refcount = Atomic::Inc32(&map[Subresource].refcount);
+
+    // on the first map, register this so we can flush any updates in case it's left persistant
+    if(refcount == 1)
+      m_pDevice->Map(this, Subresource);
+  }
+
+  return hr;
+}
+
+void STDMETHODCALLTYPE WrappedID3D12Resource::Unmap(UINT Subresource, const D3D12_RANGE *pWrittenRange)
+{
+  if(GetResourceRecord())
+  {
+    vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+
+    // may not have a map if e.g. no pointer was requested
+    if(Subresource < map.size())
+    {
+      int32_t refcount = Atomic::Dec32(&map[Subresource].refcount);
+
+      if(refcount == 0)
+      {
+        m_pDevice->Unmap(this, Subresource, map[Subresource].realPtr, pWrittenRange);
+
+        Serialiser::FreeAlignedBuffer(map[Subresource].shadowPtr);
+        map[Subresource].realPtr = NULL;
+        map[Subresource].shadowPtr = NULL;
+      }
+    }
+  }
+
+  return m_pReal->Unmap(Subresource, pWrittenRange);
+}
+
+HRESULT STDMETHODCALLTYPE WrappedID3D12Resource::WriteToSubresource(UINT DstSubresource,
+                                                                    const D3D12_BOX *pDstBox,
+                                                                    const void *pSrcData,
+                                                                    UINT SrcRowPitch,
+                                                                    UINT SrcDepthPitch)
+{
+  if(GetResourceRecord())
+  {
+    vector<D3D12ResourceRecord::MapData> &map = GetResourceRecord()->m_Map;
+
+    if(DstSubresource < map.size())
+    {
+      m_pDevice->WriteToSubresource(this, DstSubresource, pDstBox, pSrcData, SrcDepthPitch,
+                                    SrcDepthPitch);
+    }
+    else
+    {
+      RDCERR("WriteToSubresource without matching map!");
+    }
+  }
+
+  return m_pReal->WriteToSubresource(DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
+}
+
+void WrappedID3D12Resource::RefBuffers(D3D12ResourceManager *rm)
+{
+  // only buffers go into m_Addresses
+  SCOPED_LOCK(m_Addresses.addressLock);
+  for(size_t i = 0; i < m_Addresses.addresses.size(); i++)
+    rm->MarkResourceFrameReferenced(m_Addresses.addresses[i].id, eFrameRef_Read);
+}
+
 WrappedID3D12DescriptorHeap::WrappedID3D12DescriptorHeap(ID3D12DescriptorHeap *real,
                                                          WrappedID3D12Device *device,
                                                          const D3D12_DESCRIPTOR_HEAP_DESC &desc)
@@ -263,6 +431,8 @@ WrappedID3D12DescriptorHeap::WrappedID3D12DescriptorHeap(ID3D12DescriptorHeap *r
 {
   realCPUBase = real->GetCPUDescriptorHandleForHeapStart();
   realGPUBase = real->GetGPUDescriptorHandleForHeapStart();
+
+  SetResident(true);
 
   increment = device->GetUnwrappedDescriptorIncrement(desc.Type);
   numDescriptors = desc.NumDescriptors;

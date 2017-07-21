@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -304,6 +304,9 @@ namespace renderdocui.Code
         // pass number
         private FetchDrawcall[] FakeProfileMarkers(FetchDrawcall[] draws)
         {
+            if (Config.EventBrowser_AddFake == false)
+                return draws;
+
             if (ContainsMarker(draws))
                 return draws;
 
@@ -599,16 +602,30 @@ namespace renderdocui.Code
 
             if (local)
             {
-                m_LogWatcher = new FileSystemWatcher(Path.GetDirectoryName(m_LogFile), Path.GetFileName(m_LogFile));
-                m_LogWatcher.EnableRaisingEvents = true;
-                m_LogWatcher.NotifyFilter = NotifyFilters.Size | NotifyFilters.FileName | NotifyFilters.LastAccess | NotifyFilters.LastWrite;
-                m_LogWatcher.Created += new FileSystemEventHandler(OnLogfileChanged);
-                m_LogWatcher.Changed += new FileSystemEventHandler(OnLogfileChanged);
-                m_LogWatcher.SynchronizingObject = m_MainWindow; // callbacks on UI thread please
+                try
+                {
+                    m_LogWatcher = new FileSystemWatcher(Path.GetDirectoryName(m_LogFile), Path.GetFileName(m_LogFile));
+                    m_LogWatcher.EnableRaisingEvents = true;
+                    m_LogWatcher.NotifyFilter = NotifyFilters.Size | NotifyFilters.FileName | NotifyFilters.LastAccess | NotifyFilters.LastWrite;
+                    m_LogWatcher.Created += new FileSystemEventHandler(OnLogfileChanged);
+                    m_LogWatcher.Changed += new FileSystemEventHandler(OnLogfileChanged);
+                    m_LogWatcher.SynchronizingObject = m_MainWindow; // callbacks on UI thread please
+                }
+                catch (ArgumentException)
+                {
+                    // likely an "invalid" directory name - FileSystemWatcher doesn't support UNC paths properly
+                }
             }
 
             List<ILogViewerForm> logviewers = new List<ILogViewerForm>();
             logviewers.AddRange(m_LogViewers);
+
+            // make sure we're on a consistent event before invoking log viewer forms
+            FetchDrawcall draw = m_DrawCalls.Last();
+            while (draw.children != null && draw.children.Length > 0)
+                draw = draw.children.Last();
+
+            SetEventID(logviewers.ToArray(), draw.eventID, true);
 
             // notify all the registers log viewers that a log has been loaded
             foreach (var logviewer in logviewers)
@@ -670,6 +687,7 @@ namespace renderdocui.Code
             m_Textures = null;
 
             m_D3D11PipelineState = null;
+            m_D3D12PipelineState = null;
             m_GLPipelineState = null;
             m_VulkanPipelineState = null;
             m_PipelineState.SetStates(null, null,null, null, null);
@@ -699,7 +717,7 @@ namespace renderdocui.Code
             try
             {
                 if (folder.Length == 0 || !Directory.Exists(folder))
-                    folder = Path.GetTempPath();
+                    folder = Path.Combine(Path.GetTempPath(), "RenderDoc");
             }
             catch (ArgumentException)
             {
@@ -889,15 +907,15 @@ namespace renderdocui.Code
 
         public void RefreshStatus()
         {
-            SetEventID(null, m_EventID, true);
+            SetEventID(new ILogViewerForm[] { }, m_EventID, true);
         }
 
         public void SetEventID(ILogViewerForm exclude, UInt32 eventID)
         {
-            SetEventID(exclude, eventID, false);
+            SetEventID(new ILogViewerForm[] { exclude }, eventID, false);
         }
 
-        private void SetEventID(ILogViewerForm exclude, UInt32 eventID, bool force)
+        private void SetEventID(ILogViewerForm[] exclude, UInt32 eventID, bool force)
         {
             m_EventID = eventID;
 
@@ -913,7 +931,7 @@ namespace renderdocui.Code
 
             foreach (var logviewer in m_LogViewers)
             {
-                if(logviewer == exclude)
+                if(exclude.Contains(logviewer))
                     continue;
 
                 Control c = (Control)logviewer;

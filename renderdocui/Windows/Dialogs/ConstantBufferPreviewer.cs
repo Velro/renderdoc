@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -58,17 +58,6 @@ namespace renderdocui.Controls
             shader = m_Core.CurPipelineState.GetShader(stage);
             entryPoint = m_Core.CurPipelineState.GetShaderEntryPoint(stage);
             UpdateLabels();
-
-            ulong offs = 0;
-            ulong size = 0;
-            m_Core.CurPipelineState.GetConstantBuffer(Stage, Slot, ArrayIdx, out cbuffer, out offs, out size);
-
-            m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
-            {
-                SetVariables(r.GetCBufferVariableContents(shader, entryPoint, Slot, cbuffer, offs));
-            });
-
-            m_Core.AddLogViewer(this);
         }
 
         private static List<ConstantBufferPreviewer> m_Docks = new List<ConstantBufferPreviewer>();
@@ -86,6 +75,7 @@ namespace renderdocui.Controls
 
         public void ShowDock(DockPane pane, DockAlignment align, double proportion)
         {
+            Shown += ConstantBufferPreviewer_Shown;
             FormClosed += new FormClosedEventHandler(dock_FormClosed);
             
             if (m_Docks.Count > 0)
@@ -96,9 +86,17 @@ namespace renderdocui.Controls
             m_Docks.Add(this);
         }
 
+        private void ConstantBufferPreviewer_Shown(object sender, EventArgs e)
+        {
+            m_Core.AddLogViewer(this);
+        }
+
         static void dock_FormClosed(object sender, FormClosedEventArgs e)
         {
-            m_Docks.Remove(sender as ConstantBufferPreviewer);
+            ConstantBufferPreviewer cbp = sender as ConstantBufferPreviewer;
+
+            m_Docks.Remove(cbp);
+            cbp.m_Core.RemoveLogViewer(cbp);
         }
 
         /// <summary> 
@@ -110,8 +108,6 @@ namespace renderdocui.Controls
             if (disposing && (components != null))
             {
                 components.Dispose();
-
-                m_Core.RemoveLogViewer(this);
             }
             base.Dispose(disposing);
         }
@@ -161,12 +157,6 @@ namespace renderdocui.Controls
 
         private void SetVariables(ShaderVariable[] vars)
         {
-            if (this.InvokeRequired || variables.InvokeRequired)
-            {
-                this.BeginInvoke(new Action(() => { SetVariables(vars); }));
-                return;
-            }
-
             variables.BeginUpdate();
             variables.Nodes.Clear();
 
@@ -200,20 +190,22 @@ namespace renderdocui.Controls
                 return;
             }
 
-			if (m_FormatOverride != null)
-			{
-				m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
-				{
-					SetVariables(ApplyFormatOverride(r.GetBufferData(cbuffer, offs, size)));
-				});
-			}
-			else
-			{
-				m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
-				{
-					SetVariables(r.GetCBufferVariableContents(shader, entryPoint, Slot, cbuffer, offs));
-				});
-			}
+            if (m_FormatOverride != null)
+            {
+                m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
+                {
+                    var vars = ApplyFormatOverride(r.GetBufferData(cbuffer, offs, size));
+                    this.BeginInvoke(new Action(() => { SetVariables(vars); }));
+                });
+            }
+            else
+            {
+                m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
+                {
+                    var vars = r.GetCBufferVariableContents(shader, entryPoint, Slot, cbuffer, offs);
+                    this.BeginInvoke(new Action(() => { SetVariables(vars); }));
+                });
+            }
         }
 
         private string BufferName = "";
@@ -235,7 +227,7 @@ namespace renderdocui.Controls
 
                 string ret = String.Format("{0} {1} {2}",
                     Stage.Str(pipeType),
-                    pipeType == GraphicsAPI.D3D11 ? "CB" : "UBO",
+                    pipeType.IsD3D() ? "CB" : "UBO",
                     Slot);
 
                 if (m_Core != null && m_Core.CurPipelineState.SupportsResourceArrays)
@@ -304,15 +296,23 @@ namespace renderdocui.Controls
 
             if (res == DialogResult.OK)
             {
-                using (Stream s = new FileStream(exportDialog.FileName, FileMode.Create))
+                try
                 {
-                    StreamWriter sw = new StreamWriter(s);
+                    using (Stream s = new FileStream(exportDialog.FileName, FileMode.Create))
+                    {
+                        StreamWriter sw = new StreamWriter(s);
 
-                    sw.WriteLine("Name,Value,Type");
+                        sw.WriteLine("Name,Value,Type");
 
-                    ExportCSV(sw, "", variables.Nodes);
+                        ExportCSV(sw, "", variables.Nodes);
 
-                    sw.Dispose();
+                        sw.Dispose();
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    MessageBox.Show("Couldn't save to " + exportDialog.FileName + Environment.NewLine + ex.ToString(), "Cannot save",
+                                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
         }
@@ -324,6 +324,8 @@ namespace renderdocui.Controls
             if (e.KeyCode == Keys.C && e.Control)
             {
                 int[] width = new int[] { 0, 0, 0 };
+
+                variables.SortNodesSelection();
 
                 foreach (var n in variables.NodesSelection)
                 {
@@ -361,6 +363,10 @@ namespace renderdocui.Controls
                         // give up!
                     }
                 }
+            }
+            else if(e.KeyCode == Keys.A && e.Control)
+            {
+                variables.SelectAll();
             }
         }
 
@@ -442,7 +448,11 @@ namespace renderdocui.Controls
 			}
 
 			if (m_FormatSpecifier == null)
+			{
 				m_FormatSpecifier = new BufferFormatSpecifier(this, "");
+
+				m_FormatSpecifier.ToggleHelp();
+			}
 
 			split.Panel2.Controls.Add(m_FormatSpecifier);
 			m_FormatSpecifier.Dock = DockStyle.Fill;

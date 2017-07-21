@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -70,15 +70,25 @@ std::vector<VkImageMemoryBarrier> WrappedVulkan::GetImplicitRenderPassBarriers(u
     // transition the attachments in this subpass
     for(size_t i = 0; i < rpinfo.subpasses[subpass].colorAttachments.size(); i++)
     {
+      uint32_t attIdx = rpinfo.subpasses[subpass].colorAttachments[i];
+
+      if(attIdx == VK_ATTACHMENT_UNUSED)
+        continue;
+
       atts.push_back(VkAttachmentReference());
-      atts.back().attachment = rpinfo.subpasses[subpass].colorAttachments[i];
+      atts.back().attachment = attIdx;
       atts.back().layout = rpinfo.subpasses[subpass].colorLayouts[i];
     }
 
     for(size_t i = 0; i < rpinfo.subpasses[subpass].inputAttachments.size(); i++)
     {
+      uint32_t attIdx = rpinfo.subpasses[subpass].inputAttachments[i];
+
+      if(attIdx == VK_ATTACHMENT_UNUSED)
+        continue;
+
       atts.push_back(VkAttachmentReference());
-      atts.back().attachment = rpinfo.subpasses[subpass].inputAttachments[i];
+      atts.back().attachment = attIdx;
       atts.back().layout = rpinfo.subpasses[subpass].inputLayouts[i];
     }
 
@@ -192,9 +202,10 @@ string WrappedVulkan::MakeRenderPassOpString(bool store)
   {
     bool colsame = true;
 
+    uint32_t subpass = m_BakedCmdBufferInfo[m_LastCmdBufferID].state.subpass;
+
     // find which attachment is the depth-stencil one
-    int32_t dsAttach =
-        info.subpasses[m_BakedCmdBufferInfo[m_LastCmdBufferID].state.subpass].depthstencilAttachment;
+    int32_t dsAttach = info.subpasses[subpass].depthstencilAttachment;
     bool hasStencil = false;
     bool depthonly = false;
 
@@ -203,33 +214,40 @@ string WrappedVulkan::MakeRenderPassOpString(bool store)
     if(dsAttach >= 0)
     {
       hasStencil = !IsDepthOnlyFormat(fbinfo.attachments[dsAttach].format);
-      depthonly = info.subpasses[m_BakedCmdBufferInfo[m_LastCmdBufferID].state.subpass]
-                      .colorAttachments.size() == 0;
+      depthonly = info.subpasses[subpass].colorAttachments.size() == 0;
     }
 
-    // first colour attachment, if there is one
-    int32_t colAttach = 0;
-    if(!depthonly && dsAttach == 0)
-      colAttach = 1;
+    const std::vector<uint32_t> &cols = info.subpasses[subpass].colorAttachments;
 
-    // look through all other non-depth attachments to see if they're
-    // identical
-    for(size_t i = 0; i < atts.size(); i++)
+    // we check all non-UNUSED attachments to see if they're all the same.
+    // To begin with we point to an invalid attachment index
+    uint32_t col0 = VK_ATTACHMENT_UNUSED;
+
+    // look through all other color attachments to see if they're identical
+    for(size_t i = 0; i < cols.size(); i++)
     {
-      if((int32_t)i == dsAttach)
+      const uint32_t col = cols[i];
+
+      // skip unused attachments
+      if(col == VK_ATTACHMENT_UNUSED)
         continue;
 
-      if((int32_t)i == colAttach)
+      // the first valid attachment we find, use that as our reference point
+      if(col0 == VK_ATTACHMENT_UNUSED)
+      {
+        col0 = col;
         continue;
+      }
 
+      // for any other attachments, compare them to the reference
       if(store)
       {
-        if(atts[i].storeOp != atts[colAttach].storeOp)
+        if(atts[col].storeOp != atts[col0].storeOp)
           colsame = false;
       }
       else
       {
-        if(atts[i].loadOp != atts[colAttach].loadOp)
+        if(atts[col].loadOp != atts[col0].loadOp)
           colsame = false;
       }
     }
@@ -246,10 +264,15 @@ string WrappedVulkan::MakeRenderPassOpString(bool store)
 
       opDesc = store ? "Different store ops" : "Different load ops";
     }
+    else if(col0 == VK_ATTACHMENT_UNUSED)
+    {
+      // we're here if we didn't find any non-UNUSED color attachments at all
+      opDesc = "Unused";
+    }
     else
     {
       // all colour ops are the same, print it
-      opDesc = store ? ToStr::Get(atts[colAttach].storeOp) : ToStr::Get(atts[colAttach].loadOp);
+      opDesc = store ? ToStr::Get(atts[col0].storeOp) : ToStr::Get(atts[col0].loadOp);
     }
 
     // do we have depth?
@@ -365,6 +388,12 @@ VkResult WrappedVulkan::vkResetCommandPool(VkDevice device, VkCommandPool cmdPoo
                                            VkCommandPoolResetFlags flags)
 {
   return ObjDisp(device)->ResetCommandPool(Unwrap(device), Unwrap(cmdPool), flags);
+}
+
+void WrappedVulkan::vkTrimCommandPoolKHR(VkDevice device, VkCommandPool commandPool,
+                                         VkCommandPoolTrimFlagsKHR flags)
+{
+  return ObjDisp(device)->TrimCommandPoolKHR(Unwrap(device), Unwrap(commandPool), flags);
 }
 
 // Command buffer functions
@@ -489,7 +518,7 @@ bool WrappedVulkan::Serialise_vkBeginCommandBuffer(Serialiser *localSerialiser,
       {
         if(*it <= m_LastEventID && m_LastEventID < (*it + length))
         {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
           RDCDEBUG("vkBegin - partial detected %u < %u < %u, %llu -> %llu", *it, m_LastEventID,
                    *it + length, cmdId, bakeId);
 #endif
@@ -585,6 +614,10 @@ bool WrappedVulkan::Serialise_vkBeginCommandBuffer(Serialiser *localSerialiser,
       cmd = GetResourceManager()->GetLiveHandle<VkCommandBuffer>(bakeId);
     }
 
+    // propagate any name there might be
+    if(m_CreationInfo.m_Names.find(cmdId) != m_CreationInfo.m_Names.end())
+      m_CreationInfo.m_Names[GetResourceManager()->GetLiveID(bakeId)] = m_CreationInfo.m_Names[cmdId];
+
     {
       VulkanDrawcallTreeNode *draw = new VulkanDrawcallTreeNode;
       m_BakedCmdBufferInfo[cmdId].draw = draw;
@@ -634,6 +667,14 @@ VkResult WrappedVulkan::vkBeginCommandBuffer(VkCommandBuffer commandBuffer,
 
       record->AddChunk(scope.Get());
     }
+
+    if(pBeginInfo->pInheritanceInfo)
+    {
+      record->MarkResourceFrameReferenced(GetResID(pBeginInfo->pInheritanceInfo->renderPass),
+                                          eFrameRef_Read);
+      record->MarkResourceFrameReferenced(GetResID(pBeginInfo->pInheritanceInfo->framebuffer),
+                                          eFrameRef_Read);
+    }
   }
 
   VkCommandBufferInheritanceInfo unwrappedInfo;
@@ -678,7 +719,7 @@ bool WrappedVulkan::Serialise_vkEndCommandBuffer(Serialiser *localSerialiser,
     if(ShouldRerecordCmd(cmdid))
     {
       commandBuffer = RerecordCmdBuf(cmdid);
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Ending partial command buffer for %llu baked to %llu", cmdid, bakeId);
 #endif
 
@@ -718,9 +759,9 @@ bool WrappedVulkan::Serialise_vkEndCommandBuffer(Serialiser *localSerialiser,
 
     if(m_State == READING && !m_BakedCmdBufferInfo[m_LastCmdBufferID].curEvents.empty())
     {
-      FetchDrawcall draw;
+      DrawcallDescription draw;
       draw.name = "API Calls";
-      draw.flags |= eDraw_SetMarker;
+      draw.flags |= DrawFlags::SetMarker | DrawFlags::APICalls;
 
       AddDrawcall(draw, true);
 
@@ -865,10 +906,10 @@ bool WrappedVulkan::Serialise_vkCmdBeginRenderPass(Serialiser *localSerialiser,
 
     string opDesc = MakeRenderPassOpString(false);
 
-    AddEvent(BEGIN_RENDERPASS, desc);
-    FetchDrawcall draw;
+    AddEvent(desc);
+    DrawcallDescription draw;
     draw.name = StringFormat::Fmt("vkCmdBeginRenderPass(%s)", opDesc.c_str());
-    draw.flags |= eDraw_PassBoundary | eDraw_BeginPass;
+    draw.flags |= DrawFlags::PassBoundary | DrawFlags::BeginPass;
 
     AddDrawcall(draw, true);
   }
@@ -934,7 +975,9 @@ bool WrappedVulkan::Serialise_vkCmdNextSubpass(Serialiser *localSerialiser,
 
   if(m_State == EXECUTING)
   {
-    if(ShouldRerecordCmd(cmdid) && InRerecordRange(cmdid))
+    // don't do anything if we're executing a single draw, NextSubpass is meaningless (and invalid
+    // on a partial render pass)
+    if(ShouldRerecordCmd(cmdid) && InRerecordRange(cmdid) && m_FirstEventID != m_LastEventID)
     {
       commandBuffer = RerecordCmdBuf(cmdid);
 
@@ -966,11 +1009,11 @@ bool WrappedVulkan::Serialise_vkCmdNextSubpass(Serialiser *localSerialiser,
 
     const string desc = localSerialiser->GetDebugStr();
 
-    AddEvent(NEXT_SUBPASS, desc);
-    FetchDrawcall draw;
+    AddEvent(desc);
+    DrawcallDescription draw;
     draw.name = StringFormat::Fmt("vkCmdNextSubpass() => %u",
                                   m_BakedCmdBufferInfo[m_LastCmdBufferID].state.subpass);
-    draw.flags |= eDraw_PassBoundary | eDraw_BeginPass | eDraw_EndPass;
+    draw.flags |= DrawFlags::PassBoundary | DrawFlags::BeginPass | DrawFlags::EndPass;
 
     AddDrawcall(draw, true);
   }
@@ -1039,10 +1082,10 @@ bool WrappedVulkan::Serialise_vkCmdEndRenderPass(Serialiser *localSerialiser,
 
     string opDesc = MakeRenderPassOpString(true);
 
-    AddEvent(END_RENDERPASS, desc);
-    FetchDrawcall draw;
+    AddEvent(desc);
+    DrawcallDescription draw;
     draw.name = StringFormat::Fmt("vkCmdEndRenderPass(%s)", opDesc.c_str());
-    draw.flags |= eDraw_PassBoundary | eDraw_EndPass;
+    draw.flags |= DrawFlags::PassBoundary | DrawFlags::EndPass;
 
     AddDrawcall(draw, true);
 
@@ -1849,6 +1892,9 @@ bool WrappedVulkan::Serialise_vkCmdPipelineBarrier(
         imgBarriers.push_back(imgMemBarriers[i]);
         ReplacePresentableImageLayout(imgBarriers.back().oldLayout);
         ReplacePresentableImageLayout(imgBarriers.back().newLayout);
+
+        ReplaceExternalQueueFamily(imgBarriers.back().srcQueueFamilyIndex,
+                                   imgBarriers.back().dstQueueFamilyIndex);
       }
     }
   }
@@ -1888,9 +1934,9 @@ bool WrappedVulkan::Serialise_vkCmdPipelineBarrier(
 
     for(size_t i = 0; i < imgBarriers.size(); i++)
     {
-      m_BakedCmdBufferInfo[cmdid].resourceUsage.push_back(
-          std::make_pair(GetResourceManager()->GetNonDispWrapper(imgBarriers[i].image)->id,
-                         EventUsage(m_BakedCmdBufferInfo[cmdid].curEventID, eUsage_Barrier)));
+      m_BakedCmdBufferInfo[cmdid].resourceUsage.push_back(std::make_pair(
+          GetResourceManager()->GetNonDispWrapper(imgBarriers[i].image)->id,
+          EventUsage(m_BakedCmdBufferInfo[cmdid].curEventID, ResourceUsage::Barrier)));
     }
   }
 
@@ -2322,11 +2368,11 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
 
     const string desc = localSerialiser->GetDebugStr();
 
-    AddEvent(EXEC_CMDS, desc);
+    AddEvent(desc);
 
-    FetchDrawcall draw;
+    DrawcallDescription draw;
     draw.name = "vkCmdExecuteCommands(" + ToStr::Get(count) + ")";
-    draw.flags = eDraw_CmdList | eDraw_PushMarker;
+    draw.flags = DrawFlags::CmdList | DrawFlags::PushMarker;
 
     AddDrawcall(draw, true);
 
@@ -2340,10 +2386,10 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
                                       ToStr::Get(cmdids[c]).c_str());
 
       // add a fake marker
-      FetchDrawcall marker;
+      DrawcallDescription marker;
       marker.name = name;
-      marker.flags = eDraw_PassBoundary | eDraw_BeginPass;
-      AddEvent(SET_MARKER, name);
+      marker.flags = DrawFlags::PassBoundary | DrawFlags::BeginPass;
+      AddEvent(name);
       AddDrawcall(marker, true);
       parentCmdBufInfo.curEventID++;
 
@@ -2353,7 +2399,7 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
          (cmdBufInfo.beginFlags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
       {
         AddDebugMessage(
-            eDbgCategory_Execution, eDbgSeverity_High, eDbgSource_IncorrectAPIUse,
+            MessageCategory::Execution, MessageSeverity::High, MessageSource::IncorrectAPIUse,
             "Executing a command buffer with RENDER_PASS_CONTINUE_BIT outside of render pass");
       }
 
@@ -2379,15 +2425,15 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
       name = StringFormat::Fmt("=> vkCmdExecuteCommands()[%u]: vkEndCommandBuffer(%s)", c,
                                ToStr::Get(cmdids[c]).c_str());
       marker.name = name;
-      marker.flags = eDraw_PassBoundary | eDraw_EndPass;
-      AddEvent(SET_MARKER, name);
+      marker.flags = DrawFlags::PassBoundary | DrawFlags::EndPass;
+      AddEvent(name);
       AddDrawcall(marker, true);
       parentCmdBufInfo.curEventID++;
     }
 
     // add an extra pop marker
-    draw = FetchDrawcall();
-    draw.flags = eDraw_PopMarker;
+    draw = DrawcallDescription();
+    draw.flags = DrawFlags::PopMarker;
 
     AddDrawcall(draw, true);
 
@@ -2430,15 +2476,21 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
       {
         // do nothing, don't bother with the logic below
       }
+      else if(m_FirstEventID == m_LastEventID)
+      {
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
+        RDCDEBUG("ExecuteCommands no OnlyDraw %u", m_FirstEventID);
+#endif
+      }
       else if(m_LastEventID <= startEID)
       {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
         RDCDEBUG("ExecuteCommands no replay %u == %u", m_LastEventID, startEID);
 #endif
       }
       else if(m_DrawcallCallback && m_DrawcallCallback->RecordAllCmds())
       {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
         RDCDEBUG("ExecuteCommands re-recording from %u", startEID);
 #endif
 
@@ -2448,7 +2500,7 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
         {
           VkCommandBuffer cmd = RerecordCmdBuf(cmdids[c]);
           ResourceId rerecord = GetResID(cmd);
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
           RDCDEBUG("ExecuteCommands fully re-recorded replay of %llu, using %llu", cmdids[c],
                    rerecord);
 #endif
@@ -2463,7 +2515,7 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
       else if(m_LastEventID > startEID &&
               m_LastEventID < parentCmdBufInfo.curEventID + m_Partial[Primary].baseEvent)
       {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
         RDCDEBUG("ExecuteCommands partial replay %u < %u", m_LastEventID,
                  parentCmdBufInfo.curEventID + m_Partial[Primary].baseEvent);
 #endif
@@ -2484,7 +2536,7 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
           if(eid == m_Partial[Secondary].baseEvent)
           {
             ResourceId partial = GetResID(RerecordCmdBuf(cmdids[c], Secondary));
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
             RDCDEBUG("ExecuteCommands partial replay of %llu at %u, using %llu", cmdids[c], eid,
                      partial);
 #endif
@@ -2493,7 +2545,7 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
           }
           else if(m_LastEventID >= end)
           {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
             RDCDEBUG("ExecuteCommands full replay %llu", cmdids[c]);
 #endif
             trimmedCmdIds.push_back(cmdids[c]);
@@ -2502,7 +2554,7 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
           }
           else
           {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
             RDCDEBUG("not executing %llu", cmdids[c]);
 #endif
           }
@@ -2525,7 +2577,7 @@ bool WrappedVulkan::Serialise_vkCmdExecuteCommands(Serialiser *localSerialiser,
       }
       else
       {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
         RDCDEBUG("ExecuteCommands full replay %u >= %u", m_LastEventID,
                  parentCmdBufInfo.curEventID + m_Partial[Primary].baseEvent);
 #endif
@@ -2604,14 +2656,14 @@ bool WrappedVulkan::Serialise_vkCmdDebugMarkerBeginEXT(Serialiser *localSerialis
 
   if(m_State == READING)
   {
-    FetchDrawcall draw;
+    DrawcallDescription draw;
     draw.name = name;
-    draw.flags |= eDraw_PushMarker;
+    draw.flags |= DrawFlags::PushMarker;
 
-    draw.markerColour[0] = RDCCLAMP(color[0], 0.0f, 1.0f);
-    draw.markerColour[1] = RDCCLAMP(color[1], 0.0f, 1.0f);
-    draw.markerColour[2] = RDCCLAMP(color[2], 0.0f, 1.0f);
-    draw.markerColour[3] = RDCCLAMP(color[3], 0.0f, 1.0f);
+    draw.markerColor[0] = RDCCLAMP(color[0], 0.0f, 1.0f);
+    draw.markerColor[1] = RDCCLAMP(color[1], 0.0f, 1.0f);
+    draw.markerColor[2] = RDCCLAMP(color[2], 0.0f, 1.0f);
+    draw.markerColor[3] = RDCCLAMP(color[3], 0.0f, 1.0f);
 
     AddDrawcall(draw, false);
   }
@@ -2648,9 +2700,9 @@ bool WrappedVulkan::Serialise_vkCmdDebugMarkerEndEXT(Serialiser *localSerialiser
 
   if(m_State == READING && !m_BakedCmdBufferInfo[m_LastCmdBufferID].curEvents.empty())
   {
-    FetchDrawcall draw;
+    DrawcallDescription draw;
     draw.name = "API Calls";
-    draw.flags = eDraw_SetMarker;
+    draw.flags = DrawFlags::SetMarker | DrawFlags::APICalls;
 
     AddDrawcall(draw, true);
   }
@@ -2659,9 +2711,9 @@ bool WrappedVulkan::Serialise_vkCmdDebugMarkerEndEXT(Serialiser *localSerialiser
   {
     // dummy draw that is consumed when this command buffer
     // is being in-lined into the call stream
-    FetchDrawcall draw;
+    DrawcallDescription draw;
     draw.name = "Pop()";
-    draw.flags = eDraw_PopMarker;
+    draw.flags = DrawFlags::PopMarker;
 
     AddDrawcall(draw, false);
   }
@@ -2706,14 +2758,14 @@ bool WrappedVulkan::Serialise_vkCmdDebugMarkerInsertEXT(Serialiser *localSeriali
 
   if(m_State == READING)
   {
-    FetchDrawcall draw;
+    DrawcallDescription draw;
     draw.name = name;
-    draw.flags |= eDraw_SetMarker;
+    draw.flags |= DrawFlags::SetMarker;
 
-    draw.markerColour[0] = RDCCLAMP(color[0], 0.0f, 1.0f);
-    draw.markerColour[1] = RDCCLAMP(color[1], 0.0f, 1.0f);
-    draw.markerColour[2] = RDCCLAMP(color[2], 0.0f, 1.0f);
-    draw.markerColour[3] = RDCCLAMP(color[3], 0.0f, 1.0f);
+    draw.markerColor[0] = RDCCLAMP(color[0], 0.0f, 1.0f);
+    draw.markerColor[1] = RDCCLAMP(color[1], 0.0f, 1.0f);
+    draw.markerColor[2] = RDCCLAMP(color[2], 0.0f, 1.0f);
+    draw.markerColor[3] = RDCCLAMP(color[3], 0.0f, 1.0f);
 
     AddDrawcall(draw, false);
   }

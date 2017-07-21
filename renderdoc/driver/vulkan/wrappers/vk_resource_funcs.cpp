@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "../vk_core.h"
+#include "../vk_debug.h"
 
 /************************************************************************
  *
@@ -187,6 +188,14 @@ bool WrappedVulkan::Serialise_vkAllocateMemory(Serialiser *localSerialiser, VkDe
       ret = ObjDisp(device)->CreateBuffer(Unwrap(device), &bufInfo, NULL, &buf);
       RDCASSERTEQUAL(ret, VK_SUCCESS);
 
+      // we already validated at replay time that the memory size is aligned/etc as necessary so we
+      // can create a buffer of the whole size, but just to keep the validation layers happy let's
+      // check the requirements here again.
+      VkMemoryRequirements mrq = {};
+      ObjDisp(device)->GetBufferMemoryRequirements(Unwrap(device), buf, &mrq);
+
+      RDCASSERT(mrq.size <= info.allocationSize, mrq.size, info.allocationSize);
+
       ResourceId bufid = GetResourceManager()->WrapResource(Unwrap(device), buf);
 
       ObjDisp(device)->BindBufferMemory(Unwrap(device), Unwrap(buf), Unwrap(mem), 0);
@@ -207,9 +216,9 @@ VkResult WrappedVulkan::vkAllocateMemory(VkDevice device, const VkMemoryAllocate
 {
   VkMemoryAllocateInfo info = *pAllocateInfo;
   if(m_State >= WRITING)
-  {
     info.memoryTypeIndex = GetRecord(device)->memIdxMap[info.memoryTypeIndex];
 
+  {
     // we need to be able to allocate a buffer that covers the whole memory range. However
     // if the memory is e.g. 100 bytes (arbitrary example) and buffers have memory requirements
     // such that it must be bound to a multiple of 128 bytes, then we can't create a buffer
@@ -250,6 +259,131 @@ VkResult WrappedVulkan::vkAllocateMemory(VkDevice device, const VkMemoryAllocate
     }
 
     ObjDisp(device)->DestroyBuffer(Unwrap(device), buf, NULL);
+  }
+
+  size_t memSize = 0;
+
+  // we don't have to unwrap every struct, but unwrapping a struct means we need to copy
+  // the previous one in the chain locally to modify the pNext pointer. So we just copy
+  // all of them locally
+  {
+    const VkGenericStruct *next = (const VkGenericStruct *)info.pNext;
+    while(next)
+    {
+      // we need to unwrap this struct
+      if(next->sType == VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_MEMORY_ALLOCATE_INFO_NV)
+        memSize += sizeof(VkDedicatedAllocationMemoryAllocateInfoNV);
+      // the rest we don't need to unwrap, but we need to copy locally for chaining
+      else if(next->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_NV)
+        memSize += sizeof(VkExportMemoryAllocateInfoNV);
+      else if(next->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_KHX)
+        memSize += sizeof(VkExportMemoryAllocateInfoKHX);
+      else if(next->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHX)
+        memSize += sizeof(VkImportMemoryFdInfoKHX);
+
+#ifdef VK_NV_external_memory_win32
+      else if(next->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_NV)
+        memSize += sizeof(VkExportMemoryWin32HandleInfoNV);
+      else if(next->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_NV)
+        memSize += sizeof(VkImportMemoryWin32HandleInfoNV);
+#else
+      else if(next->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_NV)
+        RDCERR("Support for VK_NV_external_memory_win32 not compiled in");
+      else if(next->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_NV)
+        RDCERR("Support for VK_NV_external_memory_win32 not compiled in");
+#endif
+
+#ifdef VK_KHX_external_memory_win32
+      else if(next->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHX)
+        memSize += sizeof(VkExportMemoryWin32HandleInfoKHX);
+      else if(next->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHX)
+        memSize += sizeof(VkImportMemoryWin32HandleInfoKHX);
+#else
+      else if(next->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHX)
+        RDCERR("Support for VK_KHX_external_memory_win32 not compiled in");
+      else if(next->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHX)
+        RDCERR("Support for VK_KHX_external_memory_win32 not compiled in");
+#endif
+
+      next = next->pNext;
+    }
+  }
+
+  byte *tempMem = GetTempMemory(memSize);
+
+  {
+    VkGenericStruct *nextChainTail = (VkGenericStruct *)&info;
+    const VkGenericStruct *nextInput = (const VkGenericStruct *)info.pNext;
+    while(nextInput)
+    {
+      // unwrap and replace the dedicated allocation struct in the chain
+      if(nextInput->sType == VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_MEMORY_ALLOCATE_INFO_NV)
+      {
+        const VkDedicatedAllocationMemoryAllocateInfoNV *dedicatedIn =
+            (const VkDedicatedAllocationMemoryAllocateInfoNV *)nextInput;
+        VkDedicatedAllocationMemoryAllocateInfoNV *dedicatedOut =
+            (VkDedicatedAllocationMemoryAllocateInfoNV *)tempMem;
+
+        // copy and unwrap the struct
+        dedicatedOut->sType = dedicatedIn->sType;
+        dedicatedOut->buffer = Unwrap(dedicatedIn->buffer);
+        dedicatedOut->image = Unwrap(dedicatedIn->image);
+
+        AppendModifiedChainedStruct(tempMem, dedicatedOut, nextChainTail);
+      }
+      else if(nextInput->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_NV)
+      {
+        CopyNextChainedStruct<VkExportMemoryAllocateInfoNV>(tempMem, nextInput, nextChainTail);
+      }
+      else if(nextInput->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO_KHX)
+      {
+        CopyNextChainedStruct<VkExportMemoryAllocateInfoKHX>(tempMem, nextInput, nextChainTail);
+      }
+      else if(nextInput->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHX)
+      {
+        CopyNextChainedStruct<VkImportMemoryFdInfoKHX>(tempMem, nextInput, nextChainTail);
+      }
+      else if(nextInput->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHX)
+      {
+#ifdef VK_KHX_external_memory_win32
+        CopyNextChainedStruct<VkExportMemoryWin32HandleInfoKHX>(tempMem, nextInput, nextChainTail);
+#else
+        RDCERR("Support for VK_KHX_external_memory_win32 not compiled in");
+#endif
+      }
+      else if(nextInput->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHX)
+      {
+#ifdef VK_KHX_external_memory_win32
+        CopyNextChainedStruct<VkImportMemoryWin32HandleInfoKHX>(tempMem, nextInput, nextChainTail);
+#else
+        RDCERR("Support for VK_KHX_external_memory_win32 not compiled in");
+#endif
+      }
+      else if(nextInput->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_NV)
+      {
+#ifdef VK_NV_external_memory_win32
+        CopyNextChainedStruct<VkExportMemoryWin32HandleInfoNV>(tempMem, nextInput, nextChainTail);
+#else
+        RDCERR("Support for VK_NV_external_memory_win32 not compiled in");
+#endif
+      }
+      else if(nextInput->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_NV)
+      {
+#ifdef VK_NV_external_memory_win32
+        CopyNextChainedStruct<VkImportMemoryWin32HandleInfoNV>(tempMem, nextInput, nextChainTail);
+#else
+        RDCERR("Support for VK_NV_external_memory_win32 not compiled in");
+#endif
+      }
+      else
+      {
+        RDCERR("unrecognised struct %d in vkAllocateMemoryInfo pNext chain", nextInput->sType);
+        // can't patch this struct, have to just copy it and hope it's the last in the chain
+        nextChainTail->pNext = nextInput;
+      }
+
+      nextInput = nextInput->pNext;
+    }
   }
 
   VkResult ret = ObjDisp(device)->AllocateMemory(Unwrap(device), &info, pAllocator, pMemory);
@@ -314,6 +448,14 @@ VkResult WrappedVulkan::vkAllocateMemory(VkDevice device, const VkMemoryAllocate
 
       ret = ObjDisp(device)->CreateBuffer(Unwrap(device), &bufInfo, NULL, &buf);
       RDCASSERTEQUAL(ret, VK_SUCCESS);
+
+      // we already validated above that the memory size is aligned/etc as necessary so we can
+      // create a buffer of the whole size, but just to keep the validation layers happy let's check
+      // the requirements here again.
+      VkMemoryRequirements mrq = {};
+      ObjDisp(device)->GetBufferMemoryRequirements(Unwrap(device), buf, &mrq);
+
+      RDCASSERTEQUAL(mrq.size, info.allocationSize);
 
       ResourceId bufid = GetResourceManager()->WrapResource(Unwrap(device), buf);
 
@@ -519,8 +661,8 @@ void WrappedVulkan::vkUnmapMemory(VkDevice device, VkDeviceMemory mem)
       auto it = std::find(m_CoherentMaps.begin(), m_CoherentMaps.end(), memrecord);
       if(it == m_CoherentMaps.end())
         RDCERR("vkUnmapMemory for memory handle that's not currently mapped");
-
-      m_CoherentMaps.erase(it);
+      else
+        m_CoherentMaps.erase(it);
     }
   }
 
@@ -822,7 +964,13 @@ bool WrappedVulkan::Serialise_vkCreateBuffer(Serialiser *localSerialiser, VkDevi
 VkResult WrappedVulkan::vkCreateBuffer(VkDevice device, const VkBufferCreateInfo *pCreateInfo,
                                        const VkAllocationCallbacks *pAllocator, VkBuffer *pBuffer)
 {
-  VkResult ret = ObjDisp(device)->CreateBuffer(Unwrap(device), pCreateInfo, pAllocator, pBuffer);
+  VkBufferCreateInfo adjusted_info = *pCreateInfo;
+
+  // TEMP HACK: Until we define a portable fake hardware, need to match the requirements for usage
+  // on replay, so that the memory requirements are the same
+  adjusted_info.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+  VkResult ret = ObjDisp(device)->CreateBuffer(Unwrap(device), &adjusted_info, pAllocator, pBuffer);
 
   // SHARING: pCreateInfo sharingMode, queueFamilyCount, pQueueFamilyIndices
 
@@ -990,7 +1138,25 @@ bool WrappedVulkan::Serialise_vkCreateImage(Serialiser *localSerialiser, VkDevic
 
     // ensure we can cast multisampled images, for copying to arrays
     if((int)info.samples > 1)
+    {
       info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+
+      // colour targets we do a simple compute copy, for depth-stencil we need
+      // to take a slower path that uses drawing
+      if(!IsDepthOrStencilFormat(info.format))
+      {
+        // only add STORAGE_BIT if we have an MS2Array pipeline. If it failed to create due to lack
+        // of capability or because we disabled it as a workaround then we don't need this
+        // capability (and it might be the bug we're trying to work around by disabling the
+        // pipeline)
+        if(GetDebugManager()->m_MS2ArrayPipe != VK_NULL_HANDLE)
+          info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+      }
+      else
+      {
+        info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+      }
+    }
 
     VkResult ret = ObjDisp(device)->CreateImage(Unwrap(device), &info, NULL, &img);
 
@@ -1016,6 +1182,7 @@ bool WrappedVulkan::Serialise_vkCreateImage(Serialiser *localSerialiser, VkDevic
       layouts.subresourceStates.clear();
 
       layouts.layerCount = info.arrayLayers;
+      layouts.sampleCount = (int)info.samples;
       layouts.levelCount = info.mipLevels;
       layouts.extent = info.extent;
       layouts.format = info.format;
@@ -1042,6 +1209,33 @@ VkResult WrappedVulkan::vkCreateImage(VkDevice device, const VkImageCreateInfo *
   VkImageCreateInfo createInfo_adjusted = *pCreateInfo;
 
   createInfo_adjusted.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+  // TEMP HACK: Until we define a portable fake hardware, need to match the requirements for usage
+  // on replay, so that the memory requirements are the same
+  if(m_State >= WRITING)
+  {
+    createInfo_adjusted.usage |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  }
+
+  if(createInfo_adjusted.samples != VK_SAMPLE_COUNT_1_BIT)
+  {
+    createInfo_adjusted.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    createInfo_adjusted.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+
+    // TEMP HACK: matching replay requirements
+    if(m_State >= WRITING)
+    {
+      if(!IsDepthOrStencilFormat(createInfo_adjusted.format))
+      {
+        if(GetDebugManager()->m_MS2ArrayPipe != VK_NULL_HANDLE)
+          createInfo_adjusted.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+      }
+      else
+      {
+        createInfo_adjusted.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+      }
+    }
+  }
 
   VkResult ret =
       ObjDisp(device)->CreateImage(Unwrap(device), &createInfo_adjusted, pAllocator, pImage);
@@ -1145,6 +1339,7 @@ VkResult WrappedVulkan::vkCreateImage(VkDevice device, const VkImageCreateInfo *
 
     layout->layerCount = pCreateInfo->arrayLayers;
     layout->levelCount = pCreateInfo->mipLevels;
+    layout->sampleCount = (int)pCreateInfo->samples;
     layout->extent = pCreateInfo->extent;
     layout->format = pCreateInfo->format;
 

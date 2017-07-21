@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -342,7 +342,14 @@ namespace renderdocui.Windows.PipelineState
                     var b = binds[i];
                     var res = resources[i];
 
-                    if (b.bindset == space && b.bind == reg && !res.IsSampler)
+                    bool regMatch = b.bind == reg;
+
+                    // handle unbounded arrays specially. It's illegal to have an unbounded array with
+                    // anything after it
+                    if (b.bind <= reg)
+                        regMatch = (b.arraySize == UInt32.MaxValue) || (b.bind + b.arraySize > reg);
+
+                    if (b.bindset == space && regMatch && !res.IsSampler)
                     {
                         bind = b;
                         shaderInput = res;
@@ -351,7 +358,9 @@ namespace renderdocui.Windows.PipelineState
                 }
             }
 
-            string rootel = r.Immediate ? String.Format("#{0} Direct", r.RootElement) : rootel = String.Format("#{0} Table", r.RootElement);
+            TreelistView.NodeCollection parent = list.Nodes;
+
+            string rootel = r.Immediate ? String.Format("#{0} Direct", r.RootElement) : String.Format("#{0} Table[{1}]", r.RootElement, r.TableIndex);
 
             bool filledSlot = r.Resource != ResourceId.Null;
             bool usedSlot = (bind != null && bind.used);
@@ -426,21 +435,22 @@ namespace renderdocui.Windows.PipelineState
                         if (bufs[t].ID == r.Resource)
                         {
                             w = bufs[t].length;
-                            h = 0;
-                            d = 0;
-                            a = 0;
+                            h = 1;
+                            d = 1;
+                            a = 1;
                             format = "";
                             name = bufs[t].name;
-                            typename = "RWBuffer";
+                            typename = uav ? "RWBuffer" : "Buffer";
 
                             if (r.BufferFlags.HasFlag(D3DBufferViewFlags.Raw))
                             {
-                                typename = "RWByteAddressBuffer";
+                                typename = uav ? "RWByteAddressBuffer" : "ByteAddressBuffer";
                             }
                             else if (r.ElementSize > 0)
                             {
                                 // for structured buffers, display how many 'elements' there are in the buffer
-                                typename = "RWStructuredBuffer[" + (bufs[t].length / r.ElementSize) + "]";
+                                typename = (uav ? "RWStructuredBuffer" : "StructuredBuffer");
+                                a = (uint)(bufs[t].length / r.ElementSize);
                             }
 
                             if (r.CounterResource != ResourceId.Null)
@@ -451,17 +461,12 @@ namespace renderdocui.Windows.PipelineState
                             // get the buffer type, whether it's just a basic type or a complex struct
                             if (shaderInput != null && !shaderInput.IsTexture)
                             {
-                                if (r.Format.compType == FormatComponentType.None)
-                                {
-                                    if (shaderInput.variableType.members.Length > 0)
-                                        format = "struct " + shaderInput.variableType.Name;
-                                    else
-                                        format = shaderInput.variableType.Name;
-                                }
+                                if (shaderInput.variableType.members.Length > 0)
+                                    format = "struct " + shaderInput.variableType.Name;
+                                else if (r.Format.compType == FormatComponentType.None)
+                                    format = shaderInput.variableType.Name;
                                 else
-                                {
                                     format = r.Format.ToString();
-                                }
                             }
 
                             tag = new ViewBufTag(r, bufs[t], true, shaderInput);
@@ -472,7 +477,7 @@ namespace renderdocui.Windows.PipelineState
                     }
                 }
 
-                var node = list.Nodes.Add(new object[] { rootel, space, regname, name, typename, w, h, d, a, format });
+                var node = parent.Add(new object[] { rootel, space, regname, name, typename, w, h, d, a, format });
 
                 node.Image = global::renderdocui.Properties.Resources.action;
                 node.HoverImage = global::renderdocui.Properties.Resources.action_hover;
@@ -507,18 +512,8 @@ namespace renderdocui.Windows.PipelineState
             else
                 shader.Text = state.PipelineName + " - " + stage.stage.Str(GraphicsAPI.D3D12) + " Shader";
 
-            if (shaderDetails != null && shaderDetails.DebugInfo.entryFunc.Length > 0 && shaderDetails.DebugInfo.files.Length > 0)
-            {
-                string shaderfn = "";
-
-                int entryFile = shaderDetails.DebugInfo.entryFile;
-                if (entryFile < 0 || entryFile >= shaderDetails.DebugInfo.files.Length)
-                    entryFile = 0;
-
-                shaderfn = shaderDetails.DebugInfo.files[entryFile].BaseFilename;
-
-                shader.Text = shaderDetails.DebugInfo.entryFunc + "()" + " - " + shaderfn;
-            }
+            if (shaderDetails != null && shaderDetails.DebugInfo.files.Length > 0)
+                shader.Text = shaderDetails.EntryPoint + "()" + " - " + shaderDetails.DebugInfo.files[0].BaseFilename;
 
             int vs = 0;
             
@@ -543,7 +538,7 @@ namespace renderdocui.Windows.PipelineState
             {
                 for (int reg = 0; reg < stage.Spaces[space].UAVs.Length; reg++)
                 {
-                    AddResourceRow(stage, resources, space, reg, true);
+                    AddResourceRow(stage, uavs, space, reg, true);
                 }
             }
             uavs.EndUpdate();
@@ -573,7 +568,14 @@ namespace renderdocui.Windows.PipelineState
                             var b = stage.BindpointMapping.ReadOnlyResources[i];
                             var res = stage.ShaderDetails.ReadOnlyResources[i];
 
-                            if (b.bindset == space && b.bind == reg && res.IsSampler)
+                            bool regMatch = b.bind == reg;
+
+                            // handle unbounded arrays specially. It's illegal to have an unbounded array with
+                            // anything after it
+                            if (b.bind <= reg)
+                                regMatch = (b.arraySize == UInt32.MaxValue) || (b.bind + b.arraySize > reg);
+
+                            if (b.bindset == space && regMatch && res.IsSampler)
                             {
                                 bind = b;
                                 shaderInput = res;
@@ -582,9 +584,9 @@ namespace renderdocui.Windows.PipelineState
                         }
                     }
 
-                    string rootel = s.Immediate ? String.Format("#{0} Static", s.RootElement) : String.Format("#{0} Table", s.RootElement);
+                    string rootel = s.Immediate ? String.Format("#{0} Static", s.RootElement) : String.Format("#{0} Table[{1}]", s.RootElement, s.TableIndex);
 
-                    bool filledSlot = (s.AddressU.Length > 0);
+                    bool filledSlot = (s.Filter.minify != FilterMode.NoFilter);
                     bool usedSlot = (bind != null && bind.used);
 
                     // show if
@@ -614,9 +616,9 @@ namespace renderdocui.Windows.PipelineState
                                           s.BorderColor[2].ToString() + ", " +
                                           s.BorderColor[3].ToString();
 
-                            addr[0] = s.AddressU;
-                            addr[1] = s.AddressV;
-                            addr[2] = s.AddressW;
+                            addr[0] = s.AddressU.ToString();
+                            addr[1] = s.AddressV.ToString();
+                            addr[2] = s.AddressW.ToString();
                         }
 
                         // arrange like either UVW: WRAP or UV: WRAP, W: CLAMP
@@ -645,16 +647,18 @@ namespace renderdocui.Windows.PipelineState
 
                         if (s != null)
                         {
-                            if (s.UseBorder)
+                            if (s.UseBorder())
                                 addressing += String.Format("<{0}>", borderColor);
 
-                            filter = s.Filter;
+                            filter = s.Filter.ToString();
 
                             if (s.MaxAniso > 0)
                                 filter += String.Format(" {0}x", s.MaxAniso);
 
-                            if (s.UseComparison)
+                            if (s.Filter.func == FilterFunc.Comparison)
                                 filter += String.Format(" ({0})", s.Comparison);
+                            else if (s.Filter.func != FilterFunc.Normal)
+                                filter += String.Format(" ({0})", s.Filter.func);
 
                             lodclamp = (s.MinLOD == -float.MaxValue ? "0" : s.MinLOD.ToString()) + " - " +
                                        (s.MaxLOD == float.MaxValue ? "FLT_MAX" : s.MaxLOD.ToString());
@@ -702,7 +706,14 @@ namespace renderdocui.Windows.PipelineState
                             var bd = stage.BindpointMapping.ConstantBlocks[i];
                             var res = stage.ShaderDetails.ConstantBlocks[i];
 
-                            if (bd.bindset == space && bd.bind == reg)
+                            bool regMatch = bd.bind == reg;
+
+                            // handle unbounded arrays specially. It's illegal to have an unbounded array with
+                            // anything after it
+                            if (bd.bind <= reg)
+                                regMatch = (bd.arraySize == UInt32.MaxValue) || (bd.bind + bd.arraySize > reg);
+
+                            if (bd.bindset == space && regMatch)
                             {
                                 bind = bd;
                                 shaderCBuf = res;
@@ -726,7 +737,7 @@ namespace renderdocui.Windows.PipelineState
                     }
                     else
                     {
-                        rootel = String.Format("#{0} Table", b.RootElement);
+                        rootel = String.Format("#{0} Table[{1}]", b.RootElement, b.TableIndex);
                     }
 
                     bool filledSlot = (b.Buffer != ResourceId.Null);
@@ -1352,7 +1363,7 @@ namespace renderdocui.Windows.PipelineState
                             format = "Viewed as " + state.m_OM.DepthTarget.Format.ToString();
                         }
 
-                        if (HasImportantViewParams(state.m_OM.DepthTarget, texs[t]))
+                        if (HasImportantViewParams(state.m_OM.DepthTarget, texs[t]) || state.m_OM.DepthReadOnly || state.m_OM.StencilReadOnly)
                             viewDetails = true;
 
                         tag = new ViewTexTag(state.m_OM.DepthTarget, texs[t], false, null);
@@ -1402,7 +1413,7 @@ namespace renderdocui.Windows.PipelineState
                                                         blend.m_AlphaBlend.Destination,
                                                         blend.m_AlphaBlend.Operation,
 
-                                                        blend.LogicOp,
+                                                        blend.Logic,
 
                                                         ((blend.WriteMask & 0x1) == 0 ? "_" : "R") +
                                                         ((blend.WriteMask & 0x2) == 0 ? "_" : "G") +
@@ -1437,7 +1448,7 @@ namespace renderdocui.Windows.PipelineState
             sampleMask.Text = state.m_RS.SampleMask.ToString("X8");
 
             depthEnable.Image = state.m_OM.m_State.DepthEnable ? tick : cross;
-            depthFunc.Text = state.m_OM.m_State.DepthFunc;
+            depthFunc.Text = state.m_OM.m_State.DepthFunc.ToString();
             depthWrite.Image = state.m_OM.m_State.DepthWrites ? tick : cross;
 
             stencilEnable.Image = state.m_OM.m_State.StencilEnable ? tick : cross;
@@ -1570,6 +1581,14 @@ namespace renderdocui.Windows.PipelineState
                             text += String.Format("The texture is format {0}, the view treats it as {1}.\n",
                                 tex.tex.format, tex.view.Format);
 
+                        if (m_Core.CurD3D12PipelineState.m_OM.DepthTarget.Resource == tex.tex.ID)
+                        {
+                            if(m_Core.CurD3D12PipelineState.m_OM.DepthReadOnly)
+                                text += "Depth component is read-only\n";
+                            if (m_Core.CurD3D12PipelineState.m_OM.StencilReadOnly)
+                                text += "Stencil component is read-only\n";
+                        }
+
                         if (tex.tex.mips > 1 && (tex.tex.mips != tex.view.NumMipLevels || tex.view.HighestMip > 0))
                         {
                             if (tex.view.NumMipLevels == 1)
@@ -1694,10 +1713,17 @@ namespace renderdocui.Windows.PipelineState
                     {
                         if (view != null)
                         {
-                            if (view.Format.special && view.Format.specialFormat == SpecialFormat.R10G10B10A2)
+                            if (view.Format.special)
                             {
-                                if (view.Format.compType == FormatComponentType.UInt) format = "uintten";
-                                if (view.Format.compType == FormatComponentType.UNorm) format = "unormten";
+                                if (view.Format.specialFormat == SpecialFormat.R10G10B10A2)
+                                {
+                                    if (view.Format.compType == FormatComponentType.UInt) format = "uintten";
+                                    if (view.Format.compType == FormatComponentType.UNorm) format = "unormten";
+                                }
+                                else if (view.Format.specialFormat == SpecialFormat.R11G11B10)
+                                {
+                                    format = "floateleven";
+                                }
                             }
                             else if (!view.Format.special)
                             {
@@ -1783,7 +1809,9 @@ namespace renderdocui.Windows.PipelineState
                 }
                 else if (sender is TreelistView.TreeListView)
                 {
-                    TreelistView.NodesSelection sel = ((TreelistView.TreeListView)sender).NodesSelection;
+                    TreelistView.TreeListView view = (TreelistView.TreeListView)sender;
+                    view.SortNodesSelection();
+                    TreelistView.NodesSelection sel = view.NodesSelection;
 
                     if (sel.Count > 0)
                     {
@@ -2004,14 +2032,14 @@ namespace renderdocui.Windows.PipelineState
 
             if (stage.Shader == ResourceId.Null || shaderDetails == null) return;
 
-            var entryFunc = String.Format("EditedShader{0}S", stage.stage.ToString()[0]);
+            var entryFunc = String.Format("EditedShader{0}S", stage.stage.Str(GraphicsAPI.D3D12)[0]);
 
             string mainfile = "";
 
             var files = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
-            if (shaderDetails.DebugInfo.entryFunc.Length > 0 && shaderDetails.DebugInfo.files.Length > 0)
+            if (shaderDetails.DebugInfo.files.Length > 0)
             {
-                entryFunc = shaderDetails.DebugInfo.entryFunc;
+                entryFunc = shaderDetails.EntryPoint;
 
                 foreach (var s in shaderDetails.DebugInfo.files)
                 {
@@ -2021,11 +2049,7 @@ namespace renderdocui.Windows.PipelineState
                         files.Add(s.FullFilename, s.filetext);
                 }
 
-                int entryFile = shaderDetails.DebugInfo.entryFile;
-                if (entryFile < 0 || entryFile >= shaderDetails.DebugInfo.files.Length)
-                    entryFile = 0;
-
-                mainfile = shaderDetails.DebugInfo.files[entryFile].FullFilename;
+                mainfile = shaderDetails.DebugInfo.files[0].FullFilename;
             }
             else
             {
@@ -2075,16 +2099,17 @@ namespace renderdocui.Windows.PipelineState
 
                 string cbuffers = "";
 
-                int cbufIdx = 0;
-                foreach (var cbuf in shaderDetails.ConstantBlocks)
+                for (int i = 0; i < stage.BindpointMapping.ConstantBlocks.Length; i++)
                 {
+                    var bd = stage.BindpointMapping.ConstantBlocks[i];
+                    var cbuf = stage.ShaderDetails.ConstantBlocks[i];
+
                     if (cbuf.name.Length > 0 && cbuf.variables.Length > 0)
                     {
-                        cbuffers += String.Format("cbuffer {0} : register(b{1}) {{", cbuf.name, cbufIdx) + nl;
+                        cbuffers += String.Format("cbuffer {0} : register(space{1}, b{2}) {{", cbuf.name, bd.bindset, bd.bind) + nl;
                         MakeShaderVariablesHLSL(true, cbuf.variables, ref cbuffers, ref hlsl);
                         cbuffers += "};" + nl2;
                     }
-                    cbufIdx++;
                 }
 
                 hlsl += cbuffers + nl2;
@@ -2888,8 +2913,8 @@ namespace renderdocui.Windows.PipelineState
                 else
                     shadername = sh.stage.Str(GraphicsAPI.D3D12);
 
-                if (shaderDetails != null && shaderDetails.DebugInfo.entryFunc.Length > 0 && shaderDetails.DebugInfo.files.Length > 0)
-                    shadername = shaderDetails.DebugInfo.entryFunc + "()" + " - " +
+                if (shaderDetails != null && shaderDetails.DebugInfo.files.Length > 0)
+                    shadername = shaderDetails.EntryPoint + "()" + " - " +
                                     shaderDetails.DebugInfo.files[0].BaseFilename;
 
                 writer.WriteStartElement("p");
@@ -3046,7 +3071,7 @@ namespace renderdocui.Windows.PipelineState
                         b.Enabled ? "Yes" : "No", b.LogicEnabled ? "Yes" : "No",
                         b.m_Blend.Source, b.m_Blend.Destination, b.m_Blend.Operation,
                         b.m_AlphaBlend.Source, b.m_AlphaBlend.Destination, b.m_AlphaBlend.Operation,
-                        b.LogicOp,
+                        b.Logic,
                         ((b.WriteMask & 0x1) == 0 ? "_" : "R") +
                         ((b.WriteMask & 0x2) == 0 ? "_" : "G") +
                         ((b.WriteMask & 0x4) == 0 ? "_" : "B") +

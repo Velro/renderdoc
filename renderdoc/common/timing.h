@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -48,6 +48,57 @@ private:
   uint64_t m_Start;
 };
 
+class FrameTimer
+{
+public:
+  void InitTimers()
+  {
+    m_HighPrecisionTimer.Restart();
+    m_TotalTime = m_AvgFrametime = m_MinFrametime = m_MaxFrametime = 0.0;
+  }
+
+  void UpdateTimers()
+  {
+    m_FrameTimes.push_back(m_HighPrecisionTimer.GetMilliseconds());
+    m_TotalTime += m_FrameTimes.back();
+    m_HighPrecisionTimer.Restart();
+
+    // update every second
+    if(m_TotalTime > 1000.0)
+    {
+      m_MinFrametime = 10000.0;
+      m_MaxFrametime = 0.0;
+      m_AvgFrametime = 0.0;
+
+      m_TotalTime = 0.0;
+
+      for(size_t i = 0; i < m_FrameTimes.size(); i++)
+      {
+        m_AvgFrametime += m_FrameTimes[i];
+        if(m_FrameTimes[i] < m_MinFrametime)
+          m_MinFrametime = m_FrameTimes[i];
+        if(m_FrameTimes[i] > m_MaxFrametime)
+          m_MaxFrametime = m_FrameTimes[i];
+      }
+
+      m_AvgFrametime /= double(m_FrameTimes.size());
+
+      m_FrameTimes.clear();
+    }
+  }
+
+  double GetAvgFrameTime() const { return m_AvgFrametime; }
+  double GetMinFrameTime() const { return m_MinFrametime; }
+  double GetMaxFrameTime() const { return m_MaxFrametime; }
+private:
+  PerformanceTimer m_HighPrecisionTimer;
+  vector<double> m_FrameTimes;
+  double m_TotalTime;
+  double m_AvgFrametime;
+  double m_MinFrametime;
+  double m_MaxFrametime;
+};
+
 class ScopedTimer
 {
 public:
@@ -70,7 +121,7 @@ public:
 
   ~ScopedTimer()
   {
-    rdclog_int(RDCLog_Comment, RDCLOG_PROJECT, m_File, m_Line, "Timer %s - %.3lf ms",
+    rdclog_int(LogType::Comment, RDCLOG_PROJECT, m_File, m_Line, "Timer %s - %.3lf ms",
                m_Message.c_str(), m_Timer.GetMilliseconds());
   }
 

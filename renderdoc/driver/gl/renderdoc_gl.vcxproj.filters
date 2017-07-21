@@ -31,6 +31,15 @@
     <Filter Include="Replay">
       <UniqueIdentifier>{1122b6ee-006e-418b-9907-8f9d0a8b1f25}</UniqueIdentifier>
     </Filter>
+    <Filter Include="OS\Apple">
+      <UniqueIdentifier>{28fbc354-c414-4647-9ce6-0fcea2cbe845}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="OS\EGL">
+      <UniqueIdentifier>{61304e3c-ff5e-4cb6-8c25-455f37d86b48}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="PCH">
+      <UniqueIdentifier>{553d1c91-551a-455e-9247-6f69e4fec941}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="official\glcorearb.h">
@@ -54,6 +63,9 @@
     <ClInclude Include="gl_hookset.h">
       <Filter>Hookset</Filter>
     </ClInclude>
+    <ClInclude Include="gl_hooks_linux_shared.h">
+      <Filter>OS\Linux</Filter>
+    </ClInclude>
     <ClInclude Include="gl_resources.h">
       <Filter>Util</Filter>
     </ClInclude>
@@ -71,6 +83,30 @@
     </ClInclude>
     <ClInclude Include="gl_replay.h">
       <Filter>Replay</Filter>
+    </ClInclude>
+    <ClInclude Include="precompiled.h">
+      <Filter>PCH</Filter>
+    </ClInclude>
+    <ClInclude Include="official\egl.h">
+      <Filter>ARB Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="official\eglext.h">
+      <Filter>ARB Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="official\eglplatform.h">
+      <Filter>ARB Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="official\glesext.h">
+      <Filter>ARB Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="official\gl3platform.h">
+      <Filter>ARB Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="official\gl32.h">
+      <Filter>ARB Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="official\khrplatform.h">
+      <Filter>ARB Headers</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -119,6 +155,9 @@
     <ClCompile Include="gl_hooks_linux.cpp">
       <Filter>OS\Linux</Filter>
     </ClCompile>
+    <ClCompile Include="gl_hooks_linux_shared.cpp">
+      <Filter>OS\Linux</Filter>
+    </ClCompile>
     <ClCompile Include="gl_replay_linux.cpp">
       <Filter>OS\Linux</Filter>
     </ClCompile>
@@ -148,6 +187,30 @@
     </ClCompile>
     <ClCompile Include="gl_replay.cpp">
       <Filter>Replay</Filter>
+    </ClCompile>
+    <ClCompile Include="wrappers\gl_interop_funcs.cpp">
+      <Filter>Function Wrappers</Filter>
+    </ClCompile>
+    <ClCompile Include="glx_hooks_linux.cpp">
+      <Filter>OS\Linux</Filter>
+    </ClCompile>
+    <ClCompile Include="gl_hooks_apple.cpp">
+      <Filter>OS\Apple</Filter>
+    </ClCompile>
+    <ClCompile Include="gl_replay_apple.cpp">
+      <Filter>OS\Apple</Filter>
+    </ClCompile>
+    <ClCompile Include="gl_hooks_egl.cpp">
+      <Filter>OS\EGL</Filter>
+    </ClCompile>
+    <ClCompile Include="gl_hooks_egl_pass.cpp">
+      <Filter>OS\EGL</Filter>
+    </ClCompile>
+    <ClCompile Include="gl_replay_egl.cpp">
+      <Filter>OS\EGL</Filter>
+    </ClCompile>
+    <ClCompile Include="precompiled.cpp">
+      <Filter>PCH</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

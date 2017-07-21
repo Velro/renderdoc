@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -82,7 +82,7 @@
 
 #define RDCASSERT_GETCOND(cond, ...) cond
 
-#ifdef _MSC_VER
+#if ENABLED(RDOC_MSVS)
 
 // only needed on VC++, but unfortunately breaks on g++/clang++
 #define RDCASSERT_FAILMSG_INVOKE(macro, args) macro args

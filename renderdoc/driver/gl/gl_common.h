@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,6 +25,9 @@
 
 #pragma once
 
+#include "common/common.h"
+#include "maths/vec.h"
+
 // typed enum so that templates will pick up specialisations
 // header must be included before the official headers, so we/
 // separate it out to avoid clang-format sorting them differently
@@ -35,7 +38,12 @@
 #include "official/glcorearb.h"
 #include "official/glext.h"
 
-#if defined(RENDERDOC_PLATFORM_WIN32)
+#include "official/gl32.h"
+// TODO there are some extensions which are in both headers but with different content
+// however it does not seem to be a problem at this time
+#include "official/glesext.h"
+
+#if ENABLED(RDOC_WIN32)
 #include "official/wglext.h"
 
 struct GLWindowingData
@@ -53,12 +61,25 @@ struct GLWindowingData
   HWND wnd;
 };
 
-#elif defined(RENDERDOC_PLATFORM_LINUX)
+#elif ENABLED(RDOC_LINUX)
+
+#ifdef RENDERDOC_SUPPORT_GL
 // cheeky way to prevent GL/gl.h from being included, as we want to use
 // glcorearb.h from above
 #define __gl_h_
 #include <GL/glx.h>
 #include "official/glxext.h"
+#endif
+#if RENDERDOC_SUPPORT_GLES
+
+// force include the elgplatform.h, as we want to use
+// our own because the system one could be a bit older and
+// propably not suitable for the given egl.h
+#include "official/eglplatform.h"
+
+#include "official/egl.h"
+#include "official/eglext.h"
+#endif
 
 struct GLWindowingData
 {
@@ -69,13 +90,46 @@ struct GLWindowingData
     wnd = 0;
   }
 
-  void SetCtx(void *c) { ctx = (GLXContext)c; }
-  Display *dpy;
-  GLXContext ctx;
-  GLXDrawable wnd;
+  void SetCtx(void *c) { ctx = (GLContextPtr)c; }
+
+#if defined(RENDERDOC_SUPPORT_GL)
+  typedef Display *GLDisplayPtr;
+  typedef GLXContext GLContextPtr;
+  typedef GLXDrawable GLWindowPtr;
+#else
+  typedef void *GLDisplayPtr;
+  typedef void *GLContextPtr;
+  typedef void *GLWindowPtr;
+#endif
+
+#if defined(RENDERDOC_SUPPORT_GLES)
+  typedef EGLDisplay GLESDisplayPtr;
+  typedef EGLContext GLESContextPtr;
+  typedef EGLSurface GLESWindowPtr;
+#else
+  typedef void *GLESDisplayPtr;
+  typedef void *GLESContextPtr;
+  typedef void *GLESWindowPtr;
+#endif
+
+  union
+  {
+    GLDisplayPtr dpy;
+    GLESDisplayPtr egl_dpy;
+  };
+  union
+  {
+    GLContextPtr ctx;
+    GLESContextPtr egl_ctx;
+  };
+  union
+  {
+    GLWindowPtr wnd;
+    GLESWindowPtr egl_wnd;
+  };
 };
 
-#elif defined(RENDERDOC_PLATFORM_APPLE)
+#elif ENABLED(RDOC_APPLE)
 
 struct GLWindowingData
 {
@@ -90,21 +144,35 @@ struct GLWindowingData
   void *wnd;
 };
 
-#elif defined(RENDERDOC_PLATFORM_ANDROID)
+#elif ENABLED(RDOC_ANDROID)
 
-#include "EGL/egl.h"
-#include "EGL/eglext.h"
+// force include the eglplatform.h, as we want to use
+// our own because the system one could be a bit older and
+// propably not suitable for the given egl.h
+#include "official/eglplatform.h"
+
+#include "official/egl.h"
+#include "official/eglext.h"
 
 struct GLWindowingData
 {
   GLWindowingData()
   {
-    ctx = NULL;
+    egl_ctx = 0;
+    egl_dpy = 0;
+    egl_wnd = 0;
     wnd = 0;
   }
 
-  void SetCtx(void *c) { ctx = (void *)c; }
-  EGLContext ctx;
+  void SetCtx(void *c) { egl_ctx = (void *)c; }
+  union
+  {
+    // currently required to allow compatiblity with the driver parts
+    void *ctx;
+    EGLContext egl_ctx;
+  };
+  EGLDisplay egl_dpy;
+  EGLSurface egl_wnd;
   ANativeWindow *wnd;
 };
 
@@ -113,6 +181,45 @@ struct GLWindowingData
 #endif
 
 #include "api/replay/renderdoc_replay.h"
+
+struct GLPlatform
+{
+  // simple wrapper for OS functions to make/delete a context
+  virtual GLWindowingData MakeContext(GLWindowingData share) = 0;
+  virtual void DeleteContext(GLWindowingData context) = 0;
+  virtual void DeleteReplayContext(GLWindowingData context) = 0;
+  virtual void MakeContextCurrent(GLWindowingData data) = 0;
+  virtual void SwapBuffers(GLWindowingData context) = 0;
+  virtual void GetOutputWindowDimensions(GLWindowingData context, int32_t &w, int32_t &h) = 0;
+  virtual bool IsOutputWindowVisible(GLWindowingData context) = 0;
+  virtual GLWindowingData MakeOutputWindow(WindowingSystem system, void *data, bool depth,
+                                           GLWindowingData share_context) = 0;
+
+  // for 'backwards compatible' overlay rendering
+  virtual bool DrawQuads(float width, float height, const std::vector<Vec4f> &vertices) = 0;
+};
+
+// define stubs so other platforms can define these functions, but empty
+#if DISABLED(RDOC_WIN32)
+typedef void *HANDLE;
+typedef long BOOL;
+
+typedef BOOL(APIENTRYP *PFNWGLDXSETRESOURCESHAREHANDLENVPROC)(void *dxObject, HANDLE shareHandle);
+typedef HANDLE(APIENTRYP *PFNWGLDXOPENDEVICENVPROC)(void *dxDevice);
+typedef BOOL(APIENTRYP *PFNWGLDXCLOSEDEVICENVPROC)(HANDLE hDevice);
+typedef HANDLE(APIENTRYP *PFNWGLDXREGISTEROBJECTNVPROC)(HANDLE hDevice, void *dxObject, GLuint name,
+                                                        GLenum type, GLenum access);
+typedef BOOL(APIENTRYP *PFNWGLDXUNREGISTEROBJECTNVPROC)(HANDLE hDevice, HANDLE hObject);
+typedef BOOL(APIENTRYP *PFNWGLDXOBJECTACCESSNVPROC)(HANDLE hObject, GLenum access);
+typedef BOOL(APIENTRYP *PFNWGLDXLOCKOBJECTSNVPROC)(HANDLE hDevice, GLint count, HANDLE *hObjects);
+typedef BOOL(APIENTRYP *PFNWGLDXUNLOCKOBJECTSNVPROC)(HANDLE hDevice, GLint count, HANDLE *hObjects);
+#endif
+
+#include "api/replay/renderdoc_replay.h"
+
+// define this if you e.g. haven't compiled the D3D modules and want to disable
+// interop capture support.
+#define RENDERDOC_DX_GL_INTEROP OPTION_ON
 
 // similar to RDCUNIMPLEMENTED but for things that are hit often so we don't want to fire the
 // debugbreak.
@@ -138,6 +245,18 @@ const GLenum eGL_ONE = (GLenum)1;
 class WrappedOpenGL;
 struct GLHookSet;
 
+// replay only class for handling marker regions
+struct GLMarkerRegion
+{
+  GLMarkerRegion(const std::string &marker);
+  ~GLMarkerRegion();
+  static void Set(const std::string &marker);
+
+  static const GLHookSet *gl;
+};
+
+size_t GLTypeSize(GLenum type);
+
 size_t BufferIdx(GLenum buf);
 GLenum BufferEnum(size_t idx);
 
@@ -148,10 +267,18 @@ size_t ShaderIdx(GLenum buf);
 GLenum ShaderBit(size_t idx);
 GLenum ShaderEnum(size_t idx);
 
-ResourceFormat MakeResourceFormat(WrappedOpenGL &gl, GLenum target, GLenum fmt);
+ResourceFormat MakeResourceFormat(const GLHookSet &gl, GLenum target, GLenum fmt);
 GLenum MakeGLFormat(WrappedOpenGL &gl, ResourceFormat fmt);
-PrimitiveTopology MakePrimitiveTopology(const GLHookSet &gl, GLenum Topo);
-GLenum MakeGLPrimitiveTopology(PrimitiveTopology Topo);
+Topology MakePrimitiveTopology(const GLHookSet &gl, GLenum Topo);
+GLenum MakeGLPrimitiveTopology(Topology Topo);
+BufferCategory MakeBufferCategory(GLenum bufferTarget);
+AddressMode MakeAddressMode(GLenum addr);
+TextureFilter MakeFilter(GLenum minf, GLenum magf, bool shadowSampler, float maxAniso);
+CompareFunc MakeCompareFunc(GLenum func);
+StencilOp MakeStencilOp(GLenum op);
+LogicOp MakeLogicOp(GLenum op);
+BlendMultiplier MakeBlendMultiplier(GLenum blend);
+BlendOp MakeBlendOp(GLenum op);
 const char *BlendString(GLenum blendenum);
 const char *SamplerString(GLenum smpenum);
 
@@ -164,27 +291,113 @@ void GetBindpointMapping(const GLHookSet &gl, GLuint curProg, int shadIdx, Shade
 
 extern int GLCoreVersion;
 extern bool GLIsCore;
+extern bool IsGLES;
+
+// List of extensions and the versions when they became core (first column for GL, second column for
+// GLES). In case of GLES compatible extensions and new features of the different versions are also
+// taken into account.
+// 99 means the extension never became core, so you can easily just do a check of CoreVersion >= NN
+// and they will always fail.
+#define EXTENSION_CHECKS()                                       \
+  EXT_TO_CHECK(31, 99, ARB_texture_buffer_object)                \
+  EXT_TO_CHECK(33, 30, ARB_explicit_attrib_location)             \
+  EXT_TO_CHECK(33, 30, ARB_sampler_objects)                      \
+  EXT_TO_CHECK(33, 30, ARB_texture_swizzle)                      \
+  EXT_TO_CHECK(40, 32, ARB_draw_buffers_blend)                   \
+  EXT_TO_CHECK(40, 31, ARB_draw_indirect)                        \
+  EXT_TO_CHECK(40, 32, ARB_gpu_shader5)                          \
+  EXT_TO_CHECK(40, 32, ARB_sample_shading)                       \
+  EXT_TO_CHECK(40, 99, ARB_shader_subroutine)                    \
+  EXT_TO_CHECK(40, 32, ARB_tessellation_shader)                  \
+  EXT_TO_CHECK(40, 32, ARB_texture_cube_map_array)               \
+  EXT_TO_CHECK(40, 30, ARB_transform_feedback2)                  \
+  EXT_TO_CHECK(41, 99, ARB_geometry_shader4)                     \
+  EXT_TO_CHECK(41, 31, ARB_separate_shader_objects)              \
+  EXT_TO_CHECK(41, 99, ARB_viewport_array)                       \
+  EXT_TO_CHECK(42, 99, ARB_base_instance)                        \
+  EXT_TO_CHECK(42, 31, ARB_shader_atomic_counters)               \
+  EXT_TO_CHECK(42, 31, ARB_shader_image_load_store)              \
+  EXT_TO_CHECK(42, 31, ARB_shading_language_420pack)             \
+  EXT_TO_CHECK(42, 30, ARB_texture_storage)                      \
+  EXT_TO_CHECK(43, 99, ARB_clear_buffer_object)                  \
+  EXT_TO_CHECK(43, 31, ARB_compute_shader)                       \
+  EXT_TO_CHECK(43, 32, ARB_copy_image)                           \
+  EXT_TO_CHECK(43, 30, ARB_ES3_compatibility)                    \
+  EXT_TO_CHECK(43, 99, ARB_internalformat_query2)                \
+  EXT_TO_CHECK(43, 31, ARB_program_interface_query)              \
+  EXT_TO_CHECK(43, 31, ARB_shader_storage_buffer_object)         \
+  EXT_TO_CHECK(43, 31, ARB_stencil_texturing)                    \
+  EXT_TO_CHECK(43, 32, ARB_texture_storage_multisample)          \
+  EXT_TO_CHECK(43, 99, ARB_texture_view)                         \
+  EXT_TO_CHECK(43, 31, ARB_vertex_attrib_binding)                \
+  EXT_TO_CHECK(43, 32, KHR_debug)                                \
+  EXT_TO_CHECK(44, 99, ARB_enhanced_layouts)                     \
+  EXT_TO_CHECK(44, 99, ARB_query_buffer_object)                  \
+  EXT_TO_CHECK(45, 99, ARB_clip_control)                         \
+  EXT_TO_CHECK(99, 99, ARB_indirect_parameters)                  \
+  EXT_TO_CHECK(99, 99, ARB_seamless_cubemap_per_texture)         \
+  EXT_TO_CHECK(99, 99, EXT_depth_bounds_test)                    \
+  EXT_TO_CHECK(99, 99, EXT_direct_state_access)                  \
+  EXT_TO_CHECK(99, 99, EXT_polygon_offset_clamp)                 \
+  EXT_TO_CHECK(99, 99, EXT_raster_multisample)                   \
+  EXT_TO_CHECK(99, 99, EXT_texture_filter_anisotropic)           \
+  EXT_TO_CHECK(99, 30, EXT_texture_swizzle)                      \
+  EXT_TO_CHECK(99, 99, KHR_blend_equation_advanced_coherent)     \
+  /* OpenGL ES extensions */                                     \
+  EXT_TO_CHECK(99, 32, EXT_color_buffer_float)                   \
+  EXT_TO_CHECK(99, 32, EXT_primitive_bounding_box)               \
+  EXT_TO_CHECK(99, 32, OES_primitive_bounding_box)               \
+  EXT_TO_CHECK(99, 32, OES_texture_storage_multisample_2d_array) \
+  EXT_TO_CHECK(99, 99, EXT_clip_cull_distance)                   \
+  EXT_TO_CHECK(99, 99, EXT_multisample_compatibility)            \
+  EXT_TO_CHECK(99, 99, NV_polygon_mode)                          \
+  EXT_TO_CHECK(99, 99, NV_read_depth)                            \
+  EXT_TO_CHECK(99, 99, NV_read_stencil)                          \
+  EXT_TO_CHECK(99, 99, NV_read_depth_stencil)                    \
+  EXT_TO_CHECK(99, 99, EXT_disjoint_timer_query)
+
+// GL extensions and their roughly equivalent GLES alternatives
+#define EXTENSION_COMPATIBILITY_CHECKS()                                                    \
+  EXT_COMP_CHECK(ARB_base_instance, EXT_base_instance)                                      \
+  EXT_COMP_CHECK(ARB_copy_image, EXT_copy_image)                                            \
+  EXT_COMP_CHECK(ARB_copy_image, OES_copy_image)                                            \
+  EXT_COMP_CHECK(ARB_draw_buffers_blend, EXT_draw_buffers_indexed)                          \
+  EXT_COMP_CHECK(ARB_draw_buffers_blend, OES_draw_buffers_indexed)                          \
+  EXT_COMP_CHECK(ARB_geometry_shader4, EXT_geometry_shader)                                 \
+  EXT_COMP_CHECK(ARB_geometry_shader4, OES_geometry_shader)                                 \
+  EXT_COMP_CHECK(ARB_gpu_shader5, EXT_gpu_shader5)                                          \
+  EXT_COMP_CHECK(ARB_gpu_shader5, OES_gpu_shader5)                                          \
+  EXT_COMP_CHECK(ARB_sample_shading, OES_sample_shading)                                    \
+  EXT_COMP_CHECK(ARB_separate_shader_objects, EXT_separate_shader_objects)                  \
+  EXT_COMP_CHECK(ARB_tessellation_shader, EXT_tessellation_shader)                          \
+  EXT_COMP_CHECK(ARB_tessellation_shader, OES_tessellation_shader)                          \
+  EXT_COMP_CHECK(ARB_texture_cube_map_array, EXT_texture_cube_map_array)                    \
+  EXT_COMP_CHECK(ARB_texture_cube_map_array, OES_texture_cube_map_array)                    \
+  EXT_COMP_CHECK(ARB_texture_storage, EXT_texture_storage)                                  \
+  EXT_COMP_CHECK(ARB_texture_storage_multisample, OES_texture_storage_multisample_2d_array) \
+  EXT_COMP_CHECK(ARB_texture_view, EXT_texture_view)                                        \
+  EXT_COMP_CHECK(ARB_texture_view, OES_texture_view)                                        \
+  EXT_COMP_CHECK(ARB_viewport_array, NV_viewport_array)                                     \
+  EXT_COMP_CHECK(ARB_viewport_array, OES_viewport_array)                                    \
+  EXT_COMP_CHECK(ARB_texture_buffer_object, EXT_texture_buffer)                             \
+  EXT_COMP_CHECK(ARB_texture_buffer_object, OES_texture_buffer)
 
 // extensions we know we want to check for are precached, indexd by this enum
 enum ExtensionCheckEnum
 {
-  ExtensionSupported_ARB_enhanced_layouts = 0,
-  ExtensionSupported_ARB_clip_control,
-  ExtensionSupported_EXT_polygon_offset_clamp,
-  ExtensionSupported_KHR_blend_equation_advanced_coherent,
-  ExtensionSupported_EXT_raster_multisample,
-  ExtensionSupported_ARB_indirect_parameters,
-  ExtensionSupported_EXT_depth_bounds_test,
-  ExtensionSupported_Count,
+#undef EXT_TO_CHECK
+#define EXT_TO_CHECK(ver, glesver, ext) ext,
+  EXTENSION_CHECKS()
+
+      GLExtension_Count,
 };
-extern bool ExtensionSupported[ExtensionSupported_Count];
+extern bool HasExt[GLExtension_Count];
 
 // for some things we need to know how a specific implementation behaves to work around it
 // or adjust things. We centralise that here (similar to extensions)
 enum VendorCheckEnum
 {
   VendorCheck_AMD_vertex_buffer_query,
-  VendorCheck_EXT_compressed_cube_size,
   VendorCheck_NV_avoid_D32S8_copy,
   VendorCheck_EXT_fbo_shared,
   VendorCheck_EXT_vao_shared,
@@ -193,12 +406,25 @@ enum VendorCheckEnum
   VendorCheck_AMD_pipeline_compute_query,
   VendorCheck_NV_ClearNamedFramebufferfiBugs,
   VendorCheck_AMD_copy_compressed_cubemaps,
+  VendorCheck_AMD_vertex_array_elem_buffer_query,
   VendorCheck_Count,
 };
 extern bool VendorCheck[VendorCheck_Count];
 
 // fills out the extension supported array and the version-specific checks above
-void DoVendorChecks(const GLHookSet &gl, GLWindowingData context);
+void DoVendorChecks(const GLHookSet &gl, GLPlatform &platform, GLWindowingData context);
+void CheckExtensions(const GLHookSet &gl);
+
+// verify that we got a replay context that we can work with
+bool CheckReplayContext(PFNGLGETSTRINGPROC getStr, PFNGLGETINTEGERVPROC getInt,
+                        PFNGLGETSTRINGIPROC getStri);
+bool ValidateFunctionPointers(const GLHookSet &real);
+
+namespace glEmulate
+{
+void EmulateUnsupportedFunctions(GLHookSet *hooks);
+void EmulateRequiredExtensions(GLHookSet *hooks);
+};
 
 #include "core/core.h"
 #include "serialise/serialiser.h"
@@ -212,6 +438,7 @@ void CopyProgramAttribBindings(const GLHookSet &gl, GLuint progsrc, GLuint progd
                                ShaderReflection *refl);
 void CopyProgramFragDataBindings(const GLHookSet &gl, GLuint progsrc, GLuint progdst,
                                  ShaderReflection *refl);
+void SerialiseProgramBindings(const GLHookSet &gl, Serialiser *ser, GLuint prog, bool writing);
 
 struct DrawElementsIndirectCommand
 {
@@ -503,6 +730,13 @@ enum GLChunkType
   CAPTURE_SCOPE,
   CONTEXT_CAPTURE_HEADER,
   CONTEXT_CAPTURE_FOOTER,
+
+  INTEROP_INIT,
+  INTEROP_DATA,
+
+  PRIMITIVE_BOUNDING_BOX,
+
+  FRAMEBUFFER_TEX2DMS,
 
   NUM_OPENGL_CHUNKS,
 };

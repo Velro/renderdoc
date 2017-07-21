@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +26,17 @@
 #include "d3d12_command_list.h"
 #include "d3d12_resources.h"
 
+bool WrappedID3D12CommandQueue::Serialise_UpdateTileMappings(
+    ID3D12Resource *pResource, UINT NumResourceRegions,
+    const D3D12_TILED_RESOURCE_COORDINATE *pResourceRegionStartCoordinates,
+    const D3D12_TILE_REGION_SIZE *pResourceRegionSizes, ID3D12Heap *pHeap, UINT NumRanges,
+    const D3D12_TILE_RANGE_FLAGS *pRangeFlags, const UINT *pHeapRangeStartOffsets,
+    const UINT *pRangeTileCounts, D3D12_TILE_MAPPING_FLAGS Flags)
+{
+  D3D12NOTIMP("Tiled Resources");
+  return true;
+}
+
 void STDMETHODCALLTYPE WrappedID3D12CommandQueue::UpdateTileMappings(
     ID3D12Resource *pResource, UINT NumResourceRegions,
     const D3D12_TILED_RESOURCE_COORDINATE *pResourceRegionStartCoordinates,
@@ -33,9 +44,19 @@ void STDMETHODCALLTYPE WrappedID3D12CommandQueue::UpdateTileMappings(
     const D3D12_TILE_RANGE_FLAGS *pRangeFlags, const UINT *pHeapRangeStartOffsets,
     const UINT *pRangeTileCounts, D3D12_TILE_MAPPING_FLAGS Flags)
 {
+  D3D12NOTIMP("Tiled Resources");
   m_pReal->UpdateTileMappings(Unwrap(pResource), NumResourceRegions, pResourceRegionStartCoordinates,
                               pResourceRegionSizes, Unwrap(pHeap), NumRanges, pRangeFlags,
                               pHeapRangeStartOffsets, pRangeTileCounts, Flags);
+}
+
+bool WrappedID3D12CommandQueue::Serialise_CopyTileMappings(
+    ID3D12Resource *pDstResource, const D3D12_TILED_RESOURCE_COORDINATE *pDstRegionStartCoordinate,
+    ID3D12Resource *pSrcResource, const D3D12_TILED_RESOURCE_COORDINATE *pSrcRegionStartCoordinate,
+    const D3D12_TILE_REGION_SIZE *pRegionSize, D3D12_TILE_MAPPING_FLAGS Flags)
+{
+  D3D12NOTIMP("Tiled Resources");
+  return true;
 }
 
 void STDMETHODCALLTYPE WrappedID3D12CommandQueue::CopyTileMappings(
@@ -43,6 +64,7 @@ void STDMETHODCALLTYPE WrappedID3D12CommandQueue::CopyTileMappings(
     ID3D12Resource *pSrcResource, const D3D12_TILED_RESOURCE_COORDINATE *pSrcRegionStartCoordinate,
     const D3D12_TILE_REGION_SIZE *pRegionSize, D3D12_TILE_MAPPING_FLAGS Flags)
 {
+  D3D12NOTIMP("Tiled Resources");
   m_pReal->CopyTileMappings(Unwrap(pDstResource), pDstRegionStartCoordinate, Unwrap(pSrcResource),
                             pSrcRegionStartCoordinate, pRegionSize, Flags);
 }
@@ -50,10 +72,12 @@ void STDMETHODCALLTYPE WrappedID3D12CommandQueue::CopyTileMappings(
 bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLists,
                                                               ID3D12CommandList *const *ppCommandLists)
 {
+  SERIALISE_ELEMENT(ResourceId, queueId, GetResourceID());
   SERIALISE_ELEMENT(UINT, numCmds, NumCommandLists);
 
   vector<ResourceId> cmdIds;
-  ID3D12CommandList **cmds = m_State >= WRITING ? NULL : new ID3D12CommandList *[numCmds];
+  ID3D12GraphicsCommandList **cmds =
+      m_State >= WRITING ? NULL : new ID3D12GraphicsCommandList *[numCmds];
 
   if(m_State >= WRITING)
   {
@@ -73,18 +97,104 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
     for(UINT i = 0; i < numCmds; i++)
     {
       cmds[i] = cmdIds[i] != ResourceId()
-                    ? Unwrap(GetResourceManager()->GetLiveAs<ID3D12CommandList>(cmdIds[i]))
+                    ? GetResourceManager()->GetLiveAs<ID3D12GraphicsCommandList>(cmdIds[i])
                     : NULL;
     }
   }
 
   const string desc = m_pSerialiser->GetDebugStr();
 
-  D3D12NOTIMP("Serialise_DebugMessages");
+  // debug messages
+  {
+    vector<DebugMessage> debugMessages;
+
+    if(m_State == WRITING_CAPFRAME)
+      debugMessages = m_pDevice->GetDebugMessages();
+
+    SERIALISE_ELEMENT(uint32_t, NumMessages, (uint32_t)debugMessages.size());
+
+    for(uint32_t i = 0; i < NumMessages; i++)
+    {
+      ScopedContext msgscope(m_pSerialiser, "DebugMessage", "DebugMessage", 0, false);
+
+      string msgDesc;
+      if(m_State >= WRITING)
+        msgDesc = debugMessages[i].description.elems;
+
+      SERIALISE_ELEMENT(MessageCategory, Category, debugMessages[i].category);
+      SERIALISE_ELEMENT(MessageSeverity, Severity, debugMessages[i].severity);
+      SERIALISE_ELEMENT(uint32_t, ID, debugMessages[i].messageID);
+      SERIALISE_ELEMENT(string, Description, msgDesc);
+
+      if(m_State == READING)
+      {
+        DebugMessage msg;
+        msg.source = MessageSource::API;
+        msg.category = Category;
+        msg.severity = Severity;
+        msg.messageID = ID;
+        msg.description = Description;
+
+        m_Cmd.m_EventMessages.push_back(msg);
+      }
+    }
+  }
+
+  ID3D12CommandQueue *real = NULL;
+
+  if(m_State <= EXECUTING)
+  {
+    real = Unwrap(GetResourceManager()->GetLiveAs<ID3D12CommandQueue>(queueId));
+
+    if(m_PrevQueueId != queueId)
+    {
+      RDCDEBUG("Previous queue execution was on queue %llu, now executing %llu, syncing GPU",
+               m_PrevQueueId, queueId);
+      if(m_PrevQueueId != ResourceId())
+        m_pDevice->GPUSync(GetResourceManager()->GetLiveAs<ID3D12CommandQueue>(m_PrevQueueId));
+
+      m_PrevQueueId = queueId;
+    }
+  }
 
   if(m_State == READING)
   {
-    m_pReal->ExecuteCommandLists(numCmds, cmds);
+    for(uint32_t i = 0; i < numCmds; i++)
+    {
+      if(m_Cmd.m_BakedCmdListInfo[cmdIds[i]].executeEvents.empty() ||
+         m_Cmd.m_BakedCmdListInfo[cmdIds[i]].executeEvents[0].patched)
+      {
+        ID3D12CommandList *list = Unwrap(cmds[i]);
+        real->ExecuteCommandLists(1, &list);
+#if ENABLED(SINGLE_FLUSH_VALIDATE)
+        m_pDevice->GPUSync();
+#endif
+      }
+      else
+      {
+        BakedCmdListInfo &info = m_Cmd.m_BakedCmdListInfo[cmdIds[i]];
+
+        // execute the first half of the cracked list
+        ID3D12CommandList *list = Unwrap(info.crackedLists[0]);
+        real->ExecuteCommandLists(1, &list);
+
+        for(size_t c = 1; c < info.crackedLists.size(); c++)
+        {
+          m_pDevice->GPUSync();
+
+          // readback the patch buffer and perform patching
+          m_ReplayList->PatchExecuteIndirect(info, uint32_t(c - 1));
+
+          // execute next list with this indirect.
+          list = Unwrap(info.crackedLists[c]);
+          real->ExecuteCommandLists(1, &list);
+        }
+
+#if ENABLED(SINGLE_FLUSH_VALIDATE)
+        m_pDevice->GPUSync();
+#endif
+      }
+    }
 
     for(uint32_t i = 0; i < numCmds; i++)
     {
@@ -92,7 +202,7 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
       m_pDevice->ApplyBarriers(m_Cmd.m_BakedCmdListInfo[cmd].barriers);
     }
 
-    m_Cmd.AddEvent(EXECUTE_CMD_LISTS, desc);
+    m_Cmd.AddEvent(desc);
 
     // we're adding multiple events, need to increment ourselves
     m_Cmd.m_RootEventID++;
@@ -105,10 +215,10 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
                                       ToStr::Get(cmdIds[c]).c_str());
 
       // add a fake marker
-      FetchDrawcall draw;
+      DrawcallDescription draw;
       draw.name = name;
-      draw.flags |= eDraw_SetMarker;
-      m_Cmd.AddEvent(SET_MARKER, name);
+      draw.flags = DrawFlags::PassBoundary | DrawFlags::BeginPass;
+      m_Cmd.AddEvent(name);
       m_Cmd.AddDrawcall(draw, true);
       m_Cmd.m_RootEventID++;
 
@@ -116,7 +226,7 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
 
       // insert the baked command list in-line into this list of notes, assigning new event and
       // drawIDs
-      m_Cmd.InsertDrawsAndRefreshIDs(cmdBufInfo.draw->children);
+      m_Cmd.InsertDrawsAndRefreshIDs(cmdIds[c], cmdBufInfo.draw->children);
 
       for(size_t e = 0; e < cmdBufInfo.draw->executedCmds.size(); e++)
       {
@@ -127,14 +237,12 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
           submits[s] += m_Cmd.m_RootEventID;
       }
 
-      D3D12NOTIMP("Debug Messages");
-      /*
       for(size_t i = 0; i < cmdBufInfo.debugMessages.size(); i++)
       {
-        m_DebugMessages.push_back(cmdBufInfo.debugMessages[i]);
-        m_DebugMessages.back().eventID += m_RootEventID;
+        DebugMessage msg = cmdBufInfo.debugMessages[i];
+        msg.eventID += m_Cmd.m_RootEventID;
+        m_pDevice->AddDebugMessage(msg);
       }
-      */
 
       // only primary command lists can be submitted
       m_Cmd.m_Partial[D3D12CommandData::Primary].cmdListExecs[cmdIds[c]].push_back(
@@ -146,7 +254,8 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
       name = StringFormat::Fmt("=> %s[%u]: Close(%s)", basename.c_str(), c,
                                ToStr::Get(cmdIds[c]).c_str());
       draw.name = name;
-      m_Cmd.AddEvent(SET_MARKER, name);
+      draw.flags = DrawFlags::PassBoundary | DrawFlags::EndPass;
+      m_Cmd.AddEvent(name);
       m_Cmd.AddDrawcall(draw, true);
       m_Cmd.m_RootEventID++;
     }
@@ -179,13 +288,13 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
     }
     else if(m_Cmd.m_LastEventID <= startEID)
     {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Queue Submit no replay %u == %u", m_Cmd.m_LastEventID, startEID);
 #endif
     }
     else if(m_Cmd.m_DrawcallCallback && m_Cmd.m_DrawcallCallback->RecordAllCmds())
     {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Queue Submit re-recording from %u", m_Cmd.m_RootEventID);
 #endif
 
@@ -195,7 +304,7 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
       {
         ID3D12CommandList *cmd = m_Cmd.RerecordCmdList(cmdIds[c]);
         ResourceId rerecord = GetResID(cmd);
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
         RDCDEBUG("Queue Submit fully re-recorded replay of %llu, using %llu", cmdIds[c], rerecord);
 #endif
         rerecordedCmds.push_back(Unwrap(cmd));
@@ -203,11 +312,19 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
         m_pDevice->ApplyBarriers(m_Cmd.m_BakedCmdListInfo[rerecord].barriers);
       }
 
-      m_pReal->ExecuteCommandLists((UINT)rerecordedCmds.size(), &rerecordedCmds[0]);
+#if ENABLED(SINGLE_FLUSH_VALIDATE)
+      for(size_t i = 0; i < rerecordedCmds.size(); i++)
+      {
+        real->ExecuteCommandLists(1, &rerecordedCmds[i]);
+        m_pDevice->GPUSync();
+      }
+#else
+      real->ExecuteCommandLists((UINT)rerecordedCmds.size(), &rerecordedCmds[0]);
+#endif
     }
     else if(m_Cmd.m_LastEventID > startEID && m_Cmd.m_LastEventID < m_Cmd.m_RootEventID)
     {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Queue Submit partial replay %u < %u", m_Cmd.m_LastEventID, m_Cmd.m_RootEventID);
 #endif
 
@@ -229,7 +346,7 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
           ID3D12GraphicsCommandList *list =
               m_Cmd.RerecordCmdList(cmdIds[c], D3D12CommandData::Primary);
           ResourceId partial = GetResID(list);
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
           RDCDEBUG("Queue Submit partial replay of %llu at %u, using %llu", cmdIds[c], eid, partial);
 #endif
           trimmedCmdIds.push_back(partial);
@@ -237,7 +354,7 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
         }
         else if(m_Cmd.m_LastEventID >= end)
         {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
           RDCDEBUG("Queue Submit full replay %llu", cmdIds[c]);
 #endif
           trimmedCmdIds.push_back(cmdIds[c]);
@@ -245,7 +362,7 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
         }
         else
         {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
           RDCDEBUG("Queue not submitting %llu", cmdIds[c]);
 #endif
         }
@@ -257,7 +374,15 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
 
       RDCASSERT(trimmedCmds.size() > 0);
 
-      m_pReal->ExecuteCommandLists((UINT)trimmedCmds.size(), &trimmedCmds[0]);
+#if ENABLED(SINGLE_FLUSH_VALIDATE)
+      for(size_t i = 0; i < trimmedCmds.size(); i++)
+      {
+        real->ExecuteCommandLists(1, &trimmedCmds[i]);
+        m_pDevice->GPUSync();
+      }
+#else
+      real->ExecuteCommandLists((UINT)trimmedCmds.size(), &trimmedCmds[0]);
+#endif
 
       for(uint32_t i = 0; i < trimmedCmdIds.size(); i++)
       {
@@ -267,11 +392,25 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
     }
     else
     {
-#ifdef VERBOSE_PARTIAL_REPLAY
+#if ENABLED(VERBOSE_PARTIAL_REPLAY)
       RDCDEBUG("Queue Submit full replay %u >= %u", m_Cmd.m_LastEventID, m_Cmd.m_RootEventID);
 #endif
 
-      m_pReal->ExecuteCommandLists(numCmds, cmds);
+      ID3D12CommandList **unwrapped = new ID3D12CommandList *[numCmds];
+      for(uint32_t i = 0; i < numCmds; i++)
+        unwrapped[i] = Unwrap(cmds[i]);
+
+#if ENABLED(SINGLE_FLUSH_VALIDATE)
+      for(UINT i = 0; i < numCmds; i++)
+      {
+        real->ExecuteCommandLists(1, &unwrapped[i]);
+        m_pDevice->GPUSync();
+      }
+#else
+      real->ExecuteCommandLists(numCmds, unwrapped);
+#endif
+
+      SAFE_DELETE_ARRAY(unwrapped);
 
       for(uint32_t i = 0; i < numCmds; i++)
       {
@@ -289,22 +428,26 @@ bool WrappedID3D12CommandQueue::Serialise_ExecuteCommandLists(UINT NumCommandLis
 void STDMETHODCALLTYPE WrappedID3D12CommandQueue::ExecuteCommandLists(
     UINT NumCommandLists, ID3D12CommandList *const *ppCommandLists)
 {
-  ID3D12CommandList **unwrapped = new ID3D12CommandList *[NumCommandLists];
+  ID3D12CommandList **unwrapped = m_pDevice->GetTempArray<ID3D12CommandList *>(NumCommandLists);
   for(UINT i = 0; i < NumCommandLists; i++)
     unwrapped[i] = Unwrap(ppCommandLists[i]);
 
   m_pReal->ExecuteCommandLists(NumCommandLists, unwrapped);
 
-  SAFE_DELETE_ARRAY(unwrapped);
-
   if(m_State >= WRITING)
   {
-    bool capframe = false;
+    SCOPED_LOCK(m_Lock);
+    SCOPED_LOCK(m_pDevice->GetCapTransitionLock());
+
+    bool capframe = (m_State == WRITING_CAPFRAME);
     set<ResourceId> refdIDs;
 
     for(UINT i = 0; i < NumCommandLists; i++)
     {
       D3D12ResourceRecord *record = GetRecord(ppCommandLists[i]);
+
+      if(record->ContainsExecuteIndirect)
+        m_QueueRecord->ContainsExecuteIndirect = true;
 
       m_pDevice->ApplyBarriers(record->bakedCommands->cmdInfo->barriers);
 
@@ -316,71 +459,75 @@ void STDMETHODCALLTYPE WrappedID3D12CommandQueue::ExecuteCommandLists(
       // the submit chunk to the frame record don't have to be protected.
       // Only the decision of whether we're inframe or not, and marking
       // dirty.
+      if(capframe)
       {
-        SCOPED_LOCK(m_pDevice->GetCapTransitionLock());
-        if(m_State == WRITING_CAPFRAME)
-        {
-          for(auto it = record->bakedCommands->cmdInfo->dirtied.begin();
-              it != record->bakedCommands->cmdInfo->dirtied.end(); ++it)
-            GetResourceManager()->MarkPendingDirty(*it);
-
-          capframe = true;
-        }
-        else
-        {
-          for(auto it = record->bakedCommands->cmdInfo->dirtied.begin();
-              it != record->bakedCommands->cmdInfo->dirtied.end(); ++it)
-            GetResourceManager()->MarkDirtyResource(*it);
-        }
+        for(auto it = record->bakedCommands->cmdInfo->dirtied.begin();
+            it != record->bakedCommands->cmdInfo->dirtied.end(); ++it)
+          GetResourceManager()->MarkPendingDirty(*it);
+      }
+      else
+      {
+        for(auto it = record->bakedCommands->cmdInfo->dirtied.begin();
+            it != record->bakedCommands->cmdInfo->dirtied.end(); ++it)
+          GetResourceManager()->MarkDirtyResource(*it);
       }
 
       if(capframe)
       {
+        // any descriptor copies or writes could reference new resources not in the
+        // bound descs list yet. So we take all of those referenced descriptors and
+        // include them to see if we need to flush
+        std::vector<D3D12Descriptor> dynDescRefs;
+        m_pDevice->GetDynamicDescriptorReferences(dynDescRefs);
+
+        for(size_t d = 0; d < dynDescRefs.size(); d++)
+        {
+          ResourceId id, id2;
+          FrameRefType ref = eFrameRef_Read;
+
+          dynDescRefs[d].GetRefIDs(id, id2, ref);
+
+          if(id != ResourceId())
+          {
+            refdIDs.insert(id);
+            GetResourceManager()->MarkResourceFrameReferenced(id, ref);
+          }
+
+          if(id2 != ResourceId())
+          {
+            refdIDs.insert(id2);
+            GetResourceManager()->MarkResourceFrameReferenced(id2, ref);
+          }
+        }
+
         // for each bound descriptor table, mark it referenced as well as all resources currently
         // bound to it
         for(auto it = record->bakedCommands->cmdInfo->boundDescs.begin();
             it != record->bakedCommands->cmdInfo->boundDescs.end(); ++it)
         {
-          D3D12Descriptor &desc = **it;
+          D3D12Descriptor *desc = *it;
 
-          switch(desc.GetType())
+          ResourceId id, id2;
+          FrameRefType ref = eFrameRef_Read;
+
+          desc->GetRefIDs(id, id2, ref);
+
+          if(id != ResourceId())
           {
-            case D3D12Descriptor::TypeUndefined:
-            case D3D12Descriptor::TypeSampler:
-              // nothing to do - no resource here
-              break;
-            case D3D12Descriptor::TypeCBV:
-              GetResourceManager()->MarkResourceFrameReferenced(
-                  WrappedID3D12Resource::GetResIDFromAddr(desc.nonsamp.cbv.BufferLocation),
-                  eFrameRef_Read);
-              break;
-            case D3D12Descriptor::TypeSRV:
-              GetResourceManager()->MarkResourceFrameReferenced(GetResID(desc.nonsamp.resource),
-                                                                eFrameRef_Read);
-              break;
-            case D3D12Descriptor::TypeUAV:
-              GetResourceManager()->MarkResourceFrameReferenced(GetResID(desc.nonsamp.resource),
-                                                                eFrameRef_Write);
-              GetResourceManager()->MarkResourceFrameReferenced(
-                  GetResID(desc.nonsamp.uav.counterResource), eFrameRef_Write);
-              break;
-            case D3D12Descriptor::TypeRTV:
-              GetResourceManager()->MarkResourceFrameReferenced(GetResID(desc.nonsamp.resource),
-                                                                eFrameRef_Write);
-              break;
-            case D3D12Descriptor::TypeDSV:
-              GetResourceManager()->MarkResourceFrameReferenced(GetResID(desc.nonsamp.resource),
-                                                                eFrameRef_Write);
-              break;
+            refdIDs.insert(id);
+            GetResourceManager()->MarkResourceFrameReferenced(id, ref);
+          }
+
+          if(id2 != ResourceId())
+          {
+            refdIDs.insert(id2);
+            GetResourceManager()->MarkResourceFrameReferenced(id2, ref);
           }
         }
 
         // pull in frame refs from this baked command list
         record->bakedCommands->AddResourceReferences(GetResourceManager());
         record->bakedCommands->AddReferencedIDs(refdIDs);
-
-        // ref the parent command list by itself, this will pull in the cmd buffer pool
-        GetResourceManager()->MarkResourceFrameReferenced(record->GetResourceID(), eFrameRef_Read);
 
         // reference all executed bundles as well
         for(size_t b = 0; b < record->bakedCommands->cmdInfo->bundles.size(); b++)
@@ -408,7 +555,60 @@ void STDMETHODCALLTYPE WrappedID3D12CommandQueue::ExecuteCommandLists(
 
     if(capframe)
     {
-      // flush coherent maps
+      vector<MapState> maps = m_pDevice->GetMaps();
+
+      for(auto it = maps.begin(); it != maps.end(); ++it)
+      {
+        WrappedID3D12Resource *res = it->res;
+        UINT subres = it->subres;
+        size_t size = (size_t)it->totalSize;
+
+        // only need to flush memory that could affect this submitted batch of work
+        if(refdIDs.find(res->GetResourceID()) == refdIDs.end())
+        {
+          RDCDEBUG("Map of memory %llu not referenced in this queue - not flushing",
+                   res->GetResourceID());
+          continue;
+        }
+
+        size_t diffStart = 0, diffEnd = 0;
+        bool found = true;
+
+        byte *ref = res->GetShadow(subres);
+        byte *data = res->GetMap(subres);
+
+        if(ref)
+          found = FindDiffRange(data, ref, size, diffStart, diffEnd);
+        else
+          diffEnd = size;
+
+        if(found)
+        {
+          RDCLOG("Persistent map flush forced for %llu (%llu -> %llu)", res->GetResourceID(),
+                 (uint64_t)diffStart, (uint64_t)diffEnd);
+
+          D3D12_RANGE range = {diffStart, diffEnd};
+
+          m_pDevice->MapDataWrite(res, subres, data, range);
+
+          if(ref == NULL)
+          {
+            res->AllocShadow(subres, size);
+
+            ref = res->GetShadow(subres);
+          }
+
+          // update comparison shadow for next time
+          memcpy(ref, res->GetMap(subres), size);
+
+          GetResourceManager()->MarkPendingDirty(res->GetResourceID());
+        }
+        else
+        {
+          RDCDEBUG("Persistent map flush not needed for %llu", res->GetResourceID());
+        }
+      }
+
       for(UINT i = 0; i < NumCommandLists; i++)
       {
         SCOPED_SERIALISE_CONTEXT(EXECUTE_CMD_LISTS);
@@ -456,6 +656,8 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::Signal(ID3D12Fence *pFence,
 {
   if(m_State == WRITING_CAPFRAME)
   {
+    SCOPED_LOCK(m_Lock);
+
     SCOPED_SERIALISE_CONTEXT(SIGNAL);
     Serialise_Signal(pFence, Value);
 
@@ -466,8 +668,34 @@ HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::Signal(ID3D12Fence *pFence,
   return m_pReal->Signal(Unwrap(pFence), Value);
 }
 
+bool WrappedID3D12CommandQueue::Serialise_Wait(ID3D12Fence *pFence, UINT64 Value)
+{
+  SERIALISE_ELEMENT(ResourceId, Fence, GetResID(pFence));
+  SERIALISE_ELEMENT(UINT64, val, Value);
+
+  if(m_State <= EXECUTING && GetResourceManager()->HasLiveResource(Fence))
+  {
+    // pFence = GetResourceManager()->GetLiveAs<ID3D12Fence>(Fence);
+
+    m_pDevice->GPUSync();
+  }
+
+  return true;
+}
+
 HRESULT STDMETHODCALLTYPE WrappedID3D12CommandQueue::Wait(ID3D12Fence *pFence, UINT64 Value)
 {
+  if(m_State == WRITING_CAPFRAME)
+  {
+    SCOPED_LOCK(m_Lock);
+
+    SCOPED_SERIALISE_CONTEXT(WAIT);
+    Serialise_Wait(pFence, Value);
+
+    m_QueueRecord->AddChunk(scope.Get());
+    GetResourceManager()->MarkResourceFrameReferenced(GetResID(pFence), eFrameRef_Read);
+  }
+
   return m_pReal->Wait(Unwrap(pFence), Value);
 }
 

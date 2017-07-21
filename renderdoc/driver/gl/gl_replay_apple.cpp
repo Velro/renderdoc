@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,45 +26,8 @@
 #include "gl_driver.h"
 #include "gl_resources.h"
 
-void GLReplay::MakeCurrentReplayContext(GLWindowingData *ctx)
-{
-  RDCUNIMPLEMENTED("GLReplay::MakeCurrentReplayContext");
-}
-
-void GLReplay::SwapBuffers(GLWindowingData *ctx)
-{
-  RDCUNIMPLEMENTED("GLReplay::SwapBuffers");
-}
-
-void GLReplay::CloseReplayContext()
-{
-  RDCUNIMPLEMENTED("GLReplay::CloseReplayContext");
-}
-
-uint64_t GLReplay::MakeOutputWindow(void *wn, bool depth)
-{
-  RDCUNIMPLEMENTED("GLReplay::MakeOutputWindow");
-  return 0;
-}
-
-void GLReplay::DestroyOutputWindow(uint64_t id)
-{
-  RDCUNIMPLEMENTED("GLReplay::DestroyOutputWindow");
-}
-
-void GLReplay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
-{
-  RDCUNIMPLEMENTED("GLReplay::GetOutputWindowDimensions");
-}
-
-bool GLReplay::IsOutputWindowVisible(uint64_t id)
-{
-  RDCUNIMPLEMENTED("GLReplay::IsOutputWindowVisible");
-  return false;
-}
-
-ReplayCreateStatus GL_CreateReplayDevice(const char *logfile, IReplayDriver **driver)
+ReplayStatus GL_CreateReplayDevice(const char *logfile, IReplayDriver **driver)
 {
   RDCUNIMPLEMENTED("GL_CreateReplayDevice");
-  return eReplayCreate_APIHardwareUnsupported;
+  return ReplayStatus::APIHardwareUnsupported;
 }

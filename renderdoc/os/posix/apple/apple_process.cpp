@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -143,7 +143,7 @@ void CacheDebuggerPresent()
 bool OSUtility::DebuggerPresent()
 {
 // apple requires that this only be called in debug builds
-#if defined(RELEASE)
+#if ENABLED(RDOC_RELEASE)
   return false;
 #else
   int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};

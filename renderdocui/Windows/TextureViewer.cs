@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -95,38 +95,27 @@ namespace renderdocui.Windows
                 return !(s1 == s2);
             }
 
-            public static void GetDrawContext(Core core, out bool copy, out bool compute)
+            public static void GetDrawContext(Core core, out bool copy, out bool clear, out bool compute)
             {
                 var curDraw = core.CurDrawcall;
-                copy = curDraw != null && (curDraw.flags & (DrawcallFlags.Copy | DrawcallFlags.Resolve)) != 0;
+                copy = curDraw != null && (curDraw.flags & (DrawcallFlags.Copy | DrawcallFlags.Resolve | DrawcallFlags.Present)) != 0;
+                clear = curDraw != null && (curDraw.flags & DrawcallFlags.Clear) != 0;
                 compute = curDraw != null && (curDraw.flags & DrawcallFlags.Dispatch) != 0 &&
                           core.CurPipelineState.GetShader(ShaderStageType.Compute) != ResourceId.Null;
             }
 
             public int GetHighestMip(Core core)
             {
-                var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
-
                 return GetBoundResource(core, arrayEl).HighestMip;
             }
 
             public int GetFirstArraySlice(Core core)
             {
-                var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
-
                 return GetBoundResource(core, arrayEl).FirstSlice;
             }
 
             public FormatComponentType GetTypeHint(Core core)
             {
-                var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
-
                 return GetBoundResource(core, arrayEl).typeHint;
             }
 
@@ -185,13 +174,17 @@ namespace renderdocui.Windows
             public static BoundResource[] GetOutputTargets(Core core)
             {
                 var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
+                bool copy, clear, compute;
+                GetDrawContext(core, out copy, out clear, out compute);
 
-                if (copy)
+                if (copy || clear)
+                {
                     return new BoundResource[] { new BoundResource(curDraw.copyDestination) };
-                else if(compute)
+                }
+                else if (compute)
+                {
                     return new BoundResource[0];
+                }
                 else
                 {
                     var ret = core.CurPipelineState.GetOutputTargets();
@@ -213,10 +206,10 @@ namespace renderdocui.Windows
             public static BoundResource GetDepthTarget(Core core)
             {
                 var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
+                bool copy, clear, compute;
+                GetDrawContext(core, out copy, out clear, out compute);
 
-                if (copy || compute)
+                if (copy || clear || compute)
                     return new BoundResource(ResourceId.Null);
                 else
                     return core.CurPipelineState.GetDepthTarget();
@@ -230,10 +223,10 @@ namespace renderdocui.Windows
             public static Dictionary<BindpointMap, BoundResource[]> GetReadWriteResources(Core core, ShaderStageType stage)
             {
                 var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
+                bool copy, clear, compute;
+                GetDrawContext(core, out copy, out clear, out compute);
 
-                if (copy)
+                if (copy || clear)
                 {
                     return new Dictionary<BindpointMap, BoundResource[]>();
                 }
@@ -259,10 +252,15 @@ namespace renderdocui.Windows
             public static Dictionary<BindpointMap, BoundResource[]> GetReadOnlyResources(Core core, ShaderStageType stage)
             {
                 var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
+                bool copy, clear, compute;
+                GetDrawContext(core, out copy, out clear, out compute);
 
-                if (copy)
+                if (clear)
+                {
+                    // no inputs for a clear
+                    return new Dictionary<BindpointMap, BoundResource[]>();
+                }
+                else if (copy)
                 {
                     var ret = new Dictionary<BindpointMap, BoundResource[]>();
 
@@ -294,10 +292,10 @@ namespace renderdocui.Windows
             public static ShaderReflection GetReflection(Core core, ShaderStageType stage)
             {
                 var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
+                bool copy, clear, compute;
+                GetDrawContext(core, out copy, out clear, out compute);
 
-                if (copy)
+                if (copy || clear)
                     return null;
                 else if (compute)
                     return core.CurPipelineState.GetShaderReflection(ShaderStageType.Compute);
@@ -313,18 +311,18 @@ namespace renderdocui.Windows
             public static ShaderBindpointMapping GetMapping(Core core, ShaderStageType stage)
             {
                 var curDraw = core.CurDrawcall;
-                bool copy, compute;
-                GetDrawContext(core, out copy, out compute);
+                bool copy, clear, compute;
+                GetDrawContext(core, out copy, out clear, out compute);
 
-                if (copy)
+                if (copy || clear)
                 {
                     ShaderBindpointMapping mapping = new ShaderBindpointMapping();
                     mapping.ConstantBlocks = new BindpointMap[0];
                     mapping.ReadWriteResources = new BindpointMap[0];
                     mapping.InputAttributes = new int[0];
 
-                    // for PS only add a single mapping to get the copy source
-                    if (stage == ShaderStageType.Pixel)
+                    // for copy, in PS only, add a single mapping to get the copy source
+                    if (copy && stage == ShaderStageType.Pixel)
                         mapping.ReadOnlyResources = new BindpointMap[] { new BindpointMap(0, 0) };
                     else
                         mapping.ReadOnlyResources = new BindpointMap[0];
@@ -906,7 +904,7 @@ namespace renderdocui.Windows
 
             string src = "";
 
-            if (m_Core.APIProps.pipelineType == GraphicsAPI.D3D11)
+            if (m_Core.APIProps.pipelineType.IsD3D())
             {
                 src = String.Format(
                     "float4 main(float4 pos : SV_Position, float4 uv : TEXCOORD0) : SV_Target0{0}" +
@@ -1090,9 +1088,6 @@ namespace renderdocui.Windows
 
         public void OnLogfileLoaded()
         {
-            var outConfig = new OutputConfig();
-            outConfig.m_Type = OutputType.TexDisplay;
-
             saveTex.Enabled = gotoLocationButton.Enabled = viewTexBuffer.Enabled = true;
 
             m_Following = Following.Default;
@@ -1111,7 +1106,6 @@ namespace renderdocui.Windows
             {
                 m_Output = r.CreateOutput(renderHandle, OutputType.TexDisplay);
                 m_Output.SetPixelContext(contextHandle);
-                m_Output.SetOutputConfig(outConfig);
 
                 this.BeginInvoke(new Action(UI_CreateThumbnails));
             });
@@ -1138,6 +1132,8 @@ namespace renderdocui.Windows
 
         void CustomShaderModified(object sender, FileSystemEventArgs e)
         {
+            if (!Visible || IsDisposed) return;
+
             Thread.Sleep(5);
             BeginInvoke((MethodInvoker)delegate
             {
@@ -1340,7 +1336,7 @@ namespace renderdocui.Windows
 
                     foreach (var bind in resourceDetails)
                     {
-                        if (bind.bindPoint == idx && bind.IsSRV)
+                        if (bind.bindPoint == idx && bind.IsSRV && !bind.IsSampler)
                         {
                             bindName = bind.name;
                             otherBind = true;
@@ -1349,7 +1345,7 @@ namespace renderdocui.Windows
 
                         if (bind.bindPoint == idx)
                         {
-                            if(bind.IsSampler && !bind.IsSRV)
+                            if(bind.IsSampler)
                                 samplerBind = true;
                             else
                                 otherBind = true;
@@ -1420,7 +1416,7 @@ namespace renderdocui.Windows
             int roIndex = 0;
 
             var curDraw = m_Core.GetDrawcall(eventID);
-            bool copy = curDraw != null && (curDraw.flags & (DrawcallFlags.Copy|DrawcallFlags.Resolve)) != 0;
+            bool copy = curDraw != null && (curDraw.flags & (DrawcallFlags.Copy|DrawcallFlags.Resolve|DrawcallFlags.Present)) != 0;
             bool compute = curDraw != null && (curDraw.flags & (DrawcallFlags.Dispatch)) != 0;
 
             for(int rt=0; rt < RTs.Length; rt++)
@@ -1723,7 +1719,7 @@ namespace renderdocui.Windows
 
             sliceFace.Items.Clear();
 
-            if (tex.numSubresources == tex.mips && tex.depth <= 1)
+            if (tex.arraysize == 1 && tex.depth <= 1)
             {
                 sliceFace.Enabled = false;
             }
@@ -1735,7 +1731,7 @@ namespace renderdocui.Windows
 
                 String[] cubeFaces = { "X+", "X-", "Y+", "Y-", "Z+", "Z-" };
 
-                UInt32 numSlices = (Math.Max(1, tex.depth) * tex.numSubresources) / tex.mips;
+                UInt32 numSlices = tex.arraysize;
 
                 // for 3D textures, display the number of slices at this mip
                 if(tex.depth > 1)
@@ -2078,6 +2074,12 @@ namespace renderdocui.Windows
             bool dsv = ((tex.creationFlags & TextureCreationFlags.DSV) != 0) || (tex.format.compType == FormatComponentType.Depth);
             bool uintTex = (tex.format.compType == FormatComponentType.UInt);
             bool sintTex = (tex.format.compType == FormatComponentType.SInt);
+
+            if (tex.format.compType == FormatComponentType.None && m_TexDisplay.typeHint == FormatComponentType.UInt)
+                uintTex = true;
+
+            if (tex.format.compType == FormatComponentType.None && m_TexDisplay.typeHint == FormatComponentType.SInt)
+                sintTex = true;
 
             if (m_TexDisplay.overlay == TextureDisplayOverlay.QuadOverdrawPass ||
                 m_TexDisplay.overlay == TextureDisplayOverlay.QuadOverdrawDraw)
@@ -2446,7 +2448,7 @@ namespace renderdocui.Windows
                 return;
             }
 
-            m_Core.Renderer.InvokeForPaint((ReplayRenderer r) => { if (m_Output != null) m_Output.Display(); });
+            m_Core.Renderer.InvokeForPaint("contextpaint", (ReplayRenderer r) => { if (m_Output != null) m_Output.Display(); });
         }
 
         private void render_Paint(object sender, PaintEventArgs e)
@@ -2464,7 +2466,7 @@ namespace renderdocui.Windows
             foreach (var prev in roPanel.Thumbnails)
                 if (prev.Unbound) prev.Clear();
 
-            m_Core.Renderer.InvokeForPaint((ReplayRenderer r) => { if (m_Output != null) m_Output.Display(); });
+            m_Core.Renderer.InvokeForPaint("texpaint", (ReplayRenderer r) => { if (m_Output != null) m_Output.Display(); });
         }
 
         #endregion
@@ -2904,7 +2906,7 @@ namespace renderdocui.Windows
                     m_PickedPoint.X = Helpers.Clamp(m_PickedPoint.X, 0, (int)tex.width - 1);
                     m_PickedPoint.Y = Helpers.Clamp(m_PickedPoint.Y, 0, (int)tex.height - 1);
 
-                    m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
+                    m_Core.Renderer.BeginInvoke("PickPixelClick", (ReplayRenderer r) =>
                     {
                         if (m_Output != null)
                             RT_PickPixelsAndUpdate(m_PickedPoint.X, m_PickedPoint.Y, true);
@@ -2920,7 +2922,7 @@ namespace renderdocui.Windows
 
                 if (tex != null)
                 {
-                    m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
+                    m_Core.Renderer.BeginInvoke("PickPixelHover", (ReplayRenderer r) =>
                     {
                         if (m_Output != null)
                         {
@@ -2961,6 +2963,9 @@ namespace renderdocui.Windows
         private void pixelContext_MouseClick(object sender, MouseEventArgs e)
         {
             pixelContext.Focus();
+
+            if (!m_Core.LogLoaded)
+                return;
 
             if (e.Button == MouseButtons.Right)
             {
@@ -3280,7 +3285,7 @@ namespace renderdocui.Windows
 
             rangePaintThread = Helpers.NewThread(new ThreadStart(() =>
             {
-                m_Core.Renderer.InvokeForPaint((ReplayRenderer r) => { RT_UpdateAndDisplay(r); if (m_Output != null) m_Output.Display(); });
+                m_Core.Renderer.InvokeForPaint("", (ReplayRenderer r) => { RT_UpdateAndDisplay(r); if (m_Output != null) m_Output.Display(); });
                 Thread.Sleep(8);
             }));
             rangePaintThread.Start();
@@ -3336,9 +3341,8 @@ namespace renderdocui.Windows
             m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
             {
                 PixelValue min, max;
-                bool success = m_Output.GetMinMax(out min, out max);
+                m_Output.GetMinMax(out min, out max);
 
-                if (success)
                 {
                     float minval = float.MaxValue;
                     float maxval = -float.MaxValue;
@@ -3432,17 +3436,14 @@ namespace renderdocui.Windows
             if (m_TexDisplay.CustomShader != ResourceId.Null)
                 fmt.compCount = 4;
 
-            bool success = true;
-
             uint[] histogram;
-            success = m_Output.GetHistogram(rangeHistogram.RangeMin, rangeHistogram.RangeMax,
+            m_Output.GetHistogram(rangeHistogram.RangeMin, rangeHistogram.RangeMax,
                                      m_TexDisplay.Red,
                                      m_TexDisplay.Green && fmt.compCount > 1,
                                      m_TexDisplay.Blue && fmt.compCount > 2,
                                      m_TexDisplay.Alpha && fmt.compCount > 3,
                                      out histogram);
 
-            if (success)
             {
                 this.BeginInvoke(new Action(() =>
                 {
@@ -3646,6 +3647,9 @@ namespace renderdocui.Windows
 
         private void saveTex_Click(object sender, EventArgs e)
         {
+            if(CurrentTexture == null)
+                return;
+
             if (m_SaveDialog == null)
                 m_SaveDialog = new TextureSaveDialog(m_Core);
 
@@ -3670,7 +3674,7 @@ namespace renderdocui.Windows
             m_SaveDialog.saveData.comp.blackPoint = m_TexDisplay.rangemin;
             m_SaveDialog.saveData.comp.whitePoint = m_TexDisplay.rangemax;
             m_SaveDialog.saveData.alphaCol = m_TexDisplay.lightBackgroundColour;
-            m_SaveDialog.saveData.alpha = m_TexDisplay.Alpha ? AlphaMapping.BlendToCheckerboard : AlphaMapping.Discard;
+            m_SaveDialog.saveData.alpha = m_TexDisplay.Alpha ? AlphaMapping.Preserve : AlphaMapping.Discard;
             if (m_TexDisplay.Alpha && !checkerBack.Checked) m_SaveDialog.saveData.alpha = AlphaMapping.BlendToColour;
             m_SaveDialog.tex = CurrentTexture;
 
@@ -3694,7 +3698,7 @@ namespace renderdocui.Windows
                 });
 
                 if(!ret)
-                    MessageBox.Show(string.Format("Error saving texture {0}.\n\nCheck diagnostic log in Help menu for more details.", saveTextureDialog.FileName),
+                    MessageBox.Show(string.Format("Error saving texture {0}.\n\nCheck diagnostic log in Help menu for more details.", m_SaveDialog.Filename),
                                        "Error saving texture", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,7 +22,10 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-layout(triangles, invocations = 1) in;
+//#extension_gles GL_EXT_geometry_shader : enable
+//#extension_gles GL_OES_geometry_shader : enable
+
+layout(triangles) in;
 layout(triangle_strip, max_vertices = 3) out;
 
 layout (location = 0) in vec4 IN_secondary[3];
@@ -30,6 +33,7 @@ layout (location = 1) in vec4 IN_norm[3];
 
 layout (location = 0) out float OUT_pixarea;
 
+#ifndef OPENGL_ES
 in gl_PerVertex
 {
   vec4 gl_Position;
@@ -41,6 +45,7 @@ out gl_PerVertex
 	vec4 gl_Position;
 	float gl_PointSize;
 };
+#endif
 
 layout(binding = 2) uniform ViewportSizeUBO
 {

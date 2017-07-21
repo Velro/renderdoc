@@ -14,6 +14,33 @@ namespace renderdocui.Windows.Dialogs
 {
     public partial class TextureSaveDialog : Form
     {
+        struct AlphaMappingString
+        {
+            public AlphaMappingString(AlphaMapping v)
+            {
+                val = v;
+            }
+
+            public AlphaMapping val;
+
+            public override string ToString()
+            {
+                switch (val)
+                {
+                    case AlphaMapping.Discard:
+                        return "Discard";
+                    case AlphaMapping.BlendToColour:
+                        return "Blend to Colour";
+                    case AlphaMapping.BlendToCheckerboard:
+                        return "Blend To Checkerboard";
+                    case AlphaMapping.Preserve:
+                        return "Preserve";
+                }
+
+                return "";
+            }
+        }
+
         public TextureSaveDialog(Core core)
         {
             InitializeComponent();
@@ -52,7 +79,6 @@ namespace renderdocui.Windows.Dialogs
                 tex.cubemap = true;
                 tex.msSamp = 2;
                 tex.mips = 5;
-                tex.numSubresources = tex.arraysize * tex.mips;
             }
         }
 
@@ -87,8 +113,6 @@ namespace renderdocui.Windows.Dialogs
         {
             jpegCompression.Value = saveData.jpegQuality;
 
-            alphaMap.SelectedIndex = (int)saveData.alpha;
-
             blackPoint.Text = Formatter.Format(saveData.comp.blackPoint);
             whitePoint.Text = Formatter.Format(saveData.comp.whitePoint);
 
@@ -104,7 +128,15 @@ namespace renderdocui.Windows.Dialogs
 
             sampleSelect.SelectedIndex = Math.Min((int)tex.msSamp, (saveData.sample.sampleIndex == ~0U ? 0 : (int)saveData.sample.sampleIndex));
 
-            if (saveData.sample.sampleIndex == ~0U)
+            resolveSamples.Enabled = true;
+
+            if (tex.format.compType == FormatComponentType.UInt ||
+                tex.format.compType == FormatComponentType.SInt ||
+                tex.format.compType == FormatComponentType.Depth ||
+                (tex.creationFlags & TextureCreationFlags.DSV) != 0)
+                resolveSamples.Enabled = false;
+
+            if (saveData.sample.sampleIndex == ~0U && resolveSamples.Enabled)
             {
                 resolveSamples.Checked = true;
             }
@@ -115,7 +147,7 @@ namespace renderdocui.Windows.Dialogs
 
             String[] cubeFaces = { "X+", "X-", "Y+", "Y-", "Z+", "Z-" };
 
-            UInt32 numSlices = (Math.Max(1, tex.depth) * tex.numSubresources) / tex.mips;
+            UInt32 numSlices = Math.Max(tex.arraysize, tex.depth);
 
             sliceSelect.Items.Clear();
 
@@ -152,7 +184,16 @@ namespace renderdocui.Windows.Dialogs
                     mapSlicesToGrid.Checked = true;
             }
 
-            fileFormat.SelectedIndex = (int)saveData.destType;
+            FileType selectedType = saveData.destType;
+
+            fileFormat.SelectedIndex = 0;
+            fileFormat.SelectedIndex = 1;
+            fileFormat.SelectedIndex = (int)selectedType;
+
+            if(saveData.alpha == AlphaMapping.Discard)
+                alphaMap.SelectedIndex = 0;
+            else
+                alphaMap.SelectedIndex = alphaMap.Items.Count - 1;
         }
 
         private void fileFormat_SelectedIndexChanged(object sender, EventArgs e)
@@ -167,7 +208,51 @@ namespace renderdocui.Windows.Dialogs
 
             bool noAlphaFormat = (saveData.destType == FileType.BMP || saveData.destType == FileType.JPG);
 
-            alphaMap.Enabled = (tex.format.compCount == 4 && noAlphaFormat);
+            // any filetype, PNG supporting or not, can choose to preserve or discard the alpha
+            alphaMap.Enabled = tex.format.compCount == 4;
+
+            if (alphaMap.Enabled)
+            {
+                if (noAlphaFormat && alphaMap.Items.Count != 3)
+                {
+                    int idx = (int)alphaMap.SelectedIndex;
+
+                    alphaMap.Items.Clear();
+                    alphaMap.Items.AddRange(new object[] {
+                        new AlphaMappingString(AlphaMapping.Discard),
+                        new AlphaMappingString(AlphaMapping.BlendToColour),
+                        new AlphaMappingString(AlphaMapping.BlendToCheckerboard)
+                    });
+
+                    // if we were discard before, still discard, otherwise blend to checkerboard
+                    if (idx <= 0)
+                        alphaMap.SelectedIndex = 0;
+                    else
+                        alphaMap.SelectedIndex = alphaMap.Items.Count - 1;
+                }
+                else if (alphaMap.Items.Count != 2)
+                {
+                    int idx = (int)alphaMap.SelectedIndex;
+
+                    alphaMap.Items.Clear();
+                    alphaMap.Items.AddRange(new object[] {
+                        new AlphaMappingString(AlphaMapping.Discard),
+                        new AlphaMappingString(AlphaMapping.Preserve)
+                    });
+
+                    // allow the previous selection to clamp, to either discard or preserve
+                    alphaMap.SelectedIndex = Helpers.Clamp(idx, 0, alphaMap.Items.Count-1);
+                }
+            }
+
+            if (alphaMap.Items.Count == 0)
+            {
+                alphaMap.Items.Clear();
+                alphaMap.Items.AddRange(new object[] {
+                    new AlphaMappingString(AlphaMapping.Discard),
+                    new AlphaMappingString(AlphaMapping.Preserve)
+                });
+            }
 
             alphaCol.Enabled = (saveData.alpha == AlphaMapping.BlendToColour && tex.format.compCount == 4 && noAlphaFormat);
 
@@ -199,7 +284,7 @@ namespace renderdocui.Windows.Dialogs
 
         private void alphaMap_SelectedIndexChanged(object sender, EventArgs e)
         {
-            saveData.alpha = (AlphaMapping)alphaMap.SelectedIndex;
+            saveData.alpha = ((AlphaMappingString)alphaMap.SelectedItem).val;
 
             alphaCol.Enabled = (saveData.alpha == AlphaMapping.BlendToColour);
         }
@@ -288,7 +373,7 @@ namespace renderdocui.Windows.Dialogs
 
         private void ok_Click(object sender, EventArgs e)
         {
-            saveData.alpha = (AlphaMapping)alphaMap.SelectedIndex;
+            saveData.alpha = ((AlphaMappingString)alphaMap.SelectedItem).val;
 
             if (saveData.alpha == AlphaMapping.BlendToCheckerboard)
             {

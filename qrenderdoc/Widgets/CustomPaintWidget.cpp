@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "CustomPaintWidget.h"
+#include <math.h>
 #include <QPainter>
 #include "Code/CaptureContext.h"
 #include "renderdoc_replay.h"
@@ -32,16 +33,16 @@ CustomPaintWidget::CustomPaintWidget(QWidget *parent) : QWidget(parent)
   m_Ctx = NULL;
   m_Output = NULL;
   setAttribute(Qt::WA_OpaquePaintEvent);
-  setAttribute(Qt::WA_PaintOnScreen);
   setMouseTracking(true);
 }
 
-CustomPaintWidget::CustomPaintWidget(CaptureContext *c, QWidget *parent) : QWidget(parent)
+CustomPaintWidget::CustomPaintWidget(ICaptureContext *c, QWidget *parent) : QWidget(parent)
 {
   m_Ctx = c;
   m_Output = NULL;
   setAttribute(Qt::WA_OpaquePaintEvent);
-  setAttribute(Qt::WA_PaintOnScreen);
+  if(c)
+    setAttribute(Qt::WA_PaintOnScreen);
   setMouseTracking(true);
 }
 
@@ -52,6 +53,11 @@ CustomPaintWidget::~CustomPaintWidget()
 void CustomPaintWidget::mousePressEvent(QMouseEvent *e)
 {
   emit clicked(e);
+}
+
+void CustomPaintWidget::mouseDoubleClickEvent(QMouseEvent *event)
+{
+  emit(doubleClicked(event));
 }
 
 void CustomPaintWidget::mouseMoveEvent(QMouseEvent *e)
@@ -74,12 +80,17 @@ void CustomPaintWidget::keyPressEvent(QKeyEvent *e)
   emit keyPress(e);
 }
 
+void CustomPaintWidget::keyReleaseEvent(QKeyEvent *e)
+{
+  emit keyRelease(e);
+}
+
 void CustomPaintWidget::paintEvent(QPaintEvent *e)
 {
   if(m_Ctx)
   {
     if(m_Output != NULL)
-      m_Ctx->Renderer()->AsyncInvoke([this](IReplayRenderer *r) { m_Output->Display(); });
+      m_Ctx->Replay().AsyncInvoke([this](IReplayController *r) { m_Output->Display(); });
   }
   else if(m_Dark == m_Light)
   {

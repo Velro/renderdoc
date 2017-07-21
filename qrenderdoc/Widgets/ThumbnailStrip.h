@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,8 +22,7 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#ifndef THUMBNAILSTRIP_H
-#define THUMBNAILSTRIP_H
+#pragma once
 
 #include <QWidget>
 
@@ -63,5 +62,3 @@ private:
 
   Ui::ThumbnailStrip *ui;
 };
-
-#endif    // THUMBNAILSTRIP_H

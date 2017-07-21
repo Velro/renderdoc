@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -35,7 +35,7 @@
 // Win32 to try and hide less padding with the larger alignment requirement
 // of 8-byte pointers.
 
-#if defined(RENDERDOC_PLATFORM_WIN32) && defined(RDC64BIT)
+#if ENABLED(RDOC_WIN32) && ENABLED(RDOC_X64)
 template <typename T, size_t actual, size_t expected>
 class oversized
 {
@@ -47,50 +47,49 @@ class undersized
   int check[int(expected) - int(actual) + 1];
 };
 
-#define SIZE_CHECK(T, expected)         \
-  undersized<T, sizeof(T), expected>(); \
-  oversized<T, sizeof(T), expected>();
+#define SIZE_CHECK(expected)                        \
+  undersized<decltype(el), sizeof(el), expected>(); \
+  oversized<decltype(el), sizeof(el), expected>();
 #else
-#define SIZE_CHECK(T, expected)
+#define SIZE_CHECK(expected)
 #endif
 
 #pragma region General Shader / State
 
 template <>
-string ToStrHelper<false, SystemAttribute>::Get(const SystemAttribute &el)
+string ToStrHelper<false, ShaderBuiltin>::Get(const ShaderBuiltin &el)
 {
   switch(el)
   {
-    TOSTR_CASE_STRINGIZE(eAttr_None)
-    TOSTR_CASE_STRINGIZE(eAttr_Position)
-    TOSTR_CASE_STRINGIZE(eAttr_PointSize)
-    TOSTR_CASE_STRINGIZE(eAttr_ClipDistance)
-    TOSTR_CASE_STRINGIZE(eAttr_CullDistance)
-    TOSTR_CASE_STRINGIZE(eAttr_RTIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_ViewportIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_VertexIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_PrimitiveIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_InstanceIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_InvocationIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_DispatchSize)
-    TOSTR_CASE_STRINGIZE(eAttr_DispatchThreadIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_GroupIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_GroupFlatIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_GroupThreadIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_GSInstanceIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_OutputControlPointIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_DomainLocation)
-    TOSTR_CASE_STRINGIZE(eAttr_IsFrontFace)
-    TOSTR_CASE_STRINGIZE(eAttr_MSAACoverage)
-    TOSTR_CASE_STRINGIZE(eAttr_MSAASamplePosition)
-    TOSTR_CASE_STRINGIZE(eAttr_MSAASampleIndex)
-    TOSTR_CASE_STRINGIZE(eAttr_PatchNumVertices)
-    TOSTR_CASE_STRINGIZE(eAttr_OuterTessFactor)
-    TOSTR_CASE_STRINGIZE(eAttr_InsideTessFactor)
-    TOSTR_CASE_STRINGIZE(eAttr_ColourOutput)
-    TOSTR_CASE_STRINGIZE(eAttr_DepthOutput)
-    TOSTR_CASE_STRINGIZE(eAttr_DepthOutputGreaterEqual)
-    TOSTR_CASE_STRINGIZE(eAttr_DepthOutputLessEqual)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, Undefined)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, Position)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, PointSize)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, ClipDistance)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, CullDistance)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, RTIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, ViewportIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, VertexIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, PrimitiveIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, InstanceIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, DispatchSize)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, DispatchThreadIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, GroupIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, GroupFlatIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, GroupThreadIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, GSInstanceIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, OutputControlPointIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, DomainLocation)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, IsFrontFace)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, MSAACoverage)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, MSAASamplePosition)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, MSAASampleIndex)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, PatchNumVertices)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, OuterTessFactor)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, InsideTessFactor)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, ColorOutput)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, DepthOutput)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, DepthOutputGreaterEqual)
+    TOSTR_CASE_STRINGIZE_SCOPED(ShaderBuiltin, DepthOutputLessEqual)
     default: break;
   }
 
@@ -103,7 +102,6 @@ string ToStrHelper<false, SystemAttribute>::Get(const SystemAttribute &el)
 template <>
 void Serialiser::Serialise(const char *name, ResourceFormat &el)
 {
-  Serialise("", el.rawType);
   Serialise("", el.special);
   Serialise("", el.specialFormat);
   Serialise("", el.strname);
@@ -113,7 +111,7 @@ void Serialiser::Serialise(const char *name, ResourceFormat &el)
   Serialise("", el.bgraOrder);
   Serialise("", el.srgbCorrected);
 
-  SIZE_CHECK(ResourceFormat, 56);
+  SIZE_CHECK(48);
 }
 
 template <>
@@ -124,7 +122,7 @@ void Serialiser::Serialise(const char *name, BindpointMap &el)
   Serialise("", el.used);
   Serialise("", el.arraySize);
 
-  SIZE_CHECK(BindpointMap, 16);
+  SIZE_CHECK(16);
 }
 
 template <>
@@ -135,7 +133,7 @@ void Serialiser::Serialise(const char *name, ShaderBindpointMapping &el)
   Serialise("", el.ReadOnlyResources);
   Serialise("", el.ReadWriteResources);
 
-  SIZE_CHECK(ShaderBindpointMapping, 64);
+  SIZE_CHECK(64);
 }
 
 template <>
@@ -155,7 +153,7 @@ void Serialiser::Serialise(const char *name, SigParameter &el)
   Serialise("", el.stream);
   Serialise("", el.arrayIndex);
 
-  SIZE_CHECK(SigParameter, 88);
+  SIZE_CHECK(88);
 }
 
 template <>
@@ -170,7 +168,7 @@ void Serialiser::Serialise(const char *name, ShaderVariableType &el)
   Serialise("", el.descriptor.arrayStride);
   Serialise("", el.members);
 
-  SIZE_CHECK(ShaderVariableType, 56);
+  SIZE_CHECK(56);
 }
 
 template <>
@@ -182,7 +180,7 @@ void Serialiser::Serialise(const char *name, ShaderConstant &el)
   Serialise("", el.defaultValue);
   Serialise("", el.type);
 
-  SIZE_CHECK(ShaderConstant, 88);
+  SIZE_CHECK(88);
 }
 
 template <>
@@ -194,7 +192,7 @@ void Serialiser::Serialise(const char *name, ConstantBlock &el)
   Serialise("", el.bindPoint);
   Serialise("", el.byteSize);
 
-  SIZE_CHECK(ConstantBlock, 48);
+  SIZE_CHECK(48);
 }
 
 template <>
@@ -202,25 +200,25 @@ void Serialiser::Serialise(const char *name, ShaderResource &el)
 {
   Serialise("", el.IsSampler);
   Serialise("", el.IsTexture);
-  Serialise("", el.IsSRV);
+  Serialise("", el.IsReadOnly);
   Serialise("", el.resType);
   Serialise("", el.name);
   Serialise("", el.variableType);
   Serialise("", el.bindPoint);
 
-  SIZE_CHECK(ShaderResource, 96);
+  SIZE_CHECK(96);
 }
 
 template <>
 void Serialiser::Serialise(const char *name, ShaderReflection &el)
 {
+  Serialise("", el.ID);
+  Serialise("", el.EntryPoint);
+
   Serialise("", el.DebugInfo.compileFlags);
-  Serialise("", el.DebugInfo.entryFunc);
   Serialise("", el.DebugInfo.files);
 
   SerialisePODArray<3>("", el.DispatchThreadsDimension);
-
-  Serialise("", el.Disassembly);
 
   Serialise("", el.RawBytes);
 
@@ -234,7 +232,7 @@ void Serialiser::Serialise(const char *name, ShaderReflection &el)
 
   Serialise("", el.Interfaces);
 
-  SIZE_CHECK(ShaderReflection, 192);
+  SIZE_CHECK(176);
 }
 
 template <>
@@ -251,7 +249,7 @@ void Serialiser::Serialise(const char *name, ShaderVariable &el)
 
   Serialise("", el.members);
 
-  SIZE_CHECK(ShaderVariable, 184);
+  SIZE_CHECK(184);
 }
 
 template <>
@@ -260,6 +258,7 @@ void Serialiser::Serialise(const char *name, ShaderDebugState &el)
   Serialise("", el.registers);
   Serialise("", el.outputs);
   Serialise("", el.nextInstruction);
+  Serialise("", el.flags);
 
   vector<vector<ShaderVariable> > indexableTemps;
 
@@ -272,7 +271,7 @@ void Serialiser::Serialise(const char *name, ShaderDebugState &el)
   for(int32_t i = 0; i < numidxtemps; i++)
     Serialise("", el.indexableTemps[i]);
 
-  SIZE_CHECK(ShaderDebugState, 56);
+  SIZE_CHECK(56);
 }
 
 template <>
@@ -291,7 +290,7 @@ void Serialiser::Serialise(const char *name, ShaderDebugTrace &el)
 
   Serialise("", el.states);
 
-  SIZE_CHECK(ShaderDebugTrace, 48);
+  SIZE_CHECK(48);
 }
 
 #pragma endregion General Shader / State
@@ -299,7 +298,7 @@ void Serialiser::Serialise(const char *name, ShaderDebugTrace &el)
 #pragma region D3D11 pipeline state
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::InputAssembler::LayoutInput &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::Layout &el)
 {
   Serialise("", el.SemanticName);
   Serialise("", el.SemanticIndex);
@@ -309,36 +308,34 @@ void Serialiser::Serialise(const char *name, D3D11PipelineState::InputAssembler:
   Serialise("", el.PerInstance);
   Serialise("", el.InstanceDataStepRate);
 
-  SIZE_CHECK(D3D11PipelineState::InputAssembler::LayoutInput, 96);
+  SIZE_CHECK(88);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::InputAssembler &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::IA &el)
 {
   Serialise("", el.ibuffer.Buffer);
   Serialise("", el.ibuffer.Offset);
 
   Serialise("", el.customName);
-  Serialise("", el.LayoutName);
+  Serialise("", el.name);
 
   Serialise("", el.vbuffers);
   Serialise("", el.layouts);
 
-  SIZE_CHECK(D3D11PipelineState::InputAssembler, 88);
+  SIZE_CHECK(88);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::ShaderStage::ResourceView &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::View &el)
 {
-  Serialise("", el.View);
+  Serialise("", el.Object);
   Serialise("", el.Resource);
   Serialise("", el.Type);
   Serialise("", el.Format);
 
   Serialise("", el.Structured);
   Serialise("", el.BufferStructCount);
-  Serialise("", el.ElementOffset);
-  Serialise("", el.ElementWidth);
   Serialise("", el.FirstElement);
   Serialise("", el.NumElements);
 
@@ -348,37 +345,35 @@ void Serialiser::Serialise(const char *name, D3D11PipelineState::ShaderStage::Re
   Serialise("", el.ArraySize);
   Serialise("", el.FirstArraySlice);
 
-  SIZE_CHECK(D3D11PipelineState::ShaderStage::ResourceView, 136);
+  SIZE_CHECK(112);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::ShaderStage::Sampler &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::Sampler &el)
 {
   Serialise("", el.Samp);
-  Serialise("", el.SamplerName);
-  Serialise("", el.customSamplerName);
+  Serialise("", el.name);
+  Serialise("", el.customName);
   Serialise("", el.AddressU);
   Serialise("", el.AddressV);
   Serialise("", el.AddressW);
   SerialisePODArray<4>("", el.BorderColor);
   Serialise("", el.Comparison);
   Serialise("", el.Filter);
-  Serialise("", el.UseBorder);
-  Serialise("", el.UseComparison);
   Serialise("", el.MaxAniso);
   Serialise("", el.MaxLOD);
   Serialise("", el.MinLOD);
   Serialise("", el.MipLODBias);
 
-  SIZE_CHECK(D3D11PipelineState::ShaderStage::Sampler, 152);
+  SIZE_CHECK(96);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::ShaderStage &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::Shader &el)
 {
-  Serialise("", el.Shader);
+  Serialise("", el.Object);
   Serialise("", el.stage);
-  Serialise("", el.ShaderName);
+  Serialise("", el.name);
   Serialise("", el.customName);
 
   if(m_Mode == READING)
@@ -392,21 +387,21 @@ void Serialiser::Serialise(const char *name, D3D11PipelineState::ShaderStage &el
   Serialise("", el.ConstantBuffers);
   Serialise("", el.ClassInstances);
 
-  SIZE_CHECK(D3D11PipelineState::ShaderStage, 192);
+  SIZE_CHECK(192);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::Rasterizer &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::Rasterizer &el)
 {
   Serialise("", el.m_State);
   Serialise("", el.Scissors);
   Serialise("", el.Viewports);
 
-  SIZE_CHECK(D3D11PipelineState::Rasterizer, 88);
+  SIZE_CHECK(88);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::OutputMerger::BlendState::RTBlend &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::Blend &el)
 {
   Serialise("", el.m_Blend.Source);
   Serialise("", el.m_Blend.Destination);
@@ -416,17 +411,17 @@ void Serialiser::Serialise(const char *name, D3D11PipelineState::OutputMerger::B
   Serialise("", el.m_AlphaBlend.Destination);
   Serialise("", el.m_AlphaBlend.Operation);
 
-  Serialise("", el.LogicOp);
+  Serialise("", el.Logic);
 
   Serialise("", el.Enabled);
   Serialise("", el.LogicEnabled);
   Serialise("", el.WriteMask);
 
-  SIZE_CHECK(D3D11PipelineState::OutputMerger::BlendState::RTBlend, 128);
+  SIZE_CHECK(40);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState::OutputMerger &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::OM &el)
 {
   {
     Serialise("", el.m_State.State);
@@ -467,11 +462,11 @@ void Serialiser::Serialise(const char *name, D3D11PipelineState::OutputMerger &e
   Serialise("", el.DepthReadOnly);
   Serialise("", el.StencilReadOnly);
 
-  SIZE_CHECK(D3D11PipelineState::OutputMerger, 424);
+  SIZE_CHECK(280);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, D3D11PipelineState &el)
+void Serialiser::Serialise(const char *name, D3D11Pipe::State &el)
 {
   Serialise("", el.m_IA);
 
@@ -487,7 +482,7 @@ void Serialiser::Serialise(const char *name, D3D11PipelineState &el)
   Serialise("", el.m_RS);
   Serialise("", el.m_OM);
 
-  SIZE_CHECK(D3D11PipelineState, 1768);
+  SIZE_CHECK(1624);
 }
 
 #pragma endregion D3D11 pipeline state
@@ -495,9 +490,238 @@ void Serialiser::Serialise(const char *name, D3D11PipelineState &el)
 #pragma region D3D12 pipeline state
 
 template <>
-void Serialiser::Serialise(const char *name, D3D12PipelineState &el)
+void Serialiser::Serialise(const char *name, D3D12Pipe::Layout &el)
 {
-  RDCUNIMPLEMENTED("Serialiser::Serialise<D3D12PipelineState>()");
+  Serialise("", el.SemanticName);
+  Serialise("", el.SemanticIndex);
+  Serialise("", el.Format);
+  Serialise("", el.InputSlot);
+  Serialise("", el.ByteOffset);
+  Serialise("", el.PerInstance);
+  Serialise("", el.InstanceDataStepRate);
+
+  SIZE_CHECK(88);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::IA &el)
+{
+  Serialise("", el.ibuffer.Buffer);
+  Serialise("", el.ibuffer.Offset);
+  Serialise("", el.ibuffer.Size);
+
+  Serialise("", el.vbuffers);
+  Serialise("", el.layouts);
+
+  Serialise("", el.indexStripCutValue);
+
+  SIZE_CHECK(64);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::CBuffer &el)
+{
+  Serialise("", el.Immediate);
+  Serialise("", el.RootElement);
+  Serialise("", el.TableIndex);
+  Serialise("", el.Buffer);
+  Serialise("", el.Offset);
+  Serialise("", el.ByteSize);
+  Serialise("", el.RootValues);
+
+  SIZE_CHECK(56);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::Sampler &el)
+{
+  Serialise("", el.Immediate);
+  Serialise("", el.RootElement);
+  Serialise("", el.TableIndex);
+  Serialise("", el.AddressU);
+  Serialise("", el.AddressV);
+  Serialise("", el.AddressW);
+  SerialisePODArray<4>("", el.BorderColor);
+  Serialise("", el.Comparison);
+  Serialise("", el.Filter);
+  Serialise("", el.MaxAniso);
+  Serialise("", el.MaxLOD);
+  Serialise("", el.MinLOD);
+  Serialise("", el.MipLODBias);
+
+  SIZE_CHECK(76);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::View &el)
+{
+  Serialise("", el.Immediate);
+  Serialise("", el.RootElement);
+  Serialise("", el.TableIndex);
+  Serialise("", el.Resource);
+  Serialise("", el.Resource);
+  Serialise("", el.Type);
+  Serialise("", el.Format);
+
+  SerialisePODArray<4>("", el.swizzle);
+  Serialise("", el.BufferFlags);
+  Serialise("", el.BufferStructCount);
+  Serialise("", el.ElementSize);
+  Serialise("", el.FirstElement);
+  Serialise("", el.NumElements);
+
+  Serialise("", el.CounterResource);
+  Serialise("", el.CounterByteOffset);
+
+  Serialise("", el.HighestMip);
+  Serialise("", el.NumMipLevels);
+  Serialise("", el.ArraySize);
+  Serialise("", el.FirstArraySlice);
+
+  Serialise("", el.MinLODClamp);
+
+  SIZE_CHECK(168);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::RegisterSpace &el)
+{
+  Serialise("", el.ConstantBuffers);
+  Serialise("", el.Samplers);
+  Serialise("", el.SRVs);
+  Serialise("", el.UAVs);
+
+  SIZE_CHECK(64);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::Shader &el)
+{
+  Serialise("", el.Object);
+  Serialise("", el.BindpointMapping);
+  Serialise("", el.stage);
+  Serialise("", el.Spaces);
+
+  SIZE_CHECK(104);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::Rasterizer &el)
+{
+  Serialise("", el.SampleMask);
+  Serialise("", el.Scissors);
+  Serialise("", el.Viewports);
+  Serialise("", el.m_State);
+
+  SIZE_CHECK(88);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::Blend &el)
+{
+  Serialise("", el.m_Blend.Source);
+  Serialise("", el.m_Blend.Destination);
+  Serialise("", el.m_Blend.Operation);
+
+  Serialise("", el.m_AlphaBlend.Source);
+  Serialise("", el.m_AlphaBlend.Destination);
+  Serialise("", el.m_AlphaBlend.Operation);
+
+  Serialise("", el.Logic);
+
+  Serialise("", el.Enabled);
+  Serialise("", el.LogicEnabled);
+  Serialise("", el.WriteMask);
+
+  SIZE_CHECK(40);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::OM &el)
+{
+  {
+    Serialise("", el.m_State.DepthEnable);
+    Serialise("", el.m_State.DepthWrites);
+    Serialise("", el.m_State.DepthFunc);
+    Serialise("", el.m_State.StencilEnable);
+    Serialise("", el.m_State.StencilReadMask);
+    Serialise("", el.m_State.StencilWriteMask);
+
+    Serialise("", el.m_State.m_FrontFace.FailOp);
+    Serialise("", el.m_State.m_FrontFace.DepthFailOp);
+    Serialise("", el.m_State.m_FrontFace.PassOp);
+    Serialise("", el.m_State.m_FrontFace.Func);
+
+    Serialise("", el.m_State.m_BackFace.FailOp);
+    Serialise("", el.m_State.m_BackFace.DepthFailOp);
+    Serialise("", el.m_State.m_BackFace.PassOp);
+    Serialise("", el.m_State.m_BackFace.Func);
+
+    Serialise("", el.m_State.StencilRef);
+  }
+
+  {
+    Serialise("", el.m_BlendState.AlphaToCoverage);
+    Serialise("", el.m_BlendState.IndependentBlend);
+    Serialise("", el.m_BlendState.Blends);
+    SerialisePODArray<4>("", el.m_BlendState.BlendFactor);
+  }
+
+  Serialise("", el.RenderTargets);
+  Serialise("", el.DepthTarget);
+  Serialise("", el.DepthReadOnly);
+  Serialise("", el.StencilReadOnly);
+
+  Serialise("", el.multiSampleCount);
+  Serialise("", el.multiSampleQuality);
+
+  SIZE_CHECK(296);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::ResourceState &el)
+{
+  Serialise("", el.name);
+
+  SIZE_CHECK(16);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::ResourceData &el)
+{
+  Serialise("", el.id);
+  Serialise("", el.states);
+
+  SIZE_CHECK(24);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, D3D12Pipe::State &el)
+{
+  Serialise("", el.pipeline);
+  Serialise("", el.customName);
+  Serialise("", el.name);
+
+  Serialise("", el.rootSig);
+
+  Serialise("", el.m_IA);
+
+  Serialise("", el.m_VS);
+  Serialise("", el.m_HS);
+  Serialise("", el.m_DS);
+  Serialise("", el.m_GS);
+  Serialise("", el.m_PS);
+  Serialise("", el.m_CS);
+
+  Serialise("", el.m_SO.Outputs);
+
+  Serialise("", el.m_RS);
+
+  Serialise("", el.m_OM);
+
+  Serialise("", el.Resources);
+
+  SIZE_CHECK(1144);
 }
 
 #pragma endregion D3D12 pipeline state
@@ -505,19 +729,19 @@ void Serialiser::Serialise(const char *name, D3D12PipelineState &el)
 #pragma region OpenGL pipeline state
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::VertexInput::VertexAttribute &el)
+void Serialiser::Serialise(const char *name, GLPipe::VertexAttribute &el)
 {
   Serialise("", el.Enabled);
   Serialise("", el.Format);
-  SerialisePODArray<4>("", el.GenericValue.f);
+  SerialisePODArray<4>("", el.GenericValue.value_f);
   Serialise("", el.BufferSlot);
   Serialise("", el.RelativeOffset);
 
-  SIZE_CHECK(GLPipelineState::VertexInput::VertexAttribute, 88);
+  SIZE_CHECK(80);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::VertexInput &el)
+void Serialiser::Serialise(const char *name, GLPipe::VertexInput &el)
 {
   Serialise("", el.attributes);
   Serialise("", el.vbuffers);
@@ -526,13 +750,13 @@ void Serialiser::Serialise(const char *name, GLPipelineState::VertexInput &el)
   Serialise("", el.restartIndex);
   Serialise("", el.provokingVertexLast);
 
-  SIZE_CHECK(GLPipelineState::VertexInput, 56);
+  SIZE_CHECK(56);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::ShaderStage &el)
+void Serialiser::Serialise(const char *name, GLPipe::Shader &el)
 {
-  Serialise("", el.Shader);
+  Serialise("", el.Object);
 
   Serialise("", el.ShaderName);
   Serialise("", el.customShaderName);
@@ -551,11 +775,11 @@ void Serialiser::Serialise(const char *name, GLPipelineState::ShaderStage &el)
   if(m_Mode == READING)
     el.ShaderDetails = NULL;
 
-  SIZE_CHECK(GLPipelineState::ShaderStage, 176);
+  SIZE_CHECK(176);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::Sampler &el)
+void Serialiser::Serialise(const char *name, GLPipe::Sampler &el)
 {
   Serialise("", el.Samp);
   Serialise("", el.AddressS);
@@ -563,21 +787,18 @@ void Serialiser::Serialise(const char *name, GLPipelineState::Sampler &el)
   Serialise("", el.AddressR);
   SerialisePODArray<4>("", el.BorderColor);
   Serialise("", el.Comparison);
-  Serialise("", el.MinFilter);
-  Serialise("", el.MagFilter);
-  Serialise("", el.UseBorder);
-  Serialise("", el.UseComparison);
+  Serialise("", el.Filter);
   Serialise("", el.SeamlessCube);
   Serialise("", el.MaxAniso);
   Serialise("", el.MaxLOD);
   Serialise("", el.MinLOD);
   Serialise("", el.MipLODBias);
 
-  SIZE_CHECK(GLPipelineState::Sampler, 152);
+  SIZE_CHECK(80);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::ImageLoadStore &el)
+void Serialiser::Serialise(const char *name, GLPipe::ImageLoadStore &el)
 {
   Serialise("", el.Resource);
   Serialise("", el.Level);
@@ -588,21 +809,21 @@ void Serialiser::Serialise(const char *name, GLPipelineState::ImageLoadStore &el
   Serialise("", el.writeAllowed);
   Serialise("", el.Format);
 
-  SIZE_CHECK(GLPipelineState::ImageLoadStore, 88);
+  SIZE_CHECK(80);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::Rasterizer &el)
+void Serialiser::Serialise(const char *name, GLPipe::Rasterizer &el)
 {
   Serialise("", el.Viewports);
   Serialise("", el.Scissors);
   Serialise("", el.m_State);
 
-  SIZE_CHECK(GLPipelineState::Rasterizer, 120);
+  SIZE_CHECK(120);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::DepthState &el)
+void Serialiser::Serialise(const char *name, GLPipe::DepthState &el)
 {
   Serialise("", el.DepthEnable);
   Serialise("", el.DepthFunc);
@@ -611,11 +832,11 @@ void Serialiser::Serialise(const char *name, GLPipelineState::DepthState &el)
   Serialise("", el.NearBound);
   Serialise("", el.FarBound);
 
-  SIZE_CHECK(GLPipelineState::DepthState, 48);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::StencilState &el)
+void Serialiser::Serialise(const char *name, GLPipe::StencilState &el)
 {
   Serialise("", el.StencilEnable);
 
@@ -635,15 +856,15 @@ void Serialiser::Serialise(const char *name, GLPipelineState::StencilState &el)
   Serialise("", el.m_BackFace.ValueMask);
   Serialise("", el.m_BackFace.WriteMask);
 
-  SIZE_CHECK(GLPipelineState::StencilState, 168);
+  SIZE_CHECK(44);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer::BlendState::RTBlend &el)
+void Serialiser::Serialise(const char *name, GLPipe::Blend &el)
 {
   Serialise("", el.Enabled);
   Serialise("", el.WriteMask);
-  Serialise("", el.LogicOp);
+  Serialise("", el.Logic);
 
   Serialise("", el.m_Blend.Source);
   Serialise("", el.m_Blend.Destination);
@@ -653,30 +874,31 @@ void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer::Blend
   Serialise("", el.m_AlphaBlend.Destination);
   Serialise("", el.m_AlphaBlend.Operation);
 
-  SIZE_CHECK(GLPipelineState::FrameBuffer::BlendState::RTBlend, 120);
+  SIZE_CHECK(36);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer::BlendState &el)
+void Serialiser::Serialise(const char *name, GLPipe::BlendState &el)
 {
   SerialisePODArray<4>("", el.BlendFactor);
   Serialise("", el.Blends);
 
-  SIZE_CHECK(GLPipelineState::FrameBuffer::BlendState, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer::Attachment &el)
+void Serialiser::Serialise(const char *name, GLPipe::Attachment &el)
 {
   Serialise("", el.Obj);
   Serialise("", el.Layer);
   Serialise("", el.Mip);
+  SerialisePODArray<4>("", el.Swizzle);
 
-  SIZE_CHECK(GLPipelineState::FrameBuffer::Attachment, 16);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer &el)
+void Serialiser::Serialise(const char *name, GLPipe::FrameBuffer &el)
 {
   Serialise("", el.FramebufferSRGB);
   Serialise("", el.Dither);
@@ -697,11 +919,11 @@ void Serialiser::Serialise(const char *name, GLPipelineState::FrameBuffer &el)
 
   Serialise("", el.m_Blending);
 
-  SIZE_CHECK(GLPipelineState::FrameBuffer, 200);
+  SIZE_CHECK(264);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, GLPipelineState &el)
+void Serialiser::Serialise(const char *name, GLPipe::State &el)
 {
   Serialise("", el.m_VtxIn);
 
@@ -731,7 +953,7 @@ void Serialiser::Serialise(const char *name, GLPipelineState &el)
 
   Serialise("", el.m_Hints);
 
-  SIZE_CHECK(GLPipelineState, 1952);
+  SIZE_CHECK(1880);
 }
 
 #pragma endregion OpenGL pipeline state
@@ -739,17 +961,15 @@ void Serialiser::Serialise(const char *name, GLPipelineState &el)
 #pragma region Vulkan pipeline state
 
 template <>
-void Serialiser::Serialise(
-    const char *name,
-    VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding::BindingElement &el)
+void Serialiser::Serialise(const char *name, VKPipe::BindingElement &el)
 {
   Serialise("", el.view);
   Serialise("", el.res);
   Serialise("", el.sampler);
   Serialise("", el.immutableSampler);
 
-  Serialise("", el.SamplerName);
-  Serialise("", el.customSamplerName);
+  Serialise("", el.name);
+  Serialise("", el.customName);
 
   Serialise("", el.viewfmt);
   SerialisePODArray<4>("", el.swizzle);
@@ -761,28 +981,23 @@ void Serialiser::Serialise(
   Serialise("", el.offset);
   Serialise("", el.size);
 
-  Serialise("", el.mag);
-  Serialise("", el.min);
-  Serialise("", el.mip);
-  Serialise("", el.addrU);
-  Serialise("", el.addrV);
-  Serialise("", el.addrW);
+  Serialise("", el.Filter);
+  Serialise("", el.AddressU);
+  Serialise("", el.AddressV);
+  Serialise("", el.AddressW);
   Serialise("", el.mipBias);
   Serialise("", el.maxAniso);
-  Serialise("", el.compareEnable);
   Serialise("", el.comparison);
   Serialise("", el.minlod);
   Serialise("", el.maxlod);
-  Serialise("", el.borderEnable);
-  Serialise("", el.border);
+  SerialisePODArray<4>("", el.BorderColor);
   Serialise("", el.unnormalized);
 
-  SIZE_CHECK(VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding::BindingElement, 328);
+  SIZE_CHECK(224);
 };
 
 template <>
-void Serialiser::Serialise(const char *name,
-                           VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding &el)
+void Serialiser::Serialise(const char *name, VKPipe::DescriptorBinding &el)
 {
   Serialise("", el.descriptorCount);
   Serialise("", el.type);
@@ -790,68 +1005,68 @@ void Serialiser::Serialise(const char *name,
 
   Serialise("", el.binds);
 
-  SIZE_CHECK(VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::Pipeline::DescriptorSet &el)
+void Serialiser::Serialise(const char *name, VKPipe::DescriptorSet &el)
 {
   Serialise("", el.layout);
   Serialise("", el.descset);
 
   Serialise("", el.bindings);
 
-  SIZE_CHECK(VulkanPipelineState::Pipeline::DescriptorSet, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::Pipeline &el)
+void Serialiser::Serialise(const char *name, VKPipe::Pipeline &el)
 {
   Serialise("", el.obj);
   Serialise("", el.flags);
 
   Serialise("", el.DescSets);
 
-  SIZE_CHECK(VulkanPipelineState::Pipeline, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::VertexInput::Attribute &el)
+void Serialiser::Serialise(const char *name, VKPipe::VertexAttribute &el)
 {
   Serialise("", el.location);
   Serialise("", el.binding);
   Serialise("", el.format);
   Serialise("", el.byteoffset);
 
-  SIZE_CHECK(VulkanPipelineState::VertexInput::Attribute, 72);
+  SIZE_CHECK(64);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::VertexInput &el)
+void Serialiser::Serialise(const char *name, VKPipe::VertexInput &el)
 {
   Serialise("", el.attrs);
   Serialise("", el.binds);
   Serialise("", el.vbuffers);
 
-  SIZE_CHECK(VulkanPipelineState::VertexInput, 48);
+  SIZE_CHECK(48);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ShaderStage::SpecInfo &el)
+void Serialiser::Serialise(const char *name, VKPipe::SpecInfo &el)
 {
   Serialise("", el.specID);
   Serialise("", el.data);
 
-  SIZE_CHECK(VulkanPipelineState::ShaderStage::SpecInfo, 24);
+  SIZE_CHECK(24);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ShaderStage &el)
+void Serialiser::Serialise(const char *name, VKPipe::Shader &el)
 {
-  Serialise("", el.Shader);
+  Serialise("", el.Object);
   Serialise("", el.entryPoint);
 
-  Serialise("", el.ShaderName);
+  Serialise("", el.name);
   Serialise("", el.customName);
   Serialise("", el.BindpointMapping);
   Serialise("", el.stage);
@@ -861,19 +1076,19 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState::ShaderStage &e
 
   Serialise("", el.specialization);
 
-  SIZE_CHECK(VulkanPipelineState::ShaderStage, 144);
+  SIZE_CHECK(144);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ViewState &el)
+void Serialiser::Serialise(const char *name, VKPipe::ViewState &el)
 {
   Serialise("", el.viewportScissors);
 
-  SIZE_CHECK(VulkanPipelineState::ViewState, 16);
+  SIZE_CHECK(16);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ColorBlend::Attachment &el)
+void Serialiser::Serialise(const char *name, VKPipe::Blend &el)
 {
   Serialise("", el.blendEnable);
 
@@ -887,27 +1102,26 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState::ColorBlend::At
 
   Serialise("", el.writeMask);
 
-  SIZE_CHECK(VulkanPipelineState::ColorBlend::Attachment, 112);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ColorBlend &el)
+void Serialiser::Serialise(const char *name, VKPipe::ColorBlend &el)
 {
   Serialise("", el.alphaToCoverageEnable);
   Serialise("", el.alphaToOneEnable);
   Serialise("", el.logicOpEnable);
-  Serialise("", el.logicOp);
+  Serialise("", el.logic);
 
   Serialise("", el.attachments);
 
   SerialisePODArray<4>("", el.blendConst);
 
-  SIZE_CHECK(VulkanPipelineState::ColorBlend, 64);
+  SIZE_CHECK(48);
 }
 
 template <>
-void Serialiser::Serialise(const char *name,
-                           VulkanPipelineState::CurrentPass::Framebuffer::Attachment &el)
+void Serialiser::Serialise(const char *name, VKPipe::Attachment &el)
 {
   Serialise("", el.view);
   Serialise("", el.img);
@@ -920,11 +1134,11 @@ void Serialiser::Serialise(const char *name,
   Serialise("", el.numMip);
   Serialise("", el.numLayer);
 
-  SIZE_CHECK(VulkanPipelineState::CurrentPass::Framebuffer::Attachment, 104);
+  SIZE_CHECK(96);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::DepthStencil &el)
+void Serialiser::Serialise(const char *name, VKPipe::DepthStencil &el)
 {
   Serialise("", el.depthTestEnable);
   Serialise("", el.depthWriteEnable);
@@ -933,18 +1147,18 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState::DepthStencil &
 
   Serialise("", el.stencilTestEnable);
 
-  Serialise("", el.front.failOp);
-  Serialise("", el.front.depthFailOp);
-  Serialise("", el.front.passOp);
-  Serialise("", el.front.func);
+  Serialise("", el.front.FailOp);
+  Serialise("", el.front.DepthFailOp);
+  Serialise("", el.front.PassOp);
+  Serialise("", el.front.Func);
   Serialise("", el.front.ref);
   Serialise("", el.front.compareMask);
   Serialise("", el.front.writeMask);
 
-  Serialise("", el.back.failOp);
-  Serialise("", el.back.depthFailOp);
-  Serialise("", el.back.passOp);
-  Serialise("", el.back.func);
+  Serialise("", el.back.FailOp);
+  Serialise("", el.back.DepthFailOp);
+  Serialise("", el.back.PassOp);
+  Serialise("", el.back.Func);
   Serialise("", el.back.ref);
   Serialise("", el.back.compareMask);
   Serialise("", el.back.writeMask);
@@ -952,15 +1166,16 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState::DepthStencil &
   Serialise("", el.minDepthBounds);
   Serialise("", el.maxDepthBounds);
 
-  SIZE_CHECK(VulkanPipelineState::DepthStencil, 208);
+  SIZE_CHECK(84);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::CurrentPass &el)
+void Serialiser::Serialise(const char *name, VKPipe::CurrentPass &el)
 {
   Serialise("", el.renderpass.obj);
   Serialise("", el.renderpass.inputAttachments);
   Serialise("", el.renderpass.colorAttachments);
+  Serialise("", el.renderpass.resolveAttachments);
   Serialise("", el.renderpass.depthstencilAttachment);
 
   Serialise("", el.framebuffer.obj);
@@ -971,11 +1186,11 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState::CurrentPass &e
 
   Serialise("", el.renderArea);
 
-  SIZE_CHECK(VulkanPipelineState::CurrentPass, 104);
+  SIZE_CHECK(120);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ImageData::ImageLayout &el)
+void Serialiser::Serialise(const char *name, VKPipe::ImageLayout &el)
 {
   Serialise("", el.baseMip);
   Serialise("", el.baseLayer);
@@ -983,20 +1198,20 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState::ImageData::Ima
   Serialise("", el.numLayer);
   Serialise("", el.name);
 
-  SIZE_CHECK(VulkanPipelineState::ImageData::ImageLayout, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState::ImageData &el)
+void Serialiser::Serialise(const char *name, VKPipe::ImageData &el)
 {
   Serialise("", el.image);
   Serialise("", el.layouts);
 
-  SIZE_CHECK(VulkanPipelineState::ImageData, 24);
+  SIZE_CHECK(24);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, VulkanPipelineState &el)
+void Serialiser::Serialise(const char *name, VKPipe::State &el)
 {
   Serialise("", el.compute);
   Serialise("", el.graphics);
@@ -1004,12 +1219,12 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState &el)
   Serialise("", el.IA);
   Serialise("", el.VI);
 
-  Serialise("", el.VS);
-  Serialise("", el.TCS);
-  Serialise("", el.TES);
-  Serialise("", el.GS);
-  Serialise("", el.FS);
-  Serialise("", el.CS);
+  Serialise("", el.m_VS);
+  Serialise("", el.m_TCS);
+  Serialise("", el.m_TES);
+  Serialise("", el.m_GS);
+  Serialise("", el.m_FS);
+  Serialise("", el.m_CS);
 
   Serialise("", el.Tess);
 
@@ -1022,7 +1237,7 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState &el)
 
   Serialise("", el.images);
 
-  SIZE_CHECK(VulkanPipelineState, 1472);
+  SIZE_CHECK(1352);
 }
 
 #pragma endregion Vulkan pipeline state
@@ -1030,7 +1245,7 @@ void Serialiser::Serialise(const char *name, VulkanPipelineState &el)
 #pragma region Data descriptors
 
 template <>
-void Serialiser::Serialise(const char *name, FetchTexture &el)
+void Serialiser::Serialise(const char *name, TextureDescription &el)
 {
   Serialise("", el.name);
   Serialise("", el.customName);
@@ -1044,17 +1259,16 @@ void Serialiser::Serialise(const char *name, FetchTexture &el)
   Serialise("", el.cubemap);
   Serialise("", el.mips);
   Serialise("", el.arraysize);
-  Serialise("", el.numSubresources);
   Serialise("", el.creationFlags);
   Serialise("", el.msQual);
   Serialise("", el.msSamp);
   Serialise("", el.byteSize);
 
-  SIZE_CHECK(FetchTexture, 152);
+  SIZE_CHECK(136);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchBuffer &el)
+void Serialiser::Serialise(const char *name, BufferDescription &el)
 {
   Serialise("", el.ID);
   Serialise("", el.name);
@@ -1062,7 +1276,7 @@ void Serialiser::Serialise(const char *name, FetchBuffer &el)
   Serialise("", el.creationFlags);
   Serialise("", el.length);
 
-  SIZE_CHECK(FetchBuffer, 40);
+  SIZE_CHECK(40);
 }
 
 template <>
@@ -1072,7 +1286,7 @@ void Serialiser::Serialise(const char *name, APIProperties &el)
   Serialise("", el.localRenderer);
   Serialise("", el.degraded);
 
-  SIZE_CHECK(APIProperties, 12);
+  SIZE_CHECK(12);
 }
 
 template <>
@@ -1085,23 +1299,22 @@ void Serialiser::Serialise(const char *name, DebugMessage &el)
   Serialise("", el.messageID);
   Serialise("", el.description);
 
-  SIZE_CHECK(DebugMessage, 40);
+  SIZE_CHECK(40);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchAPIEvent &el)
+void Serialiser::Serialise(const char *name, APIEvent &el)
 {
   Serialise("", el.eventID);
-  Serialise("", el.context);
   Serialise("", el.callstack);
   Serialise("", el.eventDesc);
   Serialise("", el.fileOffset);
 
-  SIZE_CHECK(FetchAPIEvent, 56);
+  SIZE_CHECK(48);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchDrawcall &el)
+void Serialiser::Serialise(const char *name, DrawcallDescription &el)
 {
   Serialise("", el.eventID);
   Serialise("", el.drawcallID);
@@ -1110,7 +1323,7 @@ void Serialiser::Serialise(const char *name, FetchDrawcall &el)
 
   Serialise("", el.flags);
 
-  SerialisePODArray<4>("", el.markerColour);
+  SerialisePODArray<4>("", el.markerColor);
 
   Serialise("", el.numIndices);
   Serialise("", el.numInstances);
@@ -1138,11 +1351,11 @@ void Serialiser::Serialise(const char *name, FetchDrawcall &el)
   Serialise("", el.events);
   Serialise("", el.children);
 
-  SIZE_CHECK(FetchDrawcall, 248);
+  SIZE_CHECK(248);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameConstantBindStats &el)
+void Serialiser::Serialise(const char *name, ConstantBindStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
@@ -1150,22 +1363,22 @@ void Serialiser::Serialise(const char *name, FetchFrameConstantBindStats &el)
   Serialise("", el.bindslots);
   Serialise("", el.sizes);
 
-  SIZE_CHECK(FetchFrameConstantBindStats, 48);
+  SIZE_CHECK(48);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameSamplerBindStats &el)
+void Serialiser::Serialise(const char *name, SamplerBindStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
   Serialise("", el.nulls);
   Serialise("", el.bindslots);
 
-  SIZE_CHECK(FetchFrameSamplerBindStats, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameResourceBindStats &el)
+void Serialiser::Serialise(const char *name, ResourceBindStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
@@ -1173,11 +1386,11 @@ void Serialiser::Serialise(const char *name, FetchFrameResourceBindStats &el)
   Serialise("", el.types);
   Serialise("", el.bindslots);
 
-  SIZE_CHECK(FetchFrameResourceBindStats, 48);
+  SIZE_CHECK(48);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameUpdateStats &el)
+void Serialiser::Serialise(const char *name, ResourceUpdateStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.clients);
@@ -1185,95 +1398,95 @@ void Serialiser::Serialise(const char *name, FetchFrameUpdateStats &el)
   Serialise("", el.types);
   Serialise("", el.sizes);
 
-  SIZE_CHECK(FetchFrameUpdateStats, 48);
+  SIZE_CHECK(48);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameDrawStats &el)
+void Serialiser::Serialise(const char *name, DrawcallStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.instanced);
   Serialise("", el.indirect);
   Serialise("", el.counts);
 
-  SIZE_CHECK(FetchFrameDrawStats, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameDispatchStats &el)
+void Serialiser::Serialise(const char *name, DispatchStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.indirect);
 
-  SIZE_CHECK(FetchFrameDispatchStats, 8);
+  SIZE_CHECK(8);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameIndexBindStats &el)
+void Serialiser::Serialise(const char *name, IndexBindStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
   Serialise("", el.nulls);
 
-  SIZE_CHECK(FetchFrameIndexBindStats, 12);
+  SIZE_CHECK(12);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameVertexBindStats &el)
+void Serialiser::Serialise(const char *name, VertexBindStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
   Serialise("", el.nulls);
   Serialise("", el.bindslots);
 
-  SIZE_CHECK(FetchFrameVertexBindStats, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameLayoutBindStats &el)
+void Serialiser::Serialise(const char *name, LayoutBindStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
   Serialise("", el.nulls);
 
-  SIZE_CHECK(FetchFrameLayoutBindStats, 12);
+  SIZE_CHECK(12);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameShaderStats &el)
-{
-  Serialise("", el.calls);
-  Serialise("", el.sets);
-  Serialise("", el.nulls);
-  Serialise("", el.redundants);
-
-  SIZE_CHECK(FetchFrameShaderStats, 16);
-}
-
-template <>
-void Serialiser::Serialise(const char *name, FetchFrameBlendStats &el)
+void Serialiser::Serialise(const char *name, ShaderChangeStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
   Serialise("", el.nulls);
   Serialise("", el.redundants);
 
-  SIZE_CHECK(FetchFrameBlendStats, 16);
+  SIZE_CHECK(16);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameDepthStencilStats &el)
+void Serialiser::Serialise(const char *name, BlendStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
   Serialise("", el.nulls);
   Serialise("", el.redundants);
 
-  SIZE_CHECK(FetchFrameDepthStencilStats, 16);
+  SIZE_CHECK(16);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameRasterizationStats &el)
+void Serialiser::Serialise(const char *name, DepthStencilStats &el)
+{
+  Serialise("", el.calls);
+  Serialise("", el.sets);
+  Serialise("", el.nulls);
+  Serialise("", el.redundants);
+
+  SIZE_CHECK(16);
+}
+
+template <>
+void Serialiser::Serialise(const char *name, RasterizationStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
@@ -1282,73 +1495,73 @@ void Serialiser::Serialise(const char *name, FetchFrameRasterizationStats &el)
   Serialise("", el.viewports);
   Serialise("", el.rects);
 
-  SIZE_CHECK(FetchFrameRasterizationStats, 48);
+  SIZE_CHECK(48);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameOutputStats &el)
+void Serialiser::Serialise(const char *name, OutputTargetStats &el)
 {
   Serialise("", el.calls);
   Serialise("", el.sets);
   Serialise("", el.nulls);
   Serialise("", el.bindslots);
 
-  SIZE_CHECK(FetchFrameOutputStats, 32);
+  SIZE_CHECK(32);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameStatistics &el)
+void Serialiser::Serialise(const char *name, FrameStatistics &el)
 {
   Serialise("", el.recorded);
   // #mivance note this is technically error-prone from the perspective
   // that we're passing references to pointers, but as we're really
   // dealing with arrays,t hey'll never be NULL and need to be assigned
   // to, so this is fine
-  FetchFrameConstantBindStats *constants = el.constants;
-  SerialiseComplexArray<eShaderStage_Count>("", constants);
-  FetchFrameSamplerBindStats *samplers = el.samplers;
-  SerialiseComplexArray<eShaderStage_Count>("", samplers);
-  FetchFrameResourceBindStats *resources = el.resources;
-  SerialiseComplexArray<eShaderStage_Count>("", resources);
+  ConstantBindStats *constants = el.constants;
+  SerialiseComplexArray<(uint32_t)ShaderStage::Count>("", constants);
+  SamplerBindStats *samplers = el.samplers;
+  SerialiseComplexArray<(uint32_t)ShaderStage::Count>("", samplers);
+  ResourceBindStats *resources = el.resources;
+  SerialiseComplexArray<(uint32_t)ShaderStage::Count>("", resources);
   Serialise("", el.updates);
   Serialise("", el.draws);
   Serialise("", el.dispatches);
   Serialise("", el.indices);
   Serialise("", el.vertices);
   Serialise("", el.layouts);
-  FetchFrameShaderStats *shaders = el.shaders;
-  SerialiseComplexArray<eShaderStage_Count>("", shaders);
+  ShaderChangeStats *shaders = el.shaders;
+  SerialiseComplexArray<(uint32_t)ShaderStage::Count>("", shaders);
   Serialise("", el.blends);
   Serialise("", el.depths);
   Serialise("", el.rasters);
   Serialise("", el.outputs);
 
-  SIZE_CHECK(FetchFrameStatistics, 1136);
+  SIZE_CHECK(1136);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameInfo &el)
+void Serialiser::Serialise(const char *name, FrameDescription &el)
 {
   Serialise("", el.frameNumber);
-  Serialise("", el.firstEvent);
   Serialise("", el.fileOffset);
-  Serialise("", el.fileSize);
+  Serialise("", el.uncompressedFileSize);
+  Serialise("", el.compressedFileSize);
   Serialise("", el.persistentSize);
   Serialise("", el.initDataSize);
   Serialise("", el.captureTime);
   Serialise("", el.stats);
   Serialise("", el.debugMessages);
 
-  SIZE_CHECK(FetchFrameInfo, 1200);
+  SIZE_CHECK(1208);
 }
 
 template <>
-void Serialiser::Serialise(const char *name, FetchFrameRecord &el)
+void Serialiser::Serialise(const char *name, FrameRecord &el)
 {
   Serialise("", el.frameInfo);
   Serialise("", el.drawcallList);
 
-  SIZE_CHECK(FetchFrameRecord, 1216);
+  SIZE_CHECK(1224);
 }
 
 template <>
@@ -1366,7 +1579,7 @@ void Serialiser::Serialise(const char *name, MeshFormat &el)
   Serialise("", el.compType);
   Serialise("", el.bgraOrder);
   Serialise("", el.specialFormat);
-  Serialise("", el.meshColour);
+  Serialise("", el.meshColor);
   Serialise("", el.showAlpha);
   Serialise("", el.topo);
   Serialise("", el.numVerts);
@@ -1374,7 +1587,7 @@ void Serialiser::Serialise(const char *name, MeshFormat &el)
   Serialise("", el.nearPlane);
   Serialise("", el.farPlane);
 
-  SIZE_CHECK(MeshFormat, 104);
+  SIZE_CHECK(104);
 }
 
 template <>
@@ -1383,11 +1596,11 @@ void Serialiser::Serialise(const char *name, CounterDescription &el)
   Serialise("", el.counterID);
   Serialise("", el.name);
   Serialise("", el.description);
-  Serialise("", el.resultCompType);
+  Serialise("", el.resultType);
   Serialise("", el.resultByteWidth);
-  Serialise("", el.units);
+  Serialise("", el.unit);
 
-  SIZE_CHECK(CounterDescription, 56);
+  SIZE_CHECK(56);
 }
 
 template <>
@@ -1395,7 +1608,7 @@ void Serialiser::Serialise(const char *name, PixelModification &el)
 {
   Serialise("", el.eventID);
 
-  Serialise("", el.uavWrite);
+  Serialise("", el.directShaderWrite);
   Serialise("", el.unboundPS);
 
   Serialise("", el.fragIndex);
@@ -1420,7 +1633,7 @@ void Serialiser::Serialise(const char *name, PixelModification &el)
   Serialise("", el.depthTestFailed);
   Serialise("", el.stencilTestFailed);
 
-  SIZE_CHECK(PixelModification, 124);
+  SIZE_CHECK(124);
 }
 
 #pragma endregion Data descriptors
@@ -1434,7 +1647,37 @@ string ToStrHelper<false, SpecialFormat>::Get(const SpecialFormat &el)
   return "<...>";
 }
 template <>
-string ToStrHelper<false, FormatComponentType>::Get(const FormatComponentType &el)
+string ToStrHelper<false, CompType>::Get(const CompType &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, ShaderEvents>::Get(const ShaderEvents &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, TextureCategory>::Get(const TextureCategory &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, BufferCategory>::Get(const BufferCategory &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, D3DBufferViewFlags>::Get(const D3DBufferViewFlags &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, DrawFlags>::Get(const DrawFlags &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, GPUCounter>::Get(const GPUCounter &el)
 {
   return "<...>";
 }
@@ -1444,47 +1687,77 @@ string ToStrHelper<false, TextureSwizzle>::Get(const TextureSwizzle &el)
   return "<...>";
 }
 template <>
-string ToStrHelper<false, CounterUnits>::Get(const CounterUnits &el)
+string ToStrHelper<false, AddressMode>::Get(const AddressMode &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, PrimitiveTopology>::Get(const PrimitiveTopology &el)
+string ToStrHelper<false, CompareFunc>::Get(const CompareFunc &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, ShaderStageType>::Get(const ShaderStageType &el)
+string ToStrHelper<false, BlendMultiplier>::Get(const BlendMultiplier &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, ShaderStageBits>::Get(const ShaderStageBits &el)
+string ToStrHelper<false, BlendOp>::Get(const BlendOp &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, ShaderBindType>::Get(const ShaderBindType &el)
+string ToStrHelper<false, LogicOp>::Get(const LogicOp &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, ShaderResourceType>::Get(const ShaderResourceType &el)
+string ToStrHelper<false, StencilOp>::Get(const StencilOp &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, DebugMessageCategory>::Get(const DebugMessageCategory &el)
+string ToStrHelper<false, CounterUnit>::Get(const CounterUnit &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, DebugMessageSeverity>::Get(const DebugMessageSeverity &el)
+string ToStrHelper<false, Topology>::Get(const Topology &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, DebugMessageSource>::Get(const DebugMessageSource &el)
+string ToStrHelper<false, ShaderStage>::Get(const ShaderStage &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, ShaderStageMask>::Get(const ShaderStageMask &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, BindType>::Get(const BindType &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, TextureDim>::Get(const TextureDim &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, MessageCategory>::Get(const MessageCategory &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, MessageSeverity>::Get(const MessageSeverity &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, MessageSource>::Get(const MessageSource &el)
 {
   return "<...>";
 }
@@ -1499,7 +1772,7 @@ string ToStrHelper<false, MeshDataStage>::Get(const MeshDataStage &el)
   return "<...>";
 }
 template <>
-string ToStrHelper<false, TextureDisplayOverlay>::Get(const TextureDisplayOverlay &el)
+string ToStrHelper<false, DebugOverlay>::Get(const DebugOverlay &el)
 {
   return "<...>";
 }
@@ -1515,141 +1788,147 @@ string ToStrHelper<false, GraphicsAPI>::Get(const GraphicsAPI &el)
 
 // these structures we can just serialise as a blob, since they're POD.
 template <>
-string ToStrHelper<false, D3D11PipelineState::InputAssembler::VertexBuffer>::Get(
-    const D3D11PipelineState::InputAssembler::VertexBuffer &el)
+string ToStrHelper<false, D3D11Pipe::VB>::Get(const D3D11Pipe::VB &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, D3D11PipelineState::Rasterizer::RasterizerState>::Get(
-    const D3D11PipelineState::Rasterizer::RasterizerState &el)
+string ToStrHelper<false, D3D11Pipe::RasterizerState>::Get(const D3D11Pipe::RasterizerState &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, D3D11PipelineState::ShaderStage::CBuffer>::Get(
-    const D3D11PipelineState::ShaderStage::CBuffer &el)
+string ToStrHelper<false, D3D11Pipe::CBuffer>::Get(const D3D11Pipe::CBuffer &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, D3D11PipelineState::Rasterizer::Scissor>::Get(
-    const D3D11PipelineState::Rasterizer::Scissor &el)
+string ToStrHelper<false, D3D11Pipe::Scissor>::Get(const D3D11Pipe::Scissor &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, D3D11PipelineState::Rasterizer::Viewport>::Get(
-    const D3D11PipelineState::Rasterizer::Viewport &el)
+string ToStrHelper<false, D3D11Pipe::Viewport>::Get(const D3D11Pipe::Viewport &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, D3D11PipelineState::Streamout::Output>::Get(
-    const D3D11PipelineState::Streamout::Output &el)
+string ToStrHelper<false, D3D11Pipe::SOBind>::Get(const D3D11Pipe::SOBind &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::VertexInput::VertexBuffer>::Get(
-    const GLPipelineState::VertexInput::VertexBuffer &el)
+string ToStrHelper<false, D3D12Pipe::VB>::Get(const D3D12Pipe::VB &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::FixedVertexProcessing>::Get(
-    const GLPipelineState::FixedVertexProcessing &el)
+string ToStrHelper<false, D3D12Pipe::SOBind>::Get(const D3D12Pipe::SOBind &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::Texture>::Get(const GLPipelineState::Texture &el)
+string ToStrHelper<false, D3D12Pipe::Scissor>::Get(const D3D12Pipe::Scissor &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::Buffer>::Get(const GLPipelineState::Buffer &el)
+string ToStrHelper<false, D3D12Pipe::Viewport>::Get(const D3D12Pipe::Viewport &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::Feedback>::Get(const GLPipelineState::Feedback &el)
+string ToStrHelper<false, D3D12Pipe::RasterizerState>::Get(const D3D12Pipe::RasterizerState &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::Rasterizer::Viewport>::Get(
-    const GLPipelineState::Rasterizer::Viewport &el)
+string ToStrHelper<false, GLPipe::VB>::Get(const GLPipe::VB &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::Rasterizer::Scissor>::Get(
-    const GLPipelineState::Rasterizer::Scissor &el)
+string ToStrHelper<false, GLPipe::FixedVertexProcessing>::Get(const GLPipe::FixedVertexProcessing &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::Rasterizer::RasterizerState>::Get(
-    const GLPipelineState::Rasterizer::RasterizerState &el)
+string ToStrHelper<false, GLPipe::Texture>::Get(const GLPipe::Texture &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, GLPipelineState::Hints>::Get(const GLPipelineState::Hints &el)
+string ToStrHelper<false, GLPipe::Buffer>::Get(const GLPipe::Buffer &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::CurrentPass::RenderArea>::Get(
-    const VulkanPipelineState::CurrentPass::RenderArea &el)
+string ToStrHelper<false, GLPipe::Feedback>::Get(const GLPipe::Feedback &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::InputAssembly>::Get(
-    const VulkanPipelineState::InputAssembly &el)
+string ToStrHelper<false, GLPipe::Viewport>::Get(const GLPipe::Viewport &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::Tessellation>::Get(
-    const VulkanPipelineState::Tessellation &el)
+string ToStrHelper<false, GLPipe::Scissor>::Get(const GLPipe::Scissor &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::Raster>::Get(const VulkanPipelineState::Raster &el)
+string ToStrHelper<false, GLPipe::RasterizerState>::Get(const GLPipe::RasterizerState &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::MultiSample>::Get(
-    const VulkanPipelineState::MultiSample &el)
+string ToStrHelper<false, GLPipe::Hints>::Get(const GLPipe::Hints &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding::BindingElement>::Get(
-    const VulkanPipelineState::Pipeline::DescriptorSet::DescriptorBinding::BindingElement &el)
+string ToStrHelper<false, VKPipe::RenderArea>::Get(const VKPipe::RenderArea &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::VertexInput::Binding>::Get(
-    const VulkanPipelineState::VertexInput::Binding &el)
+string ToStrHelper<false, VKPipe::InputAssembly>::Get(const VKPipe::InputAssembly &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::VertexInput::VertexBuffer>::Get(
-    const VulkanPipelineState::VertexInput::VertexBuffer &el)
+string ToStrHelper<false, VKPipe::Tessellation>::Get(const VKPipe::Tessellation &el)
 {
   return "<...>";
 }
 template <>
-string ToStrHelper<false, VulkanPipelineState::ViewState::ViewportScissor>::Get(
-    const VulkanPipelineState::ViewState::ViewportScissor &el)
+string ToStrHelper<false, VKPipe::Raster>::Get(const VKPipe::Raster &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, VKPipe::MultiSample>::Get(const VKPipe::MultiSample &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, VKPipe::BindingElement>::Get(const VKPipe::BindingElement &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, VKPipe::VertexBinding>::Get(const VKPipe::VertexBinding &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, VKPipe::VB>::Get(const VKPipe::VB &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, VKPipe::ViewportScissor>::Get(const VKPipe::ViewportScissor &el)
 {
   return "<...>";
 }
@@ -1670,6 +1949,11 @@ string ToStrHelper<false, ReplayLogType>::Get(const ReplayLogType &el)
 }
 template <>
 string ToStrHelper<false, FloatVector>::Get(const FloatVector &el)
+{
+  return "<...>";
+}
+template <>
+string ToStrHelper<false, TextureFilter>::Get(const TextureFilter &el)
 {
   return "<...>";
 }
@@ -1734,13 +2018,15 @@ void ReplayProxy::RemapProxyTextureIfNeeded(ResourceFormat &format, GetTextureDa
   {
     switch(format.specialFormat)
     {
-      case eSpecial_S8:
-      case eSpecial_D16S8: params.remap = eRemap_D32S8; break;
-      case eSpecial_ASTC:
-      case eSpecial_EAC:
-      case eSpecial_ETC2: params.remap = eRemap_RGBA8; break;
+      case SpecialFormat::S8:
+      case SpecialFormat::D16S8: params.remap = eRemap_D32S8; break;
+      case SpecialFormat::ASTC:
+      case SpecialFormat::EAC:
+      case SpecialFormat::R5G6B5:
+      case SpecialFormat::ETC2: params.remap = eRemap_RGBA8; break;
       default:
-        RDCERR("Don't know how to remap special format %u, falling back to RGBA32");
+        RDCERR("Don't know how to remap special format %u, falling back to RGBA32",
+               format.specialFormat);
         params.remap = eRemap_RGBA32;
         break;
     }
@@ -1762,19 +2048,19 @@ void ReplayProxy::RemapProxyTextureIfNeeded(ResourceFormat &format, GetTextureDa
     case eRemap_RGBA8:
       format.compCount = 4;
       format.compByteWidth = 1;
-      format.compType = eCompType_UNorm;
+      format.compType = CompType::UNorm;
       // Range adaptation is only needed when remapping a higher precision format down to RGBA8.
       params.whitePoint = 1.0f;
       break;
     case eRemap_RGBA16:
       format.compCount = 4;
       format.compByteWidth = 2;
-      format.compType = eCompType_UNorm;
+      format.compType = CompType::UNorm;
       break;
     case eRemap_RGBA32:
       format.compCount = 4;
       format.compByteWidth = 4;
-      format.compType = eCompType_Float;
+      format.compType = CompType::Float;
       break;
     case eRemap_D32S8: RDCERR("Remapping depth/stencil formats not implemented."); break;
   }
@@ -1794,7 +2080,7 @@ void ReplayProxy::EnsureTexCached(ResourceId texid, uint32_t arrayIdx, uint32_t 
   {
     if(m_ProxyTextures.find(texid) == m_ProxyTextures.end())
     {
-      FetchTexture tex = GetTexture(texid);
+      TextureDescription tex = GetTexture(texid);
 
       ProxyTextureProperties proxy;
       RemapProxyTextureIfNeeded(tex.format, proxy.params);
@@ -1826,7 +2112,7 @@ void ReplayProxy::EnsureBufCached(ResourceId bufid)
   {
     if(m_ProxyBufferIds.find(bufid) == m_ProxyBufferIds.end())
     {
-      FetchBuffer buf = GetBuffer(bufid);
+      BufferDescription buf = GetBuffer(bufid);
       m_ProxyBufferIds[bufid] = m_Proxy->CreateProxyBuffer(buf);
     }
 
@@ -1877,7 +2163,7 @@ bool ReplayProxy::Tick(int type, Serialiser *incomingPacket)
     case eReplayProxy_FreeResource: FreeTargetResource(ResourceId()); break;
     case eReplayProxy_FetchCounters:
     {
-      vector<uint32_t> counters;
+      vector<GPUCounter> counters;
       FetchCounters(counters);
       break;
     }
@@ -1885,7 +2171,7 @@ bool ReplayProxy::Tick(int type, Serialiser *incomingPacket)
     case eReplayProxy_DescribeCounter:
     {
       CounterDescription desc;
-      DescribeCounter(0, desc);
+      DescribeCounter(GPUCounter::EventGPUDuration, desc);
       break;
     }
     case eReplayProxy_FillCBufferVariables:
@@ -1914,17 +2200,17 @@ bool ReplayProxy::Tick(int type, Serialiser *incomingPacket)
       InitPostVSBuffers(dummy);
       break;
     }
-    case eReplayProxy_GetPostVS: GetPostVSBuffers(0, 0, eMeshDataStage_Unknown); break;
+    case eReplayProxy_GetPostVS: GetPostVSBuffers(0, 0, MeshDataStage::Unknown); break;
     case eReplayProxy_BuildTargetShader:
-      BuildTargetShader("", "", 0, eShaderStage_Vertex, NULL, NULL);
+      BuildTargetShader("", "", 0, ShaderStage::Vertex, NULL, NULL);
       break;
     case eReplayProxy_ReplaceResource: ReplaceResource(ResourceId(), ResourceId()); break;
     case eReplayProxy_RemoveReplacement: RemoveReplacement(ResourceId()); break;
     case eReplayProxy_RenderOverlay:
-      RenderOverlay(ResourceId(), eCompType_None, eTexOverlay_None, 0, vector<uint32_t>());
+      RenderOverlay(ResourceId(), CompType::Typeless, DebugOverlay::NoOverlay, 0, vector<uint32_t>());
       break;
     case eReplayProxy_PixelHistory:
-      PixelHistory(vector<EventUsage>(), ResourceId(), 0, 0, 0, 0, 0, eCompType_None);
+      PixelHistory(vector<EventUsage>(), ResourceId(), 0, 0, 0, 0, 0, CompType::Typeless);
       break;
     case eReplayProxy_DebugVertex: DebugVertex(0, 0, 0, 0, 0, 0); break;
     case eReplayProxy_DebugPixel: DebugPixel(0, 0, 0, 0, 0); break;
@@ -1935,6 +2221,8 @@ bool ReplayProxy::Tick(int type, Serialiser *incomingPacket)
       DebugThread(0, dummy1, dummy2);
       break;
     }
+    case eReplayProxy_DisassembleShader: DisassembleShader(NULL, ""); break;
+    case eReplayProxy_GetISATargets: GetDisassemblyTargets(); break;
     default: RDCERR("Unexpected command"); return false;
   }
 
@@ -2028,9 +2316,9 @@ vector<DebugMessage> ReplayProxy::GetDebugMessages()
   return ret;
 }
 
-FetchTexture ReplayProxy::GetTexture(ResourceId id)
+TextureDescription ReplayProxy::GetTexture(ResourceId id)
 {
-  FetchTexture ret = {};
+  TextureDescription ret = {};
 
   m_ToReplaySerialiser->Serialise("", id);
 
@@ -2068,9 +2356,9 @@ vector<ResourceId> ReplayProxy::GetBuffers()
   return ret;
 }
 
-FetchBuffer ReplayProxy::GetBuffer(ResourceId id)
+BufferDescription ReplayProxy::GetBuffer(ResourceId id)
 {
-  FetchBuffer ret = {};
+  BufferDescription ret = {};
 
   m_ToReplaySerialiser->Serialise("", id);
 
@@ -2104,10 +2392,10 @@ void ReplayProxy::SavePipelineState()
     if(!SendReplayCommand(eReplayProxy_SavePipelineState))
       return;
 
-    m_D3D11PipelineState = D3D11PipelineState();
-    m_D3D12PipelineState = D3D12PipelineState();
-    m_GLPipelineState = GLPipelineState();
-    m_VulkanPipelineState = VulkanPipelineState();
+    m_D3D11PipelineState = D3D11Pipe::State();
+    m_D3D12PipelineState = D3D12Pipe::State();
+    m_GLPipelineState = GLPipe::State();
+    m_VulkanPipelineState = VKPipe::State();
   }
 
   m_FromReplaySerialiser->Serialise("", m_D3D11PipelineState);
@@ -2177,9 +2465,9 @@ vector<EventUsage> ReplayProxy::GetUsage(ResourceId id)
   return ret;
 }
 
-FetchFrameRecord ReplayProxy::GetFrameRecord()
+FrameRecord ReplayProxy::GetFrameRecord()
 {
-  FetchFrameRecord ret;
+  FrameRecord ret;
 
   if(m_RemoteServer)
   {
@@ -2256,11 +2544,11 @@ ResourceId ReplayProxy::GetLiveID(ResourceId id)
   return ret;
 }
 
-vector<CounterResult> ReplayProxy::FetchCounters(const vector<uint32_t> &counters)
+vector<CounterResult> ReplayProxy::FetchCounters(const vector<GPUCounter> &counters)
 {
   vector<CounterResult> ret;
 
-  m_ToReplaySerialiser->Serialise("", (vector<uint32_t> &)counters);
+  m_ToReplaySerialiser->Serialise("", (vector<GPUCounter> &)counters);
 
   if(m_RemoteServer)
   {
@@ -2277,9 +2565,9 @@ vector<CounterResult> ReplayProxy::FetchCounters(const vector<uint32_t> &counter
   return ret;
 }
 
-vector<uint32_t> ReplayProxy::EnumerateCounters()
+vector<GPUCounter> ReplayProxy::EnumerateCounters()
 {
-  vector<uint32_t> ret;
+  vector<GPUCounter> ret;
 
   if(m_RemoteServer)
   {
@@ -2296,7 +2584,7 @@ vector<uint32_t> ReplayProxy::EnumerateCounters()
   return ret;
 }
 
-void ReplayProxy::DescribeCounter(uint32_t counterID, CounterDescription &desc)
+void ReplayProxy::DescribeCounter(GPUCounter counterID, CounterDescription &desc)
 {
   m_ToReplaySerialiser->Serialise("", counterID);
 
@@ -2349,19 +2637,19 @@ void ReplayProxy::GetBufferData(ResourceId buff, uint64_t offset, uint64_t len, 
   {
     m_Remote->GetBufferData(buff, offset, len, retData);
 
-    size_t sz = retData.size();
+    uint64_t sz = retData.size();
     m_FromReplaySerialiser->Serialise("", sz);
-    m_FromReplaySerialiser->RawWriteBytes(&retData[0], sz);
+    m_FromReplaySerialiser->RawWriteBytes(&retData[0], (size_t)sz);
   }
   else
   {
     if(!SendReplayCommand(eReplayProxy_GetBufferData))
       return;
 
-    size_t sz = 0;
+    uint64_t sz = 0;
     m_FromReplaySerialiser->Serialise("", sz);
-    retData.resize(sz);
-    memcpy(&retData[0], m_FromReplaySerialiser->RawReadBytes(sz), sz);
+    retData.resize((size_t)sz);
+    memcpy(&retData[0], m_FromReplaySerialiser->RawReadBytes((size_t)sz), (size_t)sz);
   }
 }
 
@@ -2463,7 +2751,7 @@ void ReplayProxy::InitPostVSBuffers(const vector<uint32_t> &events)
 
 MeshFormat ReplayProxy::GetPostVSBuffers(uint32_t eventID, uint32_t instID, MeshDataStage stage)
 {
-  MeshFormat ret = {};
+  MeshFormat ret;
 
   m_ToReplaySerialiser->Serialise("", eventID);
   m_ToReplaySerialiser->Serialise("", instID);
@@ -2484,9 +2772,8 @@ MeshFormat ReplayProxy::GetPostVSBuffers(uint32_t eventID, uint32_t instID, Mesh
   return ret;
 }
 
-ResourceId ReplayProxy::RenderOverlay(ResourceId texid, FormatComponentType typeHint,
-                                      TextureDisplayOverlay overlay, uint32_t eventID,
-                                      const vector<uint32_t> &passEvents)
+ResourceId ReplayProxy::RenderOverlay(ResourceId texid, CompType typeHint, DebugOverlay overlay,
+                                      uint32_t eventID, const vector<uint32_t> &passEvents)
 {
   ResourceId ret;
 
@@ -2557,6 +2844,61 @@ ShaderReflection *ReplayProxy::GetShader(ResourceId id, string entryPoint)
   }
 
   return m_ShaderReflectionCache[key];
+}
+
+string ReplayProxy::DisassembleShader(const ShaderReflection *refl, const string &target)
+{
+  string ret;
+
+  ResourceId id;
+  std::string entryPoint;
+  std::string isatarget = target;
+
+  if(refl)
+  {
+    id = refl->ID;
+    entryPoint = refl->EntryPoint;
+  }
+
+  m_ToReplaySerialiser->Serialise("", id);
+  m_ToReplaySerialiser->Serialise("", entryPoint);
+  m_ToReplaySerialiser->Serialise("", isatarget);
+
+  if(m_RemoteServer)
+  {
+    refl = m_Remote->GetShader(m_Remote->GetLiveID(id), entryPoint);
+    if(refl)
+      ret = m_Remote->DisassembleShader(m_Remote->GetShader(m_Remote->GetLiveID(id), entryPoint),
+                                        isatarget);
+  }
+  else
+  {
+    if(!SendReplayCommand(eReplayProxy_DisassembleShader))
+      return ret;
+  }
+
+  m_FromReplaySerialiser->Serialise("", ret);
+
+  return ret;
+}
+
+vector<string> ReplayProxy::GetDisassemblyTargets()
+{
+  vector<string> ret;
+
+  if(m_RemoteServer)
+  {
+    ret = m_Remote->GetDisassemblyTargets();
+  }
+  else
+  {
+    if(!SendReplayCommand(eReplayProxy_GetISATargets))
+      return ret;
+  }
+
+  m_FromReplaySerialiser->Serialise("", ret);
+
+  return ret;
 }
 
 void ReplayProxy::FreeTargetResource(ResourceId id)
@@ -2641,7 +2983,7 @@ Callstack::AddressDetails ReplayProxy::GetAddr(uint64_t addr)
 }
 
 void ReplayProxy::BuildTargetShader(string source, string entry, const uint32_t compileFlags,
-                                    ShaderStageType type, ResourceId *id, string *errors)
+                                    ShaderStage type, ResourceId *id, string *errors)
 {
   uint32_t flags = compileFlags;
   m_ToReplaySerialiser->Serialise("", source);
@@ -2708,7 +3050,7 @@ void ReplayProxy::RemoveReplacement(ResourceId id)
 vector<PixelModification> ReplayProxy::PixelHistory(vector<EventUsage> events, ResourceId target,
                                                     uint32_t x, uint32_t y, uint32_t slice,
                                                     uint32_t mip, uint32_t sampleIdx,
-                                                    FormatComponentType typeHint)
+                                                    CompType typeHint)
 {
   vector<PixelModification> ret;
 
@@ -2789,17 +3131,21 @@ ShaderDebugTrace ReplayProxy::DebugPixel(uint32_t eventID, uint32_t x, uint32_t 
   return ret;
 }
 
-ShaderDebugTrace ReplayProxy::DebugThread(uint32_t eventID, uint32_t groupid[3], uint32_t threadid[3])
+ShaderDebugTrace ReplayProxy::DebugThread(uint32_t eventID, const uint32_t groupid[3],
+                                          const uint32_t threadid[3])
 {
   ShaderDebugTrace ret;
 
+  uint32_t g[] = {groupid[0], groupid[1], groupid[2]};
+  uint32_t t[] = {threadid[0], threadid[1], threadid[2]};
+
   m_ToReplaySerialiser->Serialise("", eventID);
-  m_ToReplaySerialiser->SerialisePODArray<3>("", groupid);
-  m_ToReplaySerialiser->SerialisePODArray<3>("", threadid);
+  m_ToReplaySerialiser->SerialisePODArray<3>("", g);
+  m_ToReplaySerialiser->SerialisePODArray<3>("", t);
 
   if(m_RemoteServer)
   {
-    ret = m_Remote->DebugThread(eventID, groupid, threadid);
+    ret = m_Remote->DebugThread(eventID, g, t);
   }
   else
   {

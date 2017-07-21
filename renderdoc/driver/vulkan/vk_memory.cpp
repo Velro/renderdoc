@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -88,11 +88,12 @@ uint32_t WrappedVulkan::PhysicalDeviceData::GetMemoryIndex(uint32_t resourceRequ
 void WrappedVulkan::RemapMemoryIndices(VkPhysicalDeviceMemoryProperties *memProps,
                                        uint32_t **memIdxMap)
 {
-  uint32_t *memmap = new uint32_t[32];
+  uint32_t *memmap = new uint32_t[VK_MAX_MEMORY_TYPES];
   *memIdxMap = memmap;
   m_MemIdxMaps.push_back(memmap);
 
-  RDCEraseMem(memmap, sizeof(uint32_t) * 32);
+  for(size_t i = 0; i < VK_MAX_MEMORY_TYPES; i++)
+    memmap[i] = ~0U;
 
 // basic idea here:
 // We want to discourage coherent memory maps as much as possible while capturing,

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -32,9 +32,9 @@
 #include <utility>
 #include <vector>
 #include "api/app/renderdoc_app.h"
-#include "api/replay/capture_options.h"
-#include "api/replay/replay_enums.h"
+#include "api/replay/renderdoc_replay.h"
 #include "common/threading.h"
+#include "common/timing.h"
 #include "os/os_specific.h"
 
 using std::string;
@@ -65,6 +65,16 @@ struct IFrameCapturer
   virtual bool EndFrameCapture(void *dev, void *wnd) = 0;
 };
 
+// READING and EXECUTING are replay states.
+// WRITING_IDLE and WRITING_CAPFRAME are capture states.
+// WRITING isn't actually a state, it's just a midpoint in the enum,
+// so it takes fewer characters to check which state we're in.
+//
+// on replay, m_State < WRITING is the same as
+//(m_State == READING || m_State == EXECUTING)
+//
+// on capture, m_State >= WRITING is the same as
+//(m_State == WRITING_IDLE || m_State == WRITING_CAPFRAME)
 enum LogState
 {
   READING = 0,
@@ -96,6 +106,8 @@ enum RDCDriver
   RDC_D3D9 = 6,
   RDC_Image = 7,
   RDC_Vulkan = 8,
+  RDC_OpenGLES = 9,
+  RDC_D3D8 = 10,
   RDC_Custom = 100000,
   RDC_Custom0 = RDC_Custom,
   RDC_Custom1,
@@ -135,7 +147,7 @@ struct RDCInitParams
     m_pSerialiser = NULL;
   }
   virtual ~RDCInitParams() {}
-  virtual ReplayCreateStatus Serialise() = 0;
+  virtual ReplayStatus Serialise() = 0;
 
   LogState m_State;
   Serialiser *m_pSerialiser;
@@ -145,9 +157,13 @@ struct RDCInitParams
 
 struct CaptureData
 {
-  CaptureData(string p, uint64_t t) : path(p), timestamp(t), retrieved(false) {}
+  CaptureData(string p, uint64_t t, uint32_t f)
+      : path(p), timestamp(t), frameNumber(f), retrieved(false)
+  {
+  }
   string path;
   uint64_t timestamp;
+  uint32_t frameNumber;
   bool retrieved;
 };
 
@@ -162,8 +178,12 @@ enum LoadProgressSection
 class IRemoteDriver;
 class IReplayDriver;
 
-typedef ReplayCreateStatus (*RemoteDriverProvider)(const char *logfile, IRemoteDriver **driver);
-typedef ReplayCreateStatus (*ReplayDriverProvider)(const char *logfile, IReplayDriver **driver);
+typedef ReplayStatus (*RemoteDriverProvider)(const char *logfile, IRemoteDriver **driver);
+typedef ReplayStatus (*ReplayDriverProvider)(const char *logfile, IReplayDriver **driver);
+
+typedef bool (*VulkanLayerCheck)(VulkanLayerFlags &flags, std::vector<std::string> &myJSONs,
+                                 std::vector<std::string> &otherJSONs);
+typedef void (*VulkanLayerInstall)(bool systemLevel);
 
 typedef void (*ShutdownFunction)();
 
@@ -186,6 +206,9 @@ public:
   void Initialise();
   void Shutdown();
 
+  const GlobalEnvironment GetGlobalEnvironment() { return m_GlobalEnv; }
+  void ProcessGlobalEnvironment(GlobalEnvironment env, const std::vector<std::string> &args);
+
   void RegisterShutdownFunction(ShutdownFunction func) { m_ShutdownFunctions.insert(func); }
   void SetReplayApp(bool replay) { m_Replay = replay; }
   bool IsReplayApp() const { return m_Replay; }
@@ -200,7 +223,7 @@ public:
   ICrashHandler *GetCrashHandler() const { return m_ExHandler; }
   Serialiser *OpenWriteSerialiser(uint32_t frameNum, RDCInitParams *params, void *thpixels,
                                   size_t thlen, uint32_t thwidth, uint32_t thheight);
-  void SuccessfullyWrittenLog();
+  void SuccessfullyWrittenLog(uint32_t frameNumber);
 
   void AddChildProcess(uint32_t pid, uint32_t ident)
   {
@@ -228,16 +251,31 @@ public:
     }
   }
 
-  ReplayCreateStatus FillInitParams(const char *logfile, RDCDriver &driverType, string &driverName,
-                                    uint64_t &fileMachineIdent, RDCInitParams *params);
+  ReplayStatus FillInitParams(const char *logfile, RDCDriver &driverType, string &driverName,
+                              uint64_t &fileMachineIdent, RDCInitParams *params);
 
   void RegisterReplayProvider(RDCDriver driver, const char *name, ReplayDriverProvider provider);
   void RegisterRemoteProvider(RDCDriver driver, const char *name, RemoteDriverProvider provider);
 
-  ReplayCreateStatus CreateReplayDriver(RDCDriver driverType, const char *logfile,
-                                        IReplayDriver **driver);
-  ReplayCreateStatus CreateRemoteDriver(RDCDriver driverType, const char *logfile,
-                                        IRemoteDriver **driver);
+  void SetVulkanLayerCheck(VulkanLayerCheck callback) { m_VulkanCheck = callback; }
+  void SetVulkanLayerInstall(VulkanLayerInstall callback) { m_VulkanInstall = callback; }
+  bool NeedVulkanLayerRegistration(VulkanLayerFlags &flags, std::vector<std::string> &myJSONs,
+                                   std::vector<std::string> &otherJSONs)
+  {
+    if(m_VulkanCheck)
+      return m_VulkanCheck(flags, myJSONs, otherJSONs);
+
+    return false;
+  }
+
+  void UpdateVulkanLayerRegistration(bool systemLevel)
+  {
+    if(m_VulkanInstall)
+      m_VulkanInstall(systemLevel);
+  }
+
+  ReplayStatus CreateReplayDriver(RDCDriver driverType, const char *logfile, IReplayDriver **driver);
+  ReplayStatus CreateRemoteDriver(RDCDriver driverType, const char *logfile, IRemoteDriver **driver);
 
   map<RDCDriver, string> GetReplayDrivers();
   map<RDCDriver, string> GetRemoteDrivers();
@@ -295,6 +333,14 @@ public:
   const vector<RENDERDOC_InputButton> &GetCaptureKeys() { return m_CaptureKeys; }
   bool ShouldTriggerCapture(uint32_t frameNumber);
 
+  enum
+  {
+    eOverlay_ActiveWindow = 0x1,
+    eOverlay_CaptureDisabled = 0x2,
+  };
+
+  string GetOverlayText(RDCDriver driver, uint32_t frameNumber, int flags);
+
 private:
   RenderDoc();
   ~RenderDoc();
@@ -307,6 +353,10 @@ private:
 
   vector<RENDERDOC_InputButton> m_FocusKeys;
   vector<RENDERDOC_InputButton> m_CaptureKeys;
+
+  GlobalEnvironment m_GlobalEnv;
+
+  FrameTimer m_FrameTimer;
 
   string m_LoggingFilename;
 
@@ -338,6 +388,9 @@ private:
   map<RDCDriver, string> m_DriverNames;
   map<RDCDriver, ReplayDriverProvider> m_ReplayDriverProviders;
   map<RDCDriver, RemoteDriverProvider> m_RemoteDriverProviders;
+
+  VulkanLayerCheck m_VulkanCheck;
+  VulkanLayerInstall m_VulkanInstall;
 
   set<ShutdownFunction> m_ShutdownFunctions;
 

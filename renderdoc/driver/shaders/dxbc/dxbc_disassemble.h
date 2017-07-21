@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,7 +28,7 @@
 #include <stdint.h>
 #include <string>
 #include <vector>
-#include "api/replay/replay_enums.h"
+#include "api/replay/renderdoc_replay.h"
 
 using std::vector;
 using std::string;
@@ -407,8 +407,53 @@ enum OperandType
   TYPE_OUTPUT_DEPTH_GREATER_EQUAL,
   TYPE_OUTPUT_DEPTH_LESS_EQUAL,
   TYPE_CYCLE_COUNTER,
+  TYPE_OUTPUT_STENCIL_REF,
+  TYPE_INNER_COVERAGE,
 
   NUM_OPERAND_TYPES,
+};
+
+enum SVSemantic
+{
+  SVNAME_UNDEFINED = 0,
+  SVNAME_POSITION,
+  SVNAME_CLIP_DISTANCE,
+  SVNAME_CULL_DISTANCE,
+  SVNAME_RENDER_TARGET_ARRAY_INDEX,
+  SVNAME_VIEWPORT_ARRAY_INDEX,
+  SVNAME_VERTEX_ID,
+  SVNAME_PRIMITIVE_ID,
+  SVNAME_INSTANCE_ID,
+  SVNAME_IS_FRONT_FACE,
+  SVNAME_SAMPLE_INDEX,
+
+  // following are non-contiguous
+  SVNAME_FINAL_QUAD_EDGE_TESSFACTOR0,
+  SVNAME_FINAL_QUAD_EDGE_TESSFACTOR = SVNAME_FINAL_QUAD_EDGE_TESSFACTOR0,
+  SVNAME_FINAL_QUAD_EDGE_TESSFACTOR1,
+  SVNAME_FINAL_QUAD_EDGE_TESSFACTOR2,
+  SVNAME_FINAL_QUAD_EDGE_TESSFACTOR3,
+
+  SVNAME_FINAL_QUAD_INSIDE_TESSFACTOR0,
+  SVNAME_FINAL_QUAD_INSIDE_TESSFACTOR = SVNAME_FINAL_QUAD_INSIDE_TESSFACTOR0,
+  SVNAME_FINAL_QUAD_INSIDE_TESSFACTOR1,
+
+  SVNAME_FINAL_TRI_EDGE_TESSFACTOR0,
+  SVNAME_FINAL_TRI_EDGE_TESSFACTOR = SVNAME_FINAL_TRI_EDGE_TESSFACTOR0,
+  SVNAME_FINAL_TRI_EDGE_TESSFACTOR1,
+  SVNAME_FINAL_TRI_EDGE_TESSFACTOR2,
+
+  SVNAME_FINAL_TRI_INSIDE_TESSFACTOR,
+
+  SVNAME_FINAL_LINE_DETAIL_TESSFACTOR,
+
+  SVNAME_FINAL_LINE_DENSITY_TESSFACTOR,
+
+  SVNAME_TARGET = 64,
+  SVNAME_DEPTH,
+  SVNAME_COVERAGE,
+  SVNAME_DEPTH_GREATER_EQUAL,
+  SVNAME_DEPTH_LESS_EQUAL,
 };
 
 enum OperandIndexType
@@ -651,7 +696,28 @@ enum ComponentType
 // Main structures
 /////////////////////////////////////////////////////////////////////////
 
+class DXBCFile;
+
 struct ASMIndex;
+struct ASMDecl;
+
+enum class ToString
+{
+  None = 0x0,
+  IsDecl = 0x1,
+  ShowSwizzle = 0x2,
+  FriendlyNameRegisters = 0x4,
+};
+
+constexpr inline ToString operator|(ToString a, ToString b)
+{
+  return ToString(int(a) | int(b));
+}
+
+constexpr inline bool operator&(ToString a, ToString b)
+{
+  return (int(a) & int(b)) != 0;
+}
 
 struct ASMOperand
 {
@@ -664,11 +730,12 @@ struct ASMOperand
     modifier = OPERAND_MODIFIER_NONE;
     precision = PRECISION_DEFAULT;
     funcNum = 0;
+    declaration = NULL;
   }
 
   bool operator==(const ASMOperand &o) const;
 
-  string toString(bool swizzle = true) const;
+  string toString(DXBCFile *dxbc, ToString flags) const;
 
   ///////////////////////////////////////
 
@@ -690,6 +757,9 @@ struct ASMOperand
   // 2 is for constant buffers, array inputs etc. [0] indicates the cbuffer, [1] indicates the
   // cbuffer member
   // 3 is rare but follows the above pattern
+
+  // the declaration of the resource in this operand (not always present)
+  ASMDecl *declaration;
 
   uint32_t values[4];    // if this operand is immediate, the values are here
 
@@ -761,7 +831,7 @@ struct ASMDecl
     dim = RESOURCE_DIMENSION_UNKNOWN;
     sampleCount = 0;
     interpolation = INTERPOLATION_UNDEFINED;
-    systemValue = eAttr_None;
+    systemValue = SVNAME_UNDEFINED;
     maxOut = 0;
     samplerMode = NUM_SAMPLERS;
     domain = DOMAIN_UNDEFINED;
@@ -808,10 +878,12 @@ struct ASMDecl
   bool enableMinPrecision;
   bool enableD3D11_1DoubleExtensions;
   bool enableD3D11_1ShaderExtensions;
+  bool enableD3D12AllResourcesBound;
 
   // OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED
   uint32_t stride;
   bool hasCounter;
+  bool rov;
 
   // OPCODE_DCL_TEMPS, OPCODE_DCL_INDEXABLE_TEMP
   uint32_t numTemps;
@@ -827,6 +899,7 @@ struct ASMDecl
   uint32_t groupSize[3];
 
   // OPCODE_DCL_RESOURCE
+  uint32_t space;
   ResourceRetType resType[4];
   ResourceDimension dim;
   uint32_t sampleCount;
@@ -835,7 +908,7 @@ struct ASMDecl
   InterpolationMode interpolation;
 
   // OPCODE_DCL_INPUT_SIV
-  uint32_t systemValue;
+  SVSemantic systemValue;
 
   // OPCODE_DCL_MAX_OUTPUT_VERTEX_COUNT
   uint32_t maxOut;

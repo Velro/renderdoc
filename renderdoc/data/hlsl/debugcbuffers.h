@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -73,7 +73,7 @@ cbuffer DebugGeometryCBuffer REG(b0)
   row_major float4x4 InvProj;
 };
 
-cbuffer DebugPixelCBufferData REG(b1)
+cbuffer DebugPixelCBufferData REG(b0)
 {
   float4 Channels;
 
@@ -125,7 +125,6 @@ cbuffer HistogramCBufferData REG(b0)
 #define RESTYPE_DEPTH_STENCIL 0x5
 #define RESTYPE_DEPTH_MS 0x6
 #define RESTYPE_DEPTH_STENCIL_MS 0x7
-#define RESTYPE_CUBE 0x8
 #define RESTYPE_TEX2D_MS 0x9
 
 #define MESHDISPLAY_SOLID 0x1

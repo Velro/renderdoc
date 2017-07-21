@@ -84,13 +84,13 @@ BEGIN
         BLOCK "080904b0"
         BEGIN
             VALUE "CompanyName", "Baldur Karlsson"
-            VALUE "FileDescription", "Core DLL for RenderDoc - http://renderdoc.org/"
-            VALUE "FileVersion", RENDERDOC_VERSION_STRING ".0.0"
+            VALUE "FileDescription", "Core DLL for RenderDoc - https://renderdoc.org/"
+            VALUE "FileVersion", MAJOR_MINOR_VERSION_STRING ".0.0"
             VALUE "InternalName", "renderdoc.dll"
             VALUE "LegalCopyright", "Copyright © 2016 Baldur Karlsson"
             VALUE "OriginalFilename", "renderdoc.dll"
             VALUE "ProductName", "RenderDoc"
-            VALUE "ProductVersion", RENDERDOC_VERSION_STRING ".0.0"
+            VALUE "ProductVersion", FULL_VERSION_STRING
         END
     END
     BLOCK "VarFileInfo"
@@ -135,6 +135,9 @@ RESOURCE_glsl_array2ms_comp     TYPE_EMBED   "glsl/array2ms.comp"
 RESOURCE_glsl_ms2array_comp     TYPE_EMBED   "glsl/ms2array.comp"
 RESOURCE_glsl_trisize_geom      TYPE_EMBED   "glsl/trisize.geom"
 RESOURCE_glsl_trisize_frag      TYPE_EMBED   "glsl/trisize.frag"
+RESOURCE_glsl_deptharr2ms_frag  TYPE_EMBED   "glsl/deptharr2ms.frag"
+RESOURCE_glsl_depthms2arr_frag  TYPE_EMBED   "glsl/depthms2arr.frag"
+RESOURCE_glsl_gles_texsample_h  TYPE_EMBED   "glsl/gles_texsample.h"
 
 #ifndef APSTUDIO_INVOKED
 /////////////////////////////////////////////////////////////////////////////

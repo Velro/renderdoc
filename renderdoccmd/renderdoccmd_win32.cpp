@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -26,7 +26,6 @@
 #include "renderdoccmd.h"
 #include <app/renderdoc_app.h>
 #include <renderdocshim.h>
-#include <replay/renderdoc_replay.h>
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -233,7 +232,7 @@ void Daemonise()
   // nothing really to do, windows version of renderdoccmd is already 'detached'
 }
 
-void DisplayRendererPreview(ReplayRenderer *renderer, TextureDisplay &displayCfg, uint32_t width,
+void DisplayRendererPreview(IReplayController *renderer, TextureDisplay &displayCfg, uint32_t width,
                             uint32_t height)
 {
   RECT wr = {0, 0, (LONG)width, (LONG)height};
@@ -249,13 +248,9 @@ void DisplayRendererPreview(ReplayRenderer *renderer, TextureDisplay &displayCfg
   ShowWindow(wnd, SW_SHOW);
   UpdateWindow(wnd);
 
-  ReplayOutput *out =
-      ReplayRenderer_CreateOutput(renderer, eWindowingSystem_Win32, wnd, eOutputType_TexDisplay);
+  IReplayOutput *out = renderer->CreateOutput(WindowingSystem::Win32, wnd, ReplayOutputType::Texture);
 
-  OutputConfig c = {eOutputType_TexDisplay};
-
-  ReplayOutput_SetOutputConfig(out, c);
-  ReplayOutput_SetTextureDisplay(out, displayCfg);
+  out->SetTextureDisplay(displayCfg);
 
   MSG msg;
   ZeroMemory(&msg, sizeof(msg));
@@ -274,8 +269,8 @@ void DisplayRendererPreview(ReplayRenderer *renderer, TextureDisplay &displayCfg
       break;
 
     // set to random event beyond the end of the frame to ensure output is marked as dirty
-    ReplayRenderer_SetFrameEvent(renderer, 10000000, true);
-    ReplayOutput_Display(out);
+    renderer->SetFrameEvent(10000000, true);
+    out->Display();
 
     Sleep(40);
   }
@@ -285,6 +280,7 @@ void DisplayRendererPreview(ReplayRenderer *renderer, TextureDisplay &displayCfg
 
 struct UpgradeCommand : public Command
 {
+  UpgradeCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser) { parser.add<string>("path", 0, ""); }
   virtual const char *Description() { return "Internal use only!"; }
   virtual bool IsInternalOnly() { return true; }
@@ -492,6 +488,7 @@ struct UpgradeCommand : public Command
 #if defined(RELEASE)
 struct CrashHandlerCommand : public Command
 {
+  CrashHandlerCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser) {}
   virtual const char *Description() { return "Internal use only!"; }
   virtual bool IsInternalOnly() { return true; }
@@ -506,7 +503,7 @@ struct CrashHandlerCommand : public Command
     Sleep(100);
 
     wstring dumpFolder = tempPath;
-    dumpFolder += L"RenderDocDumps";
+    dumpFolder += L"RenderDoc/dumps";
 
     CreateDirectoryW(dumpFolder.c_str(), NULL);
 
@@ -677,10 +674,12 @@ struct CrashHandlerCommand : public Command
 
 struct GlobalHookCommand : public Command
 {
+  GlobalHookCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser)
   {
     parser.add<string>("match", 0, "");
-    parser.add<string>("log", 0, "");
+    parser.add<string>("logfile", 0, "");
+    parser.add<string>("debuglog", 0, "");
     parser.add<string>("capopts", 0, "");
   }
   virtual const char *Description() { return "Internal use only!"; }
@@ -689,7 +688,8 @@ struct GlobalHookCommand : public Command
   virtual int Execute(cmdline::parser &parser, const CaptureOptions &)
   {
     string pathmatch = parser.get<string>("match");
-    string log = parser.get<string>("log");
+    string logfile = parser.get<string>("logfile");
+    string debuglog = parser.get<string>("debuglog");
 
     CaptureOptions cmdopts;
     readCapOpts(parser.get<string>("capopts").c_str(), &cmdopts);
@@ -724,20 +724,12 @@ struct GlobalHookCommand : public Command
     GetModuleFileNameW(rdoc, rdocpath, _countof(rdocpath) - 1);
     FreeLibrary(rdoc);
 
-    // Create pipe from control program, to stay open until requested to close
-    HANDLE pipe = CreateFileW(
-        L"\\\\.\\pipe\\"
-#ifdef WIN64
-        L"RenderDoc.GlobalHookControl64"
-#else
-        L"RenderDoc.GlobalHookControl32"
-#endif
-        ,
-        GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    // Create stdin pipe from parent program, to stay open until requested to close
+    HANDLE pipe = GetStdHandle(STD_INPUT_HANDLE);
 
     if(pipe == INVALID_HANDLE_VALUE)
     {
-      std::cerr << "globalhook couldn't open control pipe.\n" << std::endl;
+      std::cerr << "globalhook couldn't open stdin pipe.\n" << std::endl;
       return 1;
     }
 
@@ -766,14 +758,15 @@ struct GlobalHookCommand : public Command
 
         wcsncpy_s(shimdata->pathmatchstring, wpathmatch.c_str(), _TRUNCATE);
         wcsncpy_s(shimdata->rdocpath, rdocpath, _TRUNCATE);
-        strncpy_s(shimdata->log, log.c_str(), _TRUNCATE);
+        strncpy_s(shimdata->logfile, logfile.c_str(), _TRUNCATE);
+        strncpy_s(shimdata->debuglog, debuglog.c_str(), _TRUNCATE);
         memcpy(shimdata->opts, &cmdopts, sizeof(CaptureOptions));
 
         static_assert(sizeof(CaptureOptions) <= sizeof(shimdata->opts),
                       "ShimData options is too small");
 
         // wait until a write comes in over the pipe
-        char buf[16];
+        char buf[16] = {0};
         DWORD read = 0;
         ReadFile(pipe, buf, 16, &read, NULL);
 
@@ -904,18 +897,20 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst, _In_opt_ HINSTANCE hPrevInstance, _In_
     return 1;
   }
 
+  GlobalEnvironment env;
+
   // perform an upgrade of the UI
-  add_command("upgrade", new UpgradeCommand());
+  add_command("upgrade", new UpgradeCommand(env));
 
 #if defined(RELEASE)
   // special WIN32 option for launching the crash handler
-  add_command("crashhandle", new CrashHandlerCommand());
+  add_command("crashhandle", new CrashHandlerCommand(env));
 #endif
 
   // this installs a global windows hook pointing at renderdocshim*.dll that filters all running
   // processes and loads renderdoc.dll in the target one. In any other process it unloads as soon as
   // possible
-  add_command("globalhook", new GlobalHookCommand());
+  add_command("globalhook", new GlobalHookCommand(env));
 
-  return renderdoccmd(argv);
+  return renderdoccmd(env, argv);
 }

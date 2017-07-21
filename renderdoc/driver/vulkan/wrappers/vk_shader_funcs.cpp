@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -342,7 +342,24 @@ bool WrappedVulkan::Serialise_vkCreateGraphicsPipelines(
         live = GetResourceManager()->WrapResource(Unwrap(device), pipe);
         GetResourceManager()->AddLiveResource(id, pipe);
 
-        m_CreationInfo.m_Pipeline[live].Init(GetResourceManager(), m_CreationInfo, &info);
+        VulkanCreationInfo::Pipeline &pipeInfo = m_CreationInfo.m_Pipeline[live];
+
+        pipeInfo.Init(GetResourceManager(), m_CreationInfo, &info);
+
+        ResourceId renderPassID = GetResourceManager()->GetNonDispWrapper(info.renderPass)->id;
+
+        info.renderPass = Unwrap(m_CreationInfo.m_RenderPass[renderPassID].loadRPs[info.subpass]);
+        info.subpass = 0;
+
+        ret = ObjDisp(device)->CreateGraphicsPipelines(Unwrap(device), Unwrap(pipelineCache), 1,
+                                                       &info, NULL, &pipeInfo.subpass0pipe);
+        RDCASSERTEQUAL(ret, VK_SUCCESS);
+
+        ResourceId subpass0id =
+            GetResourceManager()->WrapResource(Unwrap(device), pipeInfo.subpass0pipe);
+
+        // register as a live-only resource, so it is cleaned up properly
+        GetResourceManager()->AddLiveResource(subpass0id, pipeInfo.subpass0pipe);
       }
     }
   }

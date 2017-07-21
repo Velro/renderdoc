@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -80,6 +80,8 @@ namespace renderdoc
         [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
         public string filename;
         public DirectoryFileProperty flags;
+        public UInt32 lastmod;
+        public UInt64 size;
 
         public override string ToString()
         {
@@ -106,11 +108,10 @@ namespace renderdoc
     public class ResourceFormat
     {
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
-        private static extern float Maths_HalfToFloat(UInt16 half);
+        private static extern float RENDERDOC_HalfToFloat(UInt16 half);
 
         public ResourceFormat()
         {
-            rawType = 0;
             special = false;
             specialFormat = SpecialFormat.Unknown;
 
@@ -125,7 +126,6 @@ namespace renderdoc
 
         public ResourceFormat(FormatComponentType type, UInt32 count, UInt32 byteWidth)
         {
-            rawType = 0;
             special = false;
             specialFormat = SpecialFormat.Unknown;
 
@@ -137,8 +137,6 @@ namespace renderdoc
 
             strname = "";
         }
-
-        public UInt32 rawType;
 
         // indicates it's not a type represented with the members below
         // usually this means non-uniform across components or block compressed
@@ -195,7 +193,7 @@ namespace renderdoc
 
         public float ConvertFromHalf(UInt16 comp)
         {
-            return Maths_HalfToFloat(comp);
+            return RENDERDOC_HalfToFloat(comp);
         }
 
         public object Interpret(UInt16 comp)
@@ -282,6 +280,44 @@ namespace renderdoc
     };
 
     [StructLayout(LayoutKind.Sequential)]
+    public class TextureFilter
+    {
+        public FilterMode minify;
+        public FilterMode magnify;
+        public FilterMode mip;
+        public FilterFunc func;
+
+        public override string ToString()
+        {
+            string[] filters = { minify.ToString(), magnify.ToString(), mip.ToString() };
+            string[] filterPrefixes = { "Min", "Mag", "Mip" };
+
+            string filter = "", filtPrefix = "", filtVal = "";
+
+            for (int a = 0; a < 3; a++)
+            {
+                if (a == 0 || filters[a] == filters[a - 1])
+                {
+                    if (filtPrefix != "")
+                        filtPrefix += "/";
+                    filtPrefix += filterPrefixes[a];
+                }
+                else
+                {
+                    filter += filtPrefix + ": " + filtVal + ", ";
+
+                    filtPrefix = filterPrefixes[a];
+                }
+                filtVal = filters[a];
+            }
+
+            filter += filtPrefix + ": " + filtVal;
+
+            return filter;
+        }
+    };
+
+    [StructLayout(LayoutKind.Sequential)]
     public class FetchBuffer
     {
         public ResourceId ID;
@@ -307,16 +343,9 @@ namespace renderdoc
         public bool cubemap;
         public UInt32 mips;
         public UInt32 arraysize;
-        public UInt32 numSubresources;
         public TextureCreationFlags creationFlags;
         public UInt32 msQual, msSamp;
         public UInt64 byteSize;
-    };
-
-    [StructLayout(LayoutKind.Sequential)]
-    public class OutputConfig
-    {
-        public OutputType m_Type = OutputType.None;
     };
 
     [StructLayout(LayoutKind.Sequential)]
@@ -496,9 +525,9 @@ namespace renderdoc
     public class FetchFrameInfo
     {
         public UInt32 frameNumber;
-        public UInt32 firstEvent;
         public UInt64 fileOffset;
-        public UInt64 fileSize;
+        public UInt64 uncompressedFileSize;
+        public UInt64 compressedFileSize;
         public UInt64 persistentSize;
         public UInt64 initDataSize;
         public UInt64 captureTime;
@@ -513,8 +542,6 @@ namespace renderdoc
     public class FetchAPIEvent
     {
         public UInt32 eventID;
-
-        public ResourceId context;
 
         [CustomMarshalAs(CustomUnmanagedType.TemplatedArray)]
         public UInt64[] callstack;
@@ -780,7 +807,7 @@ namespace renderdoc
         {
             get
             {
-                return pipelineType == GraphicsAPI.D3D11 ? ".hlsl" : ".glsl";
+                return pipelineType.IsD3D() ? ".hlsl" : ".glsl";
             }
         }
     };

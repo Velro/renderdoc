@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,15 +32,15 @@
 struct D3D12DrawcallTreeNode
 {
   D3D12DrawcallTreeNode() {}
-  explicit D3D12DrawcallTreeNode(const FetchDrawcall &d) : draw(d) {}
-  FetchDrawcall draw;
+  explicit D3D12DrawcallTreeNode(const DrawcallDescription &d) : draw(d) {}
+  DrawcallDescription draw;
   vector<D3D12DrawcallTreeNode> children;
 
   vector<pair<ResourceId, EventUsage> > resourceUsage;
 
   vector<ResourceId> executedCmds;
 
-  D3D12DrawcallTreeNode &operator=(const FetchDrawcall &d)
+  D3D12DrawcallTreeNode &operator=(const DrawcallDescription &d)
   {
     *this = D3D12DrawcallTreeNode(d);
     return *this;
@@ -66,9 +66,9 @@ struct D3D12DrawcallTreeNode
     }
   }
 
-  vector<FetchDrawcall> Bake()
+  vector<DrawcallDescription> Bake()
   {
-    vector<FetchDrawcall> ret;
+    vector<DrawcallDescription> ret;
     if(children.empty())
       return ret;
 
@@ -123,13 +123,17 @@ struct D3D12DrawcallCallback
 
 struct BakedCmdListInfo
 {
-  void BakeFrom(BakedCmdListInfo &parent)
+  void BakeFrom(ResourceId parentID, BakedCmdListInfo &parent)
   {
     draw = parent.draw;
     curEvents = parent.curEvents;
     debugMessages = parent.debugMessages;
     eventCount = parent.curEventID;
     drawCount = parent.drawCount;
+    crackedLists.swap(parent.crackedLists);
+    executeEvents.swap(parent.executeEvents);
+
+    parentList = parentID;
 
     curEventID = 0;
 
@@ -141,23 +145,52 @@ struct BakedCmdListInfo
     parent.debugMessages.clear();
   }
 
-  vector<FetchAPIEvent> curEvents;
+  void ShiftForRemoved(uint32_t shiftDrawID, uint32_t shiftEID, size_t idx);
+
+  struct ExecuteData
+  {
+    ExecuteData()
+        : baseEvent(0),
+          lastEvent(0),
+          patched(false),
+          argBuf(NULL),
+          countBuf(NULL),
+          argOffs(0),
+          countOffs(0),
+          maxCount(0),
+          realCount(0)
+    {
+    }
+
+    uint32_t baseEvent;
+    uint32_t lastEvent;
+    bool patched;
+    ID3D12Resource *argBuf;
+    ID3D12Resource *countBuf;
+    uint64_t argOffs;
+    uint64_t countOffs;
+    ResourceId sig;
+    UINT maxCount;
+    UINT realCount;
+  };
+
+  vector<ID3D12GraphicsCommandList *> crackedLists;
+  vector<ExecuteData> executeEvents;
+
+  vector<APIEvent> curEvents;
   vector<DebugMessage> debugMessages;
   std::list<D3D12DrawcallTreeNode *> drawStack;
 
   vector<pair<ResourceId, EventUsage> > resourceUsage;
 
-  struct CmdListState
-  {
-    D3D12_PRIMITIVE_TOPOLOGY topo;
-
-    uint32_t idxWidth;
-
-    ResourceId rts[8];
-    ResourceId dsv;
-  } state;
+  ResourceId allocator;
+  D3D12_COMMAND_LIST_TYPE type;
+  UINT nodeMask;
+  D3D12RenderState state;
 
   vector<D3D12_RESOURCE_BARRIER> barriers;
+
+  ResourceId parentList;
 
   D3D12DrawcallTreeNode *draw;    // the root draw to copy from when submitting
   uint32_t eventCount;            // how many events are in this cmd list, for quick skipping
@@ -177,6 +210,12 @@ struct D3D12CommandData
   D3D12DrawcallCallback *m_DrawcallCallback;
 
   ResourceId m_LastCmdListID;
+
+  map<ResourceId, ID3D12CommandAllocator *> m_CrackedAllocators;
+
+  vector<ID3D12Resource *> m_IndirectBuffers;
+  static const uint64_t m_IndirectSize = 4 * 1024 * 1024;
+  uint64_t m_IndirectOffset;
 
   map<ResourceId, BakedCmdListInfo> m_BakedCmdListInfo;
 
@@ -244,7 +283,7 @@ struct D3D12CommandData
     uint32_t baseEvent;
   } m_Partial[ePartialNum];
 
-  void InsertDrawsAndRefreshIDs(vector<D3D12DrawcallTreeNode> &cmdBufNodes);
+  void InsertDrawsAndRefreshIDs(ResourceId cmd, vector<D3D12DrawcallTreeNode> &cmdBufNodes);
 
   // this is a list of uint64_t file offset -> uint32_t EIDs of where each
   // drawcall is used. E.g. the drawcall at offset 873954 is EID 50. If a
@@ -253,9 +292,14 @@ struct D3D12CommandData
   // the first one being the 'primary'
   struct DrawcallUse
   {
-    DrawcallUse(uint64_t offs, uint32_t eid) : fileOffset(offs), eventID(eid) {}
+    DrawcallUse(uint64_t offs, uint32_t eid, ResourceId cmd = ResourceId(), uint32_t rel = 0)
+        : fileOffset(offs), cmdList(cmd), eventID(eid), relativeEID(rel)
+    {
+    }
     uint64_t fileOffset;
+    ResourceId cmdList;
     uint32_t eventID;
+    uint32_t relativeEID;
     bool operator<(const DrawcallUse &o) const
     {
       if(fileOffset != o.fileOffset)
@@ -265,11 +309,13 @@ struct D3D12CommandData
   };
   vector<DrawcallUse> m_DrawcallUses;
 
+  vector<DebugMessage> m_EventMessages;
+
   map<ResourceId, ID3D12GraphicsCommandList *> m_RerecordCmds;
 
   bool m_AddedDrawcall;
 
-  vector<FetchAPIEvent> m_RootEvents, m_Events;
+  vector<APIEvent> m_RootEvents, m_Events;
 
   uint64_t m_CurChunkOffset;
 
@@ -290,6 +336,8 @@ struct D3D12CommandData
     return m_RootDrawcallStack;
   }
 
+  void GetIndirectBuffer(size_t size, ID3D12Resource **buf, uint64_t *offs);
+
   // util function to handle fetching the right eventID, calling any
   // aliases then calling PreDraw/PreDispatch.
   uint32_t HandlePreCallback(ID3D12GraphicsCommandList *list, bool dispatch = false,
@@ -300,6 +348,8 @@ struct D3D12CommandData
   ID3D12GraphicsCommandList *RerecordCmdList(ResourceId cmdid,
                                              PartialReplayIndex partialType = ePartialNum);
 
-  void AddDrawcall(const FetchDrawcall &d, bool hasEvents);
-  void AddEvent(D3D12ChunkType type, string description);
+  void AddDrawcall(const DrawcallDescription &d, bool hasEvents, bool addUsage = true);
+  void AddEvent(string description);
+  void AddUsage(D3D12DrawcallTreeNode &drawNode);
+  void AddUsage(D3D12DrawcallTreeNode &drawNode, ResourceId id, uint32_t EID, ResourceUsage usage);
 };

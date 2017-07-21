@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,14 +40,20 @@ void WrappedVulkan::MakeSubpassLoadRP(VkRenderPassCreateInfo &info,
   // so that this RP doesn't perform any layout transitions
   for(uint32_t a = 0; a < sub->colorAttachmentCount; a++)
   {
-    att[sub->pColorAttachments[a].attachment].initialLayout =
-        att[sub->pColorAttachments[a].attachment].finalLayout = sub->pColorAttachments[a].layout;
+    if(sub->pColorAttachments[a].attachment != VK_ATTACHMENT_UNUSED)
+    {
+      att[sub->pColorAttachments[a].attachment].initialLayout =
+          att[sub->pColorAttachments[a].attachment].finalLayout = sub->pColorAttachments[a].layout;
+    }
   }
 
   for(uint32_t a = 0; a < sub->inputAttachmentCount; a++)
   {
-    att[sub->pInputAttachments[a].attachment].initialLayout =
-        att[sub->pInputAttachments[a].attachment].finalLayout = sub->pInputAttachments[a].layout;
+    if(sub->pInputAttachments[a].attachment != VK_ATTACHMENT_UNUSED)
+    {
+      att[sub->pInputAttachments[a].attachment].initialLayout =
+          att[sub->pInputAttachments[a].attachment].finalLayout = sub->pInputAttachments[a].layout;
+    }
   }
 
   if(sub->pDepthStencilAttachment && sub->pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
@@ -650,7 +656,8 @@ bool WrappedVulkan::Serialise_vkCreateRenderPass(Serialiser *localSerialiser, Vk
         {
           MakeSubpassLoadRP(loadInfo, &info, s);
 
-          ret = ObjDisp(device)->CreateRenderPass(Unwrap(device), &info, NULL, &rpinfo.loadRPs[s]);
+          ret =
+              ObjDisp(device)->CreateRenderPass(Unwrap(device), &loadInfo, NULL, &rpinfo.loadRPs[s]);
           RDCASSERTEQUAL(ret, VK_SUCCESS);
 
           // handle the loadRP being a duplicate
@@ -985,9 +992,13 @@ static VkResourceRecord *GetObjRecord(VkDebugReportObjectTypeEXT objType, uint64
     case VK_DEBUG_REPORT_OBJECT_TYPE_SURFACE_KHR_EXT: return GetRecord((VkSurfaceKHR)object);
     case VK_DEBUG_REPORT_OBJECT_TYPE_SWAPCHAIN_KHR_EXT: return GetRecord((VkSwapchainKHR)object);
     case VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_POOL_EXT: return GetRecord((VkCommandPool)object);
+    case VK_DEBUG_REPORT_OBJECT_TYPE_DISPLAY_KHR_EXT:
+    case VK_DEBUG_REPORT_OBJECT_TYPE_DISPLAY_MODE_KHR_EXT:
     case VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT:
     case VK_DEBUG_REPORT_OBJECT_TYPE_DEBUG_REPORT_EXT:
     case VK_DEBUG_REPORT_OBJECT_TYPE_RANGE_SIZE_EXT:
+    case VK_DEBUG_REPORT_OBJECT_TYPE_OBJECT_TABLE_NVX_EXT:
+    case VK_DEBUG_REPORT_OBJECT_TYPE_INDIRECT_COMMANDS_LAYOUT_NVX_EXT:
     case VK_DEBUG_REPORT_OBJECT_TYPE_MAX_ENUM_EXT: break;
   }
   return NULL;
@@ -1019,20 +1030,55 @@ bool WrappedVulkan::Serialise_SetShaderDebugPath(Serialiser *localSerialiser, Vk
 VkResult WrappedVulkan::vkDebugMarkerSetObjectTagEXT(VkDevice device,
                                                      VkDebugMarkerObjectTagInfoEXT *pTagInfo)
 {
-  if(pTagInfo && pTagInfo->tagName == RENDERDOC_ShaderDebugMagicValue_truncated &&
-     pTagInfo->objectType == VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT)
+  if(m_State >= WRITING && pTagInfo)
   {
     VkResourceRecord *record = GetObjRecord(pTagInfo->objectType, pTagInfo->object);
 
-    CACHE_THREAD_SERIALISER();
+    if(!record)
+    {
+      RDCERR("Unrecognised object %d %llu", pTagInfo->objectType, pTagInfo->object);
+      return VK_SUCCESS;
+    }
 
-    SCOPED_SERIALISE_CONTEXT(SET_SHADER_DEBUG_PATH);
-    Serialise_SetShaderDebugPath(localSerialiser, device, pTagInfo);
-    record->AddChunk(scope.Get());
-  }
-  else if(ObjDisp(device)->DebugMarkerSetObjectTagEXT)
-  {
-    return ObjDisp(device)->DebugMarkerSetObjectTagEXT(device, pTagInfo);
+    if(pTagInfo->tagName == RENDERDOC_ShaderDebugMagicValue_truncated &&
+       pTagInfo->objectType == VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT)
+    {
+      CACHE_THREAD_SERIALISER();
+
+      SCOPED_SERIALISE_CONTEXT(SET_SHADER_DEBUG_PATH);
+      Serialise_SetShaderDebugPath(localSerialiser, device, pTagInfo);
+      record->AddChunk(scope.Get());
+    }
+    else if(ObjDisp(device)->DebugMarkerSetObjectTagEXT)
+    {
+      VkDebugMarkerObjectTagInfoEXT unwrapped = *pTagInfo;
+
+      // special case for VkSurfaceKHR - the record pointer is actually just the underlying native
+      // window handle, so instead we unwrap and call through.
+      if(unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_SURFACE_KHR_EXT)
+      {
+        unwrapped.object = GetWrapped((VkSurfaceKHR)unwrapped.object)->real.handle;
+
+        return ObjDisp(device)->DebugMarkerSetObjectTagEXT(device, &unwrapped);
+      }
+
+      if(unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_INSTANCE_EXT ||
+         unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_PHYSICAL_DEVICE_EXT ||
+         unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_QUEUE_EXT ||
+         unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT ||
+         unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_BUFFER_EXT)
+      {
+        WrappedVkDispRes *res = (WrappedVkDispRes *)record->Resource;
+        unwrapped.object = res->real.handle;
+      }
+      else
+      {
+        WrappedVkNonDispRes *res = (WrappedVkNonDispRes *)record->Resource;
+        unwrapped.object = res->real.handle;
+      }
+
+      return ObjDisp(device)->DebugMarkerSetObjectTagEXT(device, &unwrapped);
+    }
   }
 
   return VK_SUCCESS;
@@ -1052,7 +1098,15 @@ bool WrappedVulkan::Serialise_vkDebugMarkerSetObjectNameEXT(Serialiser *localSer
   localSerialiser->Serialise("name", name);
 
   if(m_State == READING)
-    m_CreationInfo.m_Names[GetResourceManager()->GetLiveID(id)] = name;
+  {
+    // if we don't have a live resource, this is probably a command buffer being named on the
+    // virtual non-existant parent, not any of the baked IDs. Just save the name on the original ID
+    // and we'll propagate it in Serialise_vkBeginCommandBuffer
+    if(!GetResourceManager()->HasLiveResource(id) || GetResourceManager()->HasReplacement(id))
+      m_CreationInfo.m_Names[id] = name;
+    else
+      m_CreationInfo.m_Names[GetResourceManager()->GetLiveID(id)] = name;
+  }
 
   return true;
 }
@@ -1060,10 +1114,7 @@ bool WrappedVulkan::Serialise_vkDebugMarkerSetObjectNameEXT(Serialiser *localSer
 VkResult WrappedVulkan::vkDebugMarkerSetObjectNameEXT(VkDevice device,
                                                       VkDebugMarkerObjectNameInfoEXT *pNameInfo)
 {
-  if(ObjDisp(device)->DebugMarkerSetObjectNameEXT)
-    ObjDisp(device)->DebugMarkerSetObjectNameEXT(device, pNameInfo);
-
-  if(m_State >= WRITING)
+  if(m_State >= WRITING && pNameInfo)
   {
     Chunk *chunk = NULL;
 
@@ -1074,6 +1125,38 @@ VkResult WrappedVulkan::vkDebugMarkerSetObjectNameEXT(VkDevice device,
       RDCERR("Unrecognised object %d %llu", pNameInfo->objectType, pNameInfo->object);
       return VK_SUCCESS;
     }
+
+    VkDebugMarkerObjectNameInfoEXT unwrapped = *pNameInfo;
+
+    // special case for VkSurfaceKHR - the record pointer is actually just the underlying native
+    // window handle, so instead we unwrap and call through.
+    if(unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_SURFACE_KHR_EXT)
+    {
+      unwrapped.object = GetWrapped((VkSurfaceKHR)unwrapped.object)->real.handle;
+
+      if(ObjDisp(device)->DebugMarkerSetObjectNameEXT)
+        return ObjDisp(device)->DebugMarkerSetObjectNameEXT(device, &unwrapped);
+
+      return VK_SUCCESS;
+    }
+
+    if(unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_INSTANCE_EXT ||
+       unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_PHYSICAL_DEVICE_EXT ||
+       unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_QUEUE_EXT ||
+       unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT ||
+       unwrapped.objectType == VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_BUFFER_EXT)
+    {
+      WrappedVkDispRes *res = (WrappedVkDispRes *)record->Resource;
+      unwrapped.object = res->real.handle;
+    }
+    else
+    {
+      WrappedVkNonDispRes *res = (WrappedVkNonDispRes *)record->Resource;
+      unwrapped.object = res->real.handle;
+    }
+
+    if(ObjDisp(device)->DebugMarkerSetObjectNameEXT)
+      ObjDisp(device)->DebugMarkerSetObjectNameEXT(device, &unwrapped);
 
     {
       CACHE_THREAD_SERIALISER();

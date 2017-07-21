@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -329,7 +329,7 @@ struct WrappedVkBuffer : WrappedVkNonDispRes
   typedef VkBuffer InnerType;
   static const int AllocPoolCount = 128 * 1024;
   static const int AllocPoolMaxByteSize = 3 * 1024 * 1024;
-  ALLOCATE_WITH_WRAPPED_POOL(WrappedVkBuffer, AllocPoolCount, AllocPoolMaxByteSize);
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedVkBuffer, AllocPoolCount, AllocPoolMaxByteSize, false);
   enum
   {
     TypeEnum = eResBuffer,
@@ -578,6 +578,10 @@ struct UnwrapHelper
   struct UnwrapHelper<vulkantype>                                             \
   {                                                                           \
     typedef WrappedVkDispRes ParentType;                                      \
+    enum                                                                      \
+    {                                                                         \
+      DispatchableType = 1                                                    \
+    };                                                                        \
     typedef CONCAT(Wrapped, vulkantype) Outer;                                \
     static TypedRealHandle ToTypedHandle(vulkantype real)                     \
     {                                                                         \
@@ -594,6 +598,10 @@ struct UnwrapHelper
   struct UnwrapHelper<vulkantype>                             \
   {                                                           \
     typedef WrappedVkNonDispRes ParentType;                   \
+    enum                                                      \
+    {                                                         \
+      DispatchableType = 0                                    \
+    };                                                        \
     typedef CONCAT(Wrapped, vulkantype) Outer;                \
     static TypedRealHandle ToTypedHandle(vulkantype real)     \
     {                                                         \
@@ -680,6 +688,12 @@ void SetDispatchTableOverMagicNumber(VkDevice parent, RealType obj)
   typename UnwrapHelper<RealType>::Outer *wrapped = GetWrapped(obj);
   if(wrapped->loaderTable == 0x01CDC0DE)
     wrapped->loaderTable = GetWrapped(parent)->loaderTable;
+}
+
+template <typename RealType>
+bool IsDispatchable(RealType obj)
+{
+  return (UnwrapHelper<RealType>::DispatchableType) == 1;
 }
 
 template <typename RealType>
@@ -827,7 +841,7 @@ struct SwapchainInfo
 struct InstanceDeviceInfo
 {
 #undef CheckExt
-#define CheckExt(name) name = false;
+#define CheckExt(name) ext_##name = false;
   InstanceDeviceInfo()
   {
     CheckDeviceExts();
@@ -835,7 +849,7 @@ struct InstanceDeviceInfo
   }
 
 #undef CheckExt
-#define CheckExt(name) bool name;
+#define CheckExt(name) bool ext_##name;
 
   CheckDeviceExts();
   CheckInstanceExts();
@@ -1139,13 +1153,13 @@ public:
 
 struct ImageLayouts
 {
-  ImageLayouts() : layerCount(1), levelCount(1), format(VK_FORMAT_UNDEFINED)
+  ImageLayouts() : layerCount(1), levelCount(1), sampleCount(1), format(VK_FORMAT_UNDEFINED)
   {
     extent.width = extent.height = extent.depth = 1;
   }
 
   vector<ImageRegionState> subresourceStates;
-  int layerCount, levelCount;
+  int layerCount, levelCount, sampleCount;
   VkExtent3D extent;
   VkFormat format;
 };

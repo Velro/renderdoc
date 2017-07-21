@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,14 +29,22 @@
 
 struct VulkanCreationInfo;
 class VulkanResourceManager;
+class WrappedVulkan;
 
 struct VulkanRenderState
 {
-  VulkanRenderState(VulkanCreationInfo *createInfo);
+  enum PipelineBinding
+  {
+    BindNone = 0x0,
+    BindGraphics = 0x1,
+    BindCompute = 0x2,
+  };
+
+  VulkanRenderState(WrappedVulkan *driver, VulkanCreationInfo *createInfo);
   VulkanRenderState &operator=(const VulkanRenderState &o);
-  void BeginRenderPassAndApplyState(VkCommandBuffer cmd);
+  void BeginRenderPassAndApplyState(VkCommandBuffer cmd, PipelineBinding binding);
   void EndRenderPass(VkCommandBuffer cmd);
-  void BindPipeline(VkCommandBuffer cmd);
+  void BindPipeline(VkCommandBuffer cmd, PipelineBinding binding, bool subpass0);
 
   // dynamic state
   vector<VkViewport> views;
@@ -88,7 +96,7 @@ struct VulkanRenderState
   };
   vector<VertBuffer> vbuffers;
 
-  VulkanResourceManager *GetResourceManager() { return m_ResourceManager; }
-  VulkanResourceManager *m_ResourceManager;
+  VulkanResourceManager *GetResourceManager();
   VulkanCreationInfo *m_CreationInfo;
+  WrappedVulkan *m_pDriver;
 };

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -30,13 +30,13 @@
 #include "core/core.h"
 #include "serialise/string_utils.h"
 
-#ifdef _MSC_VER
-#pragma warning( \
-    disable : 4422)    // warning C4422: 'snprintf' : too many arguments passed for format string
-                       // false positive as VS is trying to parse renderdoc's custom format strings
+#if ENABLED(RDOC_MSVS)
+// warning C4422: 'snprintf' : too many arguments passed for format string
+// false positive as VS is trying to parse renderdoc's custom format strings
+#pragma warning(disable : 4422)
 #endif
 
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
 
 int64_t Chunk::m_LiveChunks = 0;
 int64_t Chunk::m_TotalMem = 0;
@@ -67,8 +67,8 @@ struct CompressedFileIO
   }
 
   ~CompressedFileIO() { SAFE_DELETE_ARRAY(m_CompressBuf); }
-  uint32_t GetCompressedSize() { return m_CompressedSize; }
-  uint32_t GetUncompressedSize() { return m_UncompressedSize; }
+  uint64_t GetCompressedSize() { return m_CompressedSize; }
+  uint64_t GetUncompressedSize() { return m_UncompressedSize; }
   // write out some data - accumulate into the input pages, then
   // when a page is full call Flush() to flush it out to disk
   void Write(const void *data, size_t len)
@@ -76,7 +76,7 @@ struct CompressedFileIO
     if(data == NULL || len == 0)
       return;
 
-    m_UncompressedSize += (uint32_t)len;
+    m_UncompressedSize += (uint64_t)len;
 
     const byte *src = (const byte *)data;
 
@@ -125,7 +125,7 @@ struct CompressedFileIO
     FileIO::fwrite(&compSize, sizeof(compSize), 1, m_F);
     FileIO::fwrite(m_CompressBuf, 1, compSize, m_F);
 
-    m_CompressedSize += compSize + sizeof(int32_t);
+    m_CompressedSize += uint64_t(compSize) + sizeof(int32_t);
 
     m_PageOffset = 0;
     m_PageIdx = 1 - m_PageIdx;
@@ -147,7 +147,7 @@ struct CompressedFileIO
     if(data == NULL || len == 0)
       return;
 
-    m_UncompressedSize += (uint32_t)len;
+    m_UncompressedSize += (uint64_t)len;
 
     // loop continually, writing up to BlockSize out of what remains of data
     do
@@ -180,9 +180,9 @@ struct CompressedFileIO
     int32_t compSize = 0;
 
     FileIO::fread(&compSize, sizeof(compSize), 1, m_F);
-    FileIO::fread(m_CompressBuf, 1, compSize, m_F);
+    size_t numRead = FileIO::fread(m_CompressBuf, 1, compSize, m_F);
 
-    m_CompressedSize += compSize;
+    m_CompressedSize += uint64_t(compSize);
 
     m_PageIdx = 1 - m_PageIdx;
 
@@ -191,7 +191,7 @@ struct CompressedFileIO
 
     if(decompSize < 0)
     {
-      RDCERR("Error decompressing: %i", decompSize);
+      RDCERR("Error decompressing: %i (%i / %i)", decompSize, int(numRead), compSize);
       return;
     }
 
@@ -228,7 +228,7 @@ struct CompressedFileIO
   LZ4_stream_t m_LZ4Comp;
   LZ4_streamDecode_t m_LZ4Decomp;
   FILE *m_F;
-  uint32_t m_CompressedSize, m_UncompressedSize;
+  uint64_t m_CompressedSize, m_UncompressedSize;
 
   byte m_InPages[2][BlockSize];
   size_t m_PageIdx, m_PageOffset, m_PageData;
@@ -265,7 +265,7 @@ Chunk::Chunk(Serialiser *ser, uint32_t chunkType, bool temporary)
 
   ser->Rewind();
 
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
   int64_t newval = Atomic::Inc64(&m_LiveChunks);
   Atomic::ExchAdd64(&m_TotalMem, m_Length);
 
@@ -295,7 +295,7 @@ Chunk *Chunk::Duplicate()
 
   memcpy(ret->m_Data, m_Data, m_Length);
 
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
   int64_t newval = Atomic::Inc64(&m_LiveChunks);
   Atomic::ExchAdd64(&m_TotalMem, m_Length);
 
@@ -313,7 +313,7 @@ Chunk *Chunk::Duplicate()
 
 Chunk::~Chunk()
 {
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
   Atomic::Dec64(&m_LiveChunks);
   Atomic::ExchAdd64(&m_TotalMem, -int64_t(m_Length));
 #endif
@@ -453,11 +453,15 @@ Serialiser::Serialiser(size_t length, const byte *memoryBuf, bool fileheader)
   m_Mode = READING;
   m_DebugEnabled = false;
 
+  m_FileSize = 0;
+
   if(!fileheader)
   {
     m_BufferSize = length;
     m_CurrentBufferSize = (size_t)m_BufferSize;
     m_BufferHead = m_Buffer = AllocAlignedBuffer(m_CurrentBufferSize);
+
+    m_SerVer = SERIALISE_VERSION;
 
     memcpy(m_Buffer, memoryBuf, m_CurrentBufferSize);
     return;
@@ -632,7 +636,7 @@ Serialiser::Serialiser(size_t length, const byte *memoryBuf, bool fileheader)
   }
 }
 
-Serialiser::Serialiser(const char *path, Mode mode, bool debugMode)
+Serialiser::Serialiser(const char *path, Mode mode, bool debugMode, uint64_t sizeHint)
     : m_pCallstack(NULL), m_pResolver(NULL), m_Buffer(NULL)
 {
   m_ResolverThread = 0;
@@ -643,6 +647,8 @@ Serialiser::Serialiser(const char *path, Mode mode, bool debugMode)
 
   m_Mode = mode;
   m_DebugEnabled = debugMode;
+
+  m_FileSize = 0;
 
   FileHeader header;
 
@@ -657,6 +663,12 @@ Serialiser::Serialiser(const char *path, Mode mode, bool debugMode)
       m_HasError = true;
       return;
     }
+
+    FileIO::fseek64(m_ReadFileHandle, 0, SEEK_END);
+
+    m_FileSize = FileIO::ftell64(m_ReadFileHandle);
+
+    FileIO::fseek64(m_ReadFileHandle, 0, SEEK_SET);
 
     RDCDEBUG("Opened capture file for read");
 
@@ -869,7 +881,17 @@ Serialiser::Serialiser(const char *path, Mode mode, bool debugMode)
           }
           else
           {
-            FileIO::fseek64(m_ReadFileHandle, sectionHeader.sectionLength, SEEK_CUR);
+            if(sectionHeader.sectionLength == 0xffffffff)
+            {
+              RDCWARN(
+                  "Section length 0xFFFFFFFF - assuming truncated value! Seeking to end of file, "
+                  "discarding any remaining sections.");
+              FileIO::fseek64(m_ReadFileHandle, 0, SEEK_END);
+            }
+            else
+            {
+              FileIO::fseek64(m_ReadFileHandle, sectionHeader.sectionLength, SEEK_CUR);
+            }
           }
         }
         else
@@ -925,7 +947,7 @@ Serialiser::Serialiser(const char *path, Mode mode, bool debugMode)
     }
     else
     {
-      m_BufferSize = 128 * 1024;
+      m_BufferSize = sizeHint;
       m_BufferHead = m_Buffer = AllocAlignedBuffer((size_t)m_BufferSize);
     }
   }
@@ -1318,7 +1340,19 @@ void Serialiser::FlushToDisk()
       }
       else
       {
-        FileIO::fwrite(m_DebugText.c_str(), 1, m_DebugText.length(), dbgFile);
+        const char *str = m_DebugText.c_str();
+        size_t len = m_DebugText.length();
+        const size_t chunkSize = 10 * 1024 * 1024;
+        while(len > 0)
+        {
+          size_t writeSize = RDCMIN(len, chunkSize);
+          size_t written = FileIO::fwrite(str, 1, writeSize, dbgFile);
+
+          RDCASSERT(written == writeSize);
+
+          str += writeSize;
+          len -= writeSize;
+        }
 
         FileIO::fclose(dbgFile);
       }
@@ -1433,7 +1467,16 @@ void Serialiser::FlushToDisk()
 
       FileIO::fseek64(binFile, compressedSizeOffset, SEEK_SET);
 
-      compsize = fwriter.GetCompressedSize();
+      uint64_t realCompSize = fwriter.GetCompressedSize();
+
+      if(realCompSize > 0xffffffff)
+      {
+        RDCERR("Compressed file size %llu exceeds representable capture size! May cause corruption",
+               realCompSize);
+        realCompSize = 0xffffffffULL;
+      }
+
+      compsize = uint32_t(realCompSize);
       FileIO::fwrite(&compsize, 1, sizeof(compsize), binFile);
 
       FileIO::fseek64(binFile, uncompressedSizeOffset, SEEK_SET);
@@ -1443,7 +1486,7 @@ void Serialiser::FlushToDisk()
 
       FileIO::fseek64(binFile, curoffs, SEEK_SET);
 
-      RDCLOG("Compressed frame capture data from %u to %u", fwriter.GetUncompressedSize(),
+      RDCLOG("Compressed frame capture data from %llu to %llu", fwriter.GetUncompressedSize(),
              fwriter.GetCompressedSize());
     }
 
@@ -1893,24 +1936,17 @@ void Serialiser::SerialiseBuffer(const char *name, byte *&buf, size_t &len)
   {
     const char *ellipsis = "...";
 
-    float *fbuf = new float[4];
-    fbuf[0] = fbuf[1] = fbuf[2] = fbuf[3] = 0.0f;
-    uint32_t *lbuf = (uint32_t *)fbuf;
+    uint32_t lbuf[4];
 
-    memcpy(fbuf, buf, RDCMIN(len, 4 * sizeof(float)));
+    memcpy(lbuf, buf, RDCMIN(len, 4 * sizeof(uint32_t)));
 
     if(bufLen <= 16)
     {
       ellipsis = "   ";
     }
 
-    DebugPrint(
-        "%s: RawBuffer % 5d:< 0x%08x 0x%08x 0x%08x 0x%08x %s   %  8.4ff %  8.4ff %  8.4ff %  8.4ff "
-        "%s >\n",
-        name, bufLen, lbuf[0], lbuf[1], lbuf[2], lbuf[3], ellipsis, fbuf[0], fbuf[1], fbuf[2],
-        fbuf[3], ellipsis);
-
-    SAFE_DELETE_ARRAY(fbuf);
+    DebugPrint("%s: RawBuffer % 5d:< 0x%08x 0x%08x 0x%08x 0x%08x %s>\n", name, bufLen, lbuf[0],
+               lbuf[1], lbuf[2], lbuf[3], ellipsis);
   }
 }
 
@@ -1964,7 +2000,7 @@ string ToStrHelper<false, int64_t>::Get(const int64_t &el)
 // platforms size_t is typedef'd in such a way that the uint32_t or
 // uint64_t specialisation will kick in. On apple, we need a
 // specific size_t overload
-#if defined(RENDERDOC_PLATFORM_APPLE)
+#if ENABLED(RDOC_APPLE)
 template <>
 string ToStrHelper<false, size_t>::Get(const size_t &el)
 {

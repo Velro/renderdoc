@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -31,11 +31,6 @@
 #include "hooks/hooks.h"
 #include "serialise/string_utils.h"
 
-namespace glEmulate
-{
-void EmulateUnsupportedFunctions(GLHookSet *hooks);
-}
-
 #define DLL_NAME "opengl32.dll"
 
 #define HookInit(function)                                                                          \
@@ -49,14 +44,16 @@ void EmulateUnsupportedFunctions(GLHookSet *hooks);
 #define HookExtension(funcPtrType, function)         \
   if(!strcmp(func, STRINGIZE(function)))             \
   {                                                  \
-    glhooks.GL.function = (funcPtrType)realFunc;     \
+    if(glhooks.GL.function == NULL)                  \
+      glhooks.GL.function = (funcPtrType)realFunc;   \
     return (PROC)&glhooks.CONCAT(function, _hooked); \
   }
 
 #define HookExtensionAlias(funcPtrType, function, alias) \
   if(!strcmp(func, STRINGIZE(alias)))                    \
   {                                                      \
-    glhooks.GL.function = (funcPtrType)realFunc;         \
+    if(glhooks.GL.function == NULL)                      \
+      glhooks.GL.function = (funcPtrType)realFunc;       \
     return (PROC)&glhooks.CONCAT(function, _hooked);     \
   }
 
@@ -309,7 +306,15 @@ void EmulateUnsupportedFunctions(GLHookSet *hooks);
 
 Threading::CriticalSection glLock;
 
-class OpenGLHook : LibraryHook
+typedef BOOL(WINAPI *WGLMAKECURRENTPROC)(HDC, HGLRC);
+typedef BOOL(WINAPI *WGLDELETECONTEXTPROC)(HGLRC);
+
+extern PFNWGLCREATECONTEXTATTRIBSARBPROC createContextAttribs;
+extern PFNWGLGETPIXELFORMATATTRIBIVARBPROC getPixelFormatAttrib;
+extern WGLMAKECURRENTPROC wglMakeCurrentProc;
+extern WGLDELETECONTEXTPROC wglDeleteRC;
+
+class OpenGLHook : LibraryHook, public GLPlatform
 {
 public:
   OpenGLHook()
@@ -362,6 +367,8 @@ public:
   {
     if(wglMakeCurrent_hook())
       wglMakeCurrent_hook()(data.DC, data.ctx);
+    else if(wglMakeCurrentProc)
+      wglMakeCurrentProc(data.DC, data.ctx);
   }
 
   GLWindowingData MakeContext(GLWindowingData share)
@@ -395,11 +402,166 @@ public:
       wglDeleteContext_hook()(context.ctx);
   }
 
+  void DeleteReplayContext(GLWindowingData context)
+  {
+    if(wglDeleteRC)
+    {
+      wglMakeCurrentProc(NULL, NULL);
+      wglDeleteRC(context.ctx);
+      ReleaseDC(context.wnd, context.DC);
+      ::DestroyWindow(context.wnd);
+    }
+  }
+
+  void SwapBuffers(GLWindowingData context) { ::SwapBuffers(context.DC); }
+  void GetOutputWindowDimensions(GLWindowingData context, int32_t &w, int32_t &h)
+  {
+    RECT rect = {0};
+    GetClientRect(context.wnd, &rect);
+    w = rect.right - rect.left;
+    h = rect.bottom - rect.top;
+  }
+
+  bool IsOutputWindowVisible(GLWindowingData context)
+  {
+    return (IsWindowVisible(context.wnd) == TRUE);
+  }
+
+  GLWindowingData GLPlatform::MakeOutputWindow(WindowingSystem system, void *data, bool depth,
+                                               GLWindowingData share_context)
+  {
+    GLWindowingData ret;
+
+    RDCASSERT(system == WindowingSystem::Win32 || system == WindowingSystem::Unknown, system);
+
+    HWND w = (HWND)data;
+
+    if(w == NULL)
+      w = CreateWindowEx(WS_EX_CLIENTEDGE, L"renderdocGLclass", L"", WS_OVERLAPPEDWINDOW,
+                         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, NULL, NULL,
+                         GetModuleHandle(NULL), NULL);
+
+    HDC DC = GetDC(w);
+
+    PIXELFORMATDESCRIPTOR pfd = {0};
+
+    int attrib = eWGL_NUMBER_PIXEL_FORMATS_ARB;
+    int value = 1;
+
+    getPixelFormatAttrib(DC, 1, 0, 1, &attrib, &value);
+
+    int pf = 0;
+
+    int numpfs = value;
+    for(int i = 1; i <= numpfs; i++)
+    {
+      // verify that we have the properties we want
+      attrib = eWGL_DRAW_TO_WINDOW_ARB;
+      getPixelFormatAttrib(DC, i, 0, 1, &attrib, &value);
+      if(value == 0)
+        continue;
+
+      attrib = eWGL_ACCELERATION_ARB;
+      getPixelFormatAttrib(DC, i, 0, 1, &attrib, &value);
+      if(value == eWGL_NO_ACCELERATION_ARB)
+        continue;
+
+      attrib = eWGL_SUPPORT_OPENGL_ARB;
+      getPixelFormatAttrib(DC, i, 0, 1, &attrib, &value);
+      if(value == 0)
+        continue;
+
+      attrib = eWGL_DOUBLE_BUFFER_ARB;
+      getPixelFormatAttrib(DC, i, 0, 1, &attrib, &value);
+      if(value == 0)
+        continue;
+
+      attrib = eWGL_PIXEL_TYPE_ARB;
+      getPixelFormatAttrib(DC, i, 0, 1, &attrib, &value);
+      if(value != eWGL_TYPE_RGBA_ARB)
+        continue;
+
+      // we have an opengl-capable accelerated RGBA context.
+      // we use internal framebuffers to do almost all rendering, so we just need
+      // RGB (color bits > 24) and SRGB buffer.
+
+      attrib = eWGL_COLOR_BITS_ARB;
+      getPixelFormatAttrib(DC, i, 0, 1, &attrib, &value);
+      if(value < 24)
+        continue;
+
+      attrib = WGL_FRAMEBUFFER_SRGB_CAPABLE_ARB;
+      getPixelFormatAttrib(DC, i, 0, 1, &attrib, &value);
+      if(value == 0)
+        continue;
+
+      // this one suits our needs, choose it
+      pf = i;
+      break;
+    }
+
+    if(pf == 0)
+    {
+      ReleaseDC(w, DC);
+      RDCERR("Couldn't choose pixel format");
+      return ret;
+    }
+
+    BOOL res = DescribePixelFormat(DC, pf, sizeof(pfd), &pfd);
+    if(res == FALSE)
+    {
+      ReleaseDC(w, DC);
+      RDCERR("Couldn't describe pixel format");
+      return ret;
+    }
+
+    res = SetPixelFormat(DC, pf, &pfd);
+    if(res == FALSE)
+    {
+      ReleaseDC(w, DC);
+      RDCERR("Couldn't set pixel format");
+      return ret;
+    }
+
+    int attribs[64] = {0};
+    int i = 0;
+
+    attribs[i++] = WGL_CONTEXT_MAJOR_VERSION_ARB;
+    attribs[i++] = GLCoreVersion / 10;
+    attribs[i++] = WGL_CONTEXT_MINOR_VERSION_ARB;
+    attribs[i++] = GLCoreVersion % 10;
+    attribs[i++] = WGL_CONTEXT_FLAGS_ARB;
+#if ENABLED(RDOC_DEVEL)
+    attribs[i++] = WGL_CONTEXT_DEBUG_BIT_ARB;
+#else
+    attribs[i++] = 0;
+#endif
+    attribs[i++] = WGL_CONTEXT_PROFILE_MASK_ARB;
+    attribs[i++] = WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
+
+    HGLRC rc = createContextAttribs(DC, share_context.ctx, attribs);
+    if(rc == NULL)
+    {
+      ReleaseDC(w, DC);
+      RDCERR("Couldn't create %d.%d context - something changed since creation", GLCoreVersion / 10,
+             GLCoreVersion % 10);
+      return ret;
+    }
+
+    ret.DC = DC;
+    ret.ctx = rc;
+    ret.wnd = w;
+
+    return ret;
+  }
+
+  bool DrawQuads(float width, float height, const std::vector<Vec4f> &vertices);
+
 private:
   WrappedOpenGL *GetDriver()
   {
     if(m_GLDriver == NULL)
-      m_GLDriver = new WrappedOpenGL("", GL);
+      m_GLDriver = new WrappedOpenGL("", GL, *this);
 
     return m_GLDriver;
   }
@@ -679,32 +841,43 @@ private:
 
     DWORD err = GetLastError();
 
-    if(rc && glhooks.m_HaveContextCreation && glhooks.m_Contexts.find(rc) == glhooks.m_Contexts.end())
     {
-      glhooks.m_Contexts.insert(rc);
+      SCOPED_LOCK(glLock);
 
-      glhooks.PopulateHooks();
+      if(rc && glhooks.m_HaveContextCreation &&
+         glhooks.m_Contexts.find(rc) == glhooks.m_Contexts.end())
+      {
+        glhooks.m_Contexts.insert(rc);
+
+        glhooks.PopulateHooks();
+      }
+
+      GLWindowingData data;
+      data.DC = dc;
+      data.wnd = WindowFromDC(dc);
+      data.ctx = rc;
+
+      if(glhooks.m_HaveContextCreation)
+        glhooks.GetDriver()->ActivateContext(data);
     }
-
-    GLWindowingData data;
-    data.DC = dc;
-    data.wnd = WindowFromDC(dc);
-    data.ctx = rc;
-
-    if(glhooks.m_HaveContextCreation)
-      glhooks.GetDriver()->ActivateContext(data);
 
     SetLastError(err);
 
     return ret;
   }
 
+  // Make sure that even if internally SwapBuffers calls wglSwapBuffers we don't process both of
+  // them separately
+  bool m_InSwap = false;
+
   static void ProcessSwapBuffers(HDC dc)
   {
     HWND w = WindowFromDC(dc);
 
-    if(w != NULL && glhooks.m_HaveContextCreation)
+    if(w != NULL && glhooks.m_HaveContextCreation && !glhooks.m_InSwap)
     {
+      SCOPED_LOCK(glLock);
+
       RECT r;
       GetClientRect(w, &r);
 
@@ -718,23 +891,41 @@ private:
 
   static BOOL WINAPI SwapBuffers_hooked(HDC dc)
   {
+    SCOPED_LOCK(glLock);
+
     ProcessSwapBuffers(dc);
 
-    return glhooks.SwapBuffers_hook()(dc);
+    glhooks.m_InSwap = true;
+    BOOL ret = glhooks.SwapBuffers_hook()(dc);
+    glhooks.m_InSwap = false;
+
+    return ret;
   }
 
   static BOOL WINAPI wglSwapBuffers_hooked(HDC dc)
   {
+    SCOPED_LOCK(glLock);
+
     ProcessSwapBuffers(dc);
 
-    return glhooks.wglSwapBuffers_hook()(dc);
+    glhooks.m_InSwap = true;
+    BOOL ret = glhooks.wglSwapBuffers_hook()(dc);
+    glhooks.m_InSwap = false;
+
+    return ret;
   }
 
   static BOOL WINAPI wglSwapLayerBuffers_hooked(HDC dc, UINT planes)
   {
+    SCOPED_LOCK(glLock);
+
     ProcessSwapBuffers(dc);
 
-    return glhooks.wglSwapLayerBuffers_hook()(dc, planes);
+    glhooks.m_InSwap = true;
+    BOOL ret = glhooks.wglSwapLayerBuffers_hook()(dc, planes);
+    glhooks.m_InSwap = false;
+
+    return ret;
   }
 
   static BOOL WINAPI wglSwapMultipleBuffers_hooked(UINT numSwaps, CONST WGLSWAP *pSwaps)
@@ -742,7 +933,11 @@ private:
     for(UINT i = 0; pSwaps && i < numSwaps; i++)
       ProcessSwapBuffers(pSwaps[i].hdc);
 
-    return glhooks.wglSwapMultipleBuffers_hook()(numSwaps, pSwaps);
+    glhooks.m_InSwap = true;
+    BOOL ret = glhooks.wglSwapMultipleBuffers_hook()(numSwaps, pSwaps);
+    glhooks.m_InSwap = false;
+
+    return ret;
   }
 
   static LONG WINAPI ChangeDisplaySettingsA_hooked(DEVMODEA *mode, DWORD flags)
@@ -811,16 +1006,15 @@ private:
       glhooks.wglGetPixelFormatAttribivARB_realfunc = (PFNWGLGETPIXELFORMATATTRIBIVARBPROC)realFunc;
       return (PROC)&wglGetPixelFormatAttribivARB_hooked;
     }
-    if(!strncmp(func, "wgl", 3))    // assume wgl functions are safe to just pass straight through
-    {
-      return realFunc;
-    }
 
     HookCheckGLExtensions();
 
+    // assume wgl functions are safe to just pass straight through
+    if(!strncmp(func, "wgl", 3))
+      return realFunc;
+
     // at the moment the unsupported functions are all lowercase (as their name is generated from
-    // the
-    // typedef name).
+    // the typedef name).
     string lowername = strlower(string(func));
 
     CheckUnsupported();
@@ -898,9 +1092,12 @@ private:
     DLLExportHooks();
     HookCheckGLExtensions();
 
+    CheckExtensions(GL);
+
     // see gl_emulated.cpp
-    if(RenderDoc::Inst().IsReplayApp())
-      glEmulate::EmulateUnsupportedFunctions(&GL);
+    glEmulate::EmulateUnsupportedFunctions(&GL);
+
+    glEmulate::EmulateRequiredExtensions(&GL);
 
     return true;
   }
@@ -1308,19 +1505,14 @@ const GLHookSet &GetRealGLFunctions()
   return OpenGLHook::glhooks.GetRealGLFunctions();
 }
 
-void MakeContextCurrent(GLWindowingData data)
+GLPlatform &GetGLPlatform()
 {
-  OpenGLHook::glhooks.MakeContextCurrent(data);
+  return OpenGLHook::glhooks;
 }
 
-GLWindowingData MakeContext(GLWindowingData share)
+Threading::CriticalSection &GetGLLock()
 {
-  return OpenGLHook::glhooks.MakeContext(share);
-}
-
-void DeleteContext(GLWindowingData context)
-{
-  OpenGLHook::glhooks.DeleteContext(context);
+  return glLock;
 }
 
 // dirty immediate mode rendering functions for backwards compatible
@@ -1353,7 +1545,7 @@ const GLenum MAT_PROJ = (GLenum)0x1701;
 
 static bool immediateInited = false;
 
-bool immediateBegin(GLenum mode, float width, float height)
+bool OpenGLHook::DrawQuads(float width, float height, const std::vector<Vec4f> &vertices)
 {
   if(!immediateInited)
   {
@@ -1410,22 +1602,16 @@ bool immediateBegin(GLenum mode, float width, float height)
 
   matMode(prevMatMode);
 
-  begin(mode);
+  begin(eGL_QUADS);
 
-  return true;
-}
+  for(size_t i = 0; i < vertices.size(); i++)
+  {
+    t2f(vertices[i].z, vertices[i].w);
+    v2f(vertices[i].x, vertices[i].y);
+  }
 
-void immediateVert(float x, float y, float u, float v)
-{
-  t2f(u, v);
-  v2f(x, y);
-}
-
-void immediateEnd()
-{
   end();
 
-  GLenum prevMatMode = eGL_NONE;
   getInt(MAT_MODE, (GLint *)&prevMatMode);
 
   matMode(MAT_PROJ);
@@ -1434,4 +1620,6 @@ void immediateEnd()
   popm();
 
   matMode(prevMatMode);
+
+  return true;
 }

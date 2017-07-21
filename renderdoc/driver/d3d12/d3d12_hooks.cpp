@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -96,7 +96,7 @@ public:
   {
     bool success = true;
 
-    WrappedIDXGISwapChain3::RegisterD3DDeviceCallback(GetD3D12DeviceIfAlloc);
+    WrappedIDXGISwapChain4::RegisterD3DDeviceCallback(GetD3D12DeviceIfAlloc);
 
     // also require d3dcompiler_??.dll
     if(GetD3DCompiler() == NULL)
@@ -173,7 +173,7 @@ private:
 
     m_InsideCreate = true;
 
-    if(riid != __uuidof(ID3D12Device))
+    if(riid != __uuidof(ID3D12Device) && riid != __uuidof(ID3D12Device1))
     {
       RDCERR("Unsupported UUID %s for D3D12CreateDevice", ToStr::Get(riid).c_str());
       return E_NOINTERFACE;
@@ -190,7 +190,8 @@ private:
     }
 
     const bool EnableDebugLayer =
-#if 1    // toggle on/off if you want debug layer during replay
+// toggle on/off if you want debug layer during replay
+#if ENABLED(RDOC_DEVEL)
         RenderDoc::Inst().IsReplayApp() ||
 #endif
         (m_EnabledHooks && !reading && RenderDoc::Inst().GetCaptureOptions().APIValidation);
@@ -278,11 +279,23 @@ private:
 
         ID3D12Device *dev = (ID3D12Device *)*ppDevice;
 
+        if(riid == __uuidof(ID3D12Device1))
+        {
+          ID3D12Device1 *dev1 = (ID3D12Device1 *)*ppDevice;
+
+          dev = (ID3D12Device *)dev1;
+        }
+
         WrappedID3D12Device *wrap = new WrappedID3D12Device(dev, &params);
 
         RDCDEBUG("created wrapped device.");
 
         *ppDevice = (ID3D12Device *)wrap;
+
+        if(riid == __uuidof(ID3D12Device1))
+        {
+          *ppDevice = (ID3D12Device1 *)wrap;
+        }
       }
     }
     else if(SUCCEEDED(ret))

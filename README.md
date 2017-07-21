@@ -6,47 +6,39 @@ RenderDoc
 [![Coverity Scan](https://scan.coverity.com/projects/8525/badge.svg)](https://scan.coverity.com/projects/baldurk-renderdoc)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
 
-Welcome to RenderDoc - a graphics debugger, currently available for D3D11, Vulkan and OpenGL development on windows. 
+RenderDoc - a graphics debugger, currently available for Vulkan, D3D11, D3D12, and OpenGL development on windows.
 
-If you have any questions, suggetions or problems or you can [create an issue](https://github.com/baldurk/renderdoc/issues/new) here on github, [email me directly](mailto:baldurk@baldurk.org) or [come into IRC](https://kiwiirc.com/client/irc.freenode.net/#renderdoc) to discuss it.
-
-Quick Links:
+If you have any questions, suggestions or problems or you can [create an issue](https://github.com/baldurk/renderdoc/issues/new) here on github, [email me directly](mailto:baldurk@baldurk.org) or [come into IRC](https://kiwiirc.com/client/irc.freenode.net/#renderdoc) to discuss it.
 
 * **Downloads**: https://renderdoc.org/builds
-* **Documentation**: [renderdoc.chm](https://renderdoc.org/docs/renderdoc.chm) in builds, or https://renderdoc.org/docs
-* **Tutorial Videos**: http://www.youtube.com/user/baldurkarlsson/
-* **Email contact**: [baldurk@baldurk.org](mailto:baldurk@baldurk.org)
-* **IRC channel**: [#renderdoc on freenode](https://kiwiirc.com/client/irc.freenode.net/#renderdoc)
-* **Roadmap/future development**: [Roadmap](https://github.com/baldurk/renderdoc/wiki/Roadmap)
-* **Starting place for developing/contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
-* **How to compile**: [Compilation instructions](CONTRIBUTING.md#compiling)
-* **Code of Conduct**: [Contributor Covenent](CODE_OF_CONDUCT.md)
+* **Documentation**: [renderdoc.chm](https://renderdoc.org/docs/renderdoc.chm) in builds, https://renderdoc.org/docs, http://www.youtube.com/user/baldurkarlsson/
+* **Contact**: [baldurk@baldurk.org](mailto:baldurk@baldurk.org), [#renderdoc on freenode IRC](https://kiwiirc.com/client/irc.freenode.net/#renderdoc)
+* **Information for developing/contributing**: [CONTRIBUTING.md](CONTRIBUTING.md), [Compilation instructions](CONTRIBUTING.md#compiling), [Roadmap](https://github.com/baldurk/renderdoc/wiki/Roadmap)
+* **Code of Conduct**: [Contributor Covenant](CODE_OF_CONDUCT.md)
 
 Screenshots
 --------------
 
-| [ ![Texture view](https://cloud.githubusercontent.com/assets/661798/9667117/3650453a-527a-11e5-9845-cebb26109b49.png) ](https://cloud.githubusercontent.com/assets/661798/8890997/634bf0f8-3316-11e5-9eb7-75d74e3a9356.png) | [ ![Pixel history & shader debug](https://cloud.githubusercontent.com/assets/661798/9667120/38e6d070-527a-11e5-884d-c7f11ca3e0da.png) ](https://cloud.githubusercontent.com/assets/661798/8891006/c7ad2670-3316-11e5-99e8-80f1f720f6f9.png) |
+| [ ![Texture view](https://renderdoc.org/fp/ts_screen1.jpg) ](https://renderdoc.org/fp/screen1.jpg) | [ ![Pixel history & shader debug](https://renderdoc.org/fp/ts_screen2.jpg) ](https://renderdoc.org/fp/screen2.png) |
 | --- | --- |
-| [ ![Mesh viewer](https://cloud.githubusercontent.com/assets/661798/9667125/3ad817b8-527a-11e5-81d7-244b397092f0.png) ](https://cloud.githubusercontent.com/assets/661798/8891021/64ab5c9e-3317-11e5-827a-24002d174efc.png) | [ ![Pipeline viewer & constants](https://cloud.githubusercontent.com/assets/661798/9667129/3c5b143c-527a-11e5-9864-41ae50f74043.png) ](https://cloud.githubusercontent.com/assets/661798/8891033/ef5668ac-3317-11e5-82ff-adb97b040db1.png) |
+| [ ![Mesh viewer](https://renderdoc.org/fp/ts_screen3.jpg) ](https://renderdoc.org/fp/screen3.png) | [ ![Pipeline viewer & constants](https://renderdoc.org/fp/ts_screen4.jpg) ](https://renderdoc.org/fp/screen4.png) |
 
 API Support
 --------------
 
-|                  | Status                                 | Windows                  | Linux                           |
-| ---------------- | -------------------------------------- | ------------------------ | ------------------------------- |
-| D3D11            | Well supported, all features.          | :heavy_check_mark:       | :heavy_multiplication_x:        |
-| OpenGL 3.2 core+ | Well supported, most features.\*       | :heavy_check_mark:       | :heavy_check_mark: No UI\*\*    |
-| Vulkan           | Well supported, most features.         | :heavy_check_mark:       | :heavy_check_mark: No UI\*\*    |
-| D3D12            | In Progress.                           | :arrows_clockwise:       | :heavy_multiplication_x:        |
-| OpenGL Pre-3.2   | No immediate plans                     | :heavy_multiplication_x: | :heavy_multiplication_x:        |
-| D3D10            | No immediate plans                     | :heavy_multiplication_x: | :heavy_multiplication_x:        |
-| D3D9             | No immediate plans                     | :heavy_multiplication_x: | :heavy_multiplication_x:        |
-| OpenGL ES (2&3)  | No immediate plans                     | :heavy_multiplication_x: | :heavy_multiplication_x:        |
-| Metal            | No immediate plans                     | :heavy_multiplication_x: | :heavy_multiplication_x:        |
+|                            | Status                           | Windows                  | Linux                    |
+| -------------------------- | -------------------------------- | ------------------------ | ------------------------ |
+| D3D11                      | Well supported, all features.    | :heavy_check_mark:       | :heavy_multiplication_x: |
+| OpenGL 3.2 core+           | Well supported, most features.\* | :heavy_check_mark:       | :heavy_check_mark:       |
+| Vulkan                     | Well supported, most features.   | :heavy_check_mark:       | :heavy_check_mark:       |
+| D3D12                      | Well supported, most features.   | :heavy_check_mark:       | :heavy_multiplication_x: |
+| OpenGL Compatibility, GLES | No immediate plans               | :heavy_multiplication_x: | :heavy_multiplication_x: |
+| D3D9 & 10                  | No immediate plans               | :heavy_multiplication_x: | :heavy_multiplication_x: |
+| Metal                      | No immediate plans               | :heavy_multiplication_x: | :heavy_multiplication_x: |
 
 * D3D11 has full feature support and is stable & tested. Feature Level 11 hardware is assumed - Radeon 4000/5000+, GeForce 400+, Intel Ivy Bridge, falling back to WARP software emulation if this hardware isn't present.
 * \*OpenGL is only explicitly supported for the core profile 3.2+ subset of features, check the [OpenGL wiki page](https://github.com/baldurk/renderdoc/wiki/OpenGL) for details.
-* \*\*A Qt UI [is in progress](qrenderdoc), with some [implementation notes on the wiki](https://github.com/baldurk/renderdoc/wiki/QRenderDoc-Notes).
+* Currently [the Qt UI](qrenderdoc) is only used on linux. It is working well with a [TODO list of remaining work](https://github.com/baldurk/renderdoc/issues/494). Work is on-going for it to replace the .NET UI on windows.
 
 Downloads
 --------------

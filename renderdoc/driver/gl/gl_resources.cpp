@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -26,7 +26,11 @@
 #include "gl_resources.h"
 #include "gl_hookset.h"
 
-size_t GetCompressedByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum internalformat, int mip)
+byte GLResourceRecord::markerValue[32] = {
+    0xaa, 0xbb, 0xcc, 0xdd, 0x88, 0x77, 0x66, 0x55, 0x01, 0x23, 0x45, 0x67, 0x98, 0x76, 0x54, 0x32,
+};
+
+size_t GetCompressedByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum internalformat)
 {
   if(!IsCompressedFormat(internalformat))
   {
@@ -68,6 +72,8 @@ size_t GetCompressedByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum internalfor
     case eGL_COMPRESSED_RGBA_BPTC_UNORM_ARB:
     case eGL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_ARB:
       return (AlignUp4(w) * AlignUp4(h) * d);
+    // ETC1
+    case eGL_ETC1_RGB8_OES:
     // ETC2
     case eGL_COMPRESSED_RGB8_ETC2:
     case eGL_COMPRESSED_SRGB8_ETC2:
@@ -222,6 +228,7 @@ size_t GetByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum format, GLenum type)
     case eGL_BYTE: elemSize = 1; break;
     case eGL_UNSIGNED_SHORT:
     case eGL_SHORT:
+    case eGL_HALF_FLOAT_OES:
     case eGL_HALF_FLOAT: elemSize = 2; break;
     case eGL_UNSIGNED_INT:
     case eGL_INT:
@@ -295,7 +302,9 @@ GLenum GetBaseFormat(GLenum internalFormat)
     case eGL_R16:
     case eGL_R16_SNORM:
     case eGL_R16F:
-    case eGL_R32F: return eGL_RED;
+    case eGL_R32F:
+    case eGL_RED: return eGL_RED;
+    case eGL_ALPHA:
     case eGL_ALPHA8_EXT: return eGL_ALPHA;
     case eGL_LUMINANCE: return eGL_LUMINANCE;
     case eGL_LUMINANCE_ALPHA: return eGL_LUMINANCE_ALPHA;
@@ -311,7 +320,8 @@ GLenum GetBaseFormat(GLenum internalFormat)
     case eGL_RG16:
     case eGL_RG16_SNORM:
     case eGL_RG16F:
-    case eGL_RG32F: return eGL_RG;
+    case eGL_RG32F:
+    case eGL_RG: return eGL_RG;
     case eGL_RG8I:
     case eGL_RG8UI:
     case eGL_RG16I:
@@ -332,7 +342,8 @@ GLenum GetBaseFormat(GLenum internalFormat)
     case eGL_RGB16F:
     case eGL_RGB32F:
     case eGL_R11F_G11F_B10F:
-    case eGL_RGB9_E5: return eGL_RGB;
+    case eGL_RGB9_E5:
+    case eGL_RGB: return eGL_RGB;
     case eGL_RGB8I:
     case eGL_RGB8UI:
     case eGL_RGB16I:
@@ -350,7 +361,8 @@ GLenum GetBaseFormat(GLenum internalFormat)
     case eGL_RGBA16_SNORM:
     case eGL_SRGB8_ALPHA8:
     case eGL_RGBA16F:
-    case eGL_RGBA32F: return eGL_RGBA;
+    case eGL_RGBA32F:
+    case eGL_RGBA: return eGL_RGBA;
     case eGL_RGB10_A2UI:
     case eGL_RGBA8I:
     case eGL_RGBA8UI:
@@ -358,6 +370,8 @@ GLenum GetBaseFormat(GLenum internalFormat)
     case eGL_RGBA16UI:
     case eGL_RGBA32UI:
     case eGL_RGBA32I: return eGL_RGBA_INTEGER;
+    case eGL_BGRA:
+    case eGL_BGRA8_EXT: return eGL_BGRA;
     case eGL_DEPTH_COMPONENT16:
     case eGL_DEPTH_COMPONENT24:
     case eGL_DEPTH_COMPONENT32:
@@ -388,8 +402,14 @@ GLenum GetDataType(GLenum internalFormat)
     case eGL_R8:
     case eGL_RGB8:
     case eGL_RGB8UI:
+    case eGL_BGRA:
+    case eGL_BGRA8_EXT:
     case eGL_SRGB8_ALPHA8:
-    case eGL_SRGB8: return eGL_UNSIGNED_BYTE;
+    case eGL_SRGB8:
+    case eGL_RED:
+    case eGL_RG:
+    case eGL_RGB:
+    case eGL_RGBA: return eGL_UNSIGNED_BYTE;
     case eGL_RGBA8I:
     case eGL_RG8I:
     case eGL_R8I:
@@ -448,6 +468,7 @@ GLenum GetDataType(GLenum internalFormat)
     case eGL_DEPTH24_STENCIL8: return eGL_UNSIGNED_INT_24_8;
     case eGL_DEPTH32F_STENCIL8: return eGL_FLOAT_32_UNSIGNED_INT_24_8_REV;
     case eGL_STENCIL_INDEX8: return eGL_UNSIGNED_BYTE;
+    case eGL_ALPHA:
     case eGL_ALPHA8_EXT:
     case eGL_LUMINANCE_ALPHA:
     case eGL_LUMINANCE:
@@ -498,8 +519,17 @@ int GetNumMips(const GLHookSet &gl, GLenum target, GLuint tex, GLuint w, GLuint 
   return RDCMAX(1, mips);
 }
 
-GLenum GetSizedFormat(const GLHookSet &gl, GLenum target, GLenum internalFormat)
+GLenum GetSizedFormat(const GLHookSet &gl, GLenum target, GLenum internalFormat, GLenum type)
 {
+  switch(type)
+  {
+    // some types imply a sized internalFormat
+    case eGL_UNSIGNED_SHORT_5_6_5: return eGL_RGB565;
+    case eGL_UNSIGNED_SHORT_4_4_4_4: return eGL_RGBA4;
+    case eGL_UNSIGNED_SHORT_5_5_5_1: return eGL_RGB5_A1;
+    default: break;
+  }
+
   switch(internalFormat)
   {
     // pick sized format ourselves for generic formats
@@ -539,7 +569,7 @@ GLenum GetSizedFormat(const GLHookSet &gl, GLenum target, GLenum internalFormat)
   }
 
   GLint red, depth, stencil;
-  if(gl.glGetInternalformativ)
+  if(HasExt[ARB_internalformat_query2] && gl.glGetInternalformativ)
   {
     gl.glGetInternalformativ(target, internalFormat, eGL_INTERNALFORMAT_RED_SIZE, sizeof(GLint),
                              &red);
@@ -552,7 +582,12 @@ GLenum GetSizedFormat(const GLHookSet &gl, GLenum target, GLenum internalFormat)
   {
     // without the query function, just default to sensible defaults
     red = 8;
-    depth = 32;
+    if(type == eGL_FLOAT)
+      depth = 32;
+    else if(type == eGL_UNSIGNED_SHORT)
+      depth = 16;
+    else
+      depth = 24;
     stencil = 8;
   }
 
@@ -629,6 +664,25 @@ void GetFramebufferMipAndLayer(const GLHookSet &gl, GLenum framebuffer, GLenum a
   {
     *layer = CubeTargetIndex(face);
   }
+}
+
+// GL_TEXTURE_SWIZZLE_RGBA is not supported on GLES, so for consistency we use r/g/b/a component
+// swizzles for both GL and GLES.
+// The same applies to SetTextureSwizzle function.
+void GetTextureSwizzle(const GLHookSet &gl, GLuint tex, GLenum target, GLenum *swizzleRGBA)
+{
+  gl.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_R, (GLint *)&swizzleRGBA[0]);
+  gl.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_G, (GLint *)&swizzleRGBA[1]);
+  gl.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_B, (GLint *)&swizzleRGBA[2]);
+  gl.glGetTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_A, (GLint *)&swizzleRGBA[3]);
+}
+
+void SetTextureSwizzle(const GLHookSet &gl, GLuint tex, GLenum target, GLenum *swizzleRGBA)
+{
+  gl.glTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_R, (GLint *)&swizzleRGBA[0]);
+  gl.glTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_G, (GLint *)&swizzleRGBA[1]);
+  gl.glTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_B, (GLint *)&swizzleRGBA[2]);
+  gl.glTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_A, (GLint *)&swizzleRGBA[3]);
 }
 
 bool EmulateLuminanceFormat(const GLHookSet &gl, GLuint tex, GLenum target, GLenum &internalFormat,
@@ -733,7 +787,16 @@ bool EmulateLuminanceFormat(const GLHookSet &gl, GLuint tex, GLenum target, GLen
   }
 
   if(tex)
-    gl.glTextureParameterivEXT(tex, target, eGL_TEXTURE_SWIZZLE_RGBA, (GLint *)swizzle);
+  {
+    if(HasExt[ARB_texture_swizzle] || HasExt[EXT_texture_swizzle])
+    {
+      SetTextureSwizzle(gl, tex, target, swizzle);
+    }
+    else
+    {
+      RDCERR("Cannot emulate luminance format without texture swizzle extension");
+    }
+  }
 
   return true;
 }
@@ -765,6 +828,8 @@ bool IsCompressedFormat(GLenum internalFormat)
     // BC7
     case eGL_COMPRESSED_RGBA_BPTC_UNORM_ARB:
     case eGL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_ARB:
+    // ETC1
+    case eGL_ETC1_RGB8_OES:
     // ETC2
     case eGL_COMPRESSED_RGB8_ETC2:
     case eGL_COMPRESSED_SRGB8_ETC2:
@@ -938,6 +1003,36 @@ GLenum BufferBinding(GLenum target)
 
   RDCERR("Unexpected target %s", ToStr::Get(target).c_str());
   return eGL_NONE;
+}
+
+GLenum FramebufferBinding(GLenum target)
+{
+  switch(target)
+  {
+    case eGL_FRAMEBUFFER: return eGL_FRAMEBUFFER_BINDING;
+    case eGL_DRAW_FRAMEBUFFER: return eGL_DRAW_FRAMEBUFFER_BINDING;
+    case eGL_READ_FRAMEBUFFER: return eGL_READ_FRAMEBUFFER_BINDING;
+    default: break;
+  }
+
+  RDCERR("Unexpected target %s", ToStr::Get(target).c_str());
+  return eGL_NONE;
+}
+
+bool IsCubeFace(GLenum target)
+{
+  switch(target)
+  {
+    case eGL_TEXTURE_CUBE_MAP_POSITIVE_X:
+    case eGL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+    case eGL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+    case eGL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+    case eGL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+    case eGL_TEXTURE_CUBE_MAP_NEGATIVE_Z: return true;
+    default: break;
+  }
+
+  return false;
 }
 
 GLint CubeTargetIndex(GLenum face)

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -40,11 +40,15 @@ using std::list;
 struct VkInitParams : public RDCInitParams
 {
   VkInitParams();
-  ReplayCreateStatus Serialise();
+  ReplayStatus Serialise();
 
   void Set(const VkInstanceCreateInfo *pCreateInfo, ResourceId inst);
 
-  static const uint32_t VK_SERIALISE_VERSION = 0x0000005;
+  static const uint32_t VK_SERIALISE_VERSION = 0x0000006;
+
+  // backwards compatibility for old logs described at the declaration of this array
+  static const uint32_t VK_NUM_SUPPORTED_OLD_VERSIONS = 1;
+  static const uint32_t VK_OLD_VERSIONS[VK_NUM_SUPPORTED_OLD_VERSIONS];
 
   // version number internal to vulkan stream
   uint32_t SerialiseVersion;
@@ -60,15 +64,15 @@ struct VkInitParams : public RDCInitParams
 struct VulkanDrawcallTreeNode
 {
   VulkanDrawcallTreeNode() {}
-  explicit VulkanDrawcallTreeNode(const FetchDrawcall &d) : draw(d) {}
-  FetchDrawcall draw;
+  explicit VulkanDrawcallTreeNode(const DrawcallDescription &d) : draw(d) {}
+  DrawcallDescription draw;
   vector<VulkanDrawcallTreeNode> children;
 
   vector<pair<ResourceId, EventUsage> > resourceUsage;
 
   vector<ResourceId> executedCmds;
 
-  VulkanDrawcallTreeNode &operator=(const FetchDrawcall &d)
+  VulkanDrawcallTreeNode &operator=(const DrawcallDescription &d)
   {
     *this = VulkanDrawcallTreeNode(d);
     return *this;
@@ -77,26 +81,39 @@ struct VulkanDrawcallTreeNode
   void InsertAndUpdateIDs(const VulkanDrawcallTreeNode &child, uint32_t baseEventID,
                           uint32_t baseDrawID)
   {
+    resourceUsage.reserve(child.resourceUsage.size());
     for(size_t i = 0; i < child.resourceUsage.size(); i++)
     {
       resourceUsage.push_back(child.resourceUsage[i]);
       resourceUsage.back().second.eventID += baseEventID;
     }
 
+    children.reserve(child.children.size());
     for(size_t i = 0; i < child.children.size(); i++)
     {
       children.push_back(child.children[i]);
-      children.back().draw.eventID += baseEventID;
-      children.back().draw.drawcallID += baseDrawID;
-
-      for(int32_t e = 0; e < children.back().draw.events.count; e++)
-        children.back().draw.events[e].eventID += baseEventID;
+      children.back().UpdateIDs(baseEventID, baseDrawID);
     }
   }
 
-  vector<FetchDrawcall> Bake()
+  void UpdateIDs(uint32_t baseEventID, uint32_t baseDrawID)
   {
-    vector<FetchDrawcall> ret;
+    draw.eventID += baseEventID;
+    draw.drawcallID += baseDrawID;
+
+    for(int32_t i = 0; i < draw.events.count; i++)
+      draw.events[i].eventID += baseEventID;
+
+    for(size_t i = 0; i < resourceUsage.size(); i++)
+      resourceUsage[i].second.eventID += baseEventID;
+
+    for(size_t i = 0; i < children.size(); i++)
+      children[i].UpdateIDs(baseEventID, baseDrawID);
+  }
+
+  vector<DrawcallDescription> Bake()
+  {
+    vector<DrawcallDescription> ret;
     if(children.empty())
       return ret;
 
@@ -117,10 +134,6 @@ struct VulkanDrawcallTreeNode
 
 // must be at the start of any function that serialises
 #define CACHE_THREAD_SERIALISER() Serialiser *localSerialiser = GetThreadSerialiser();
-
-// pass the cached serialiser into Serialised_ function
-#undef SERIALISED_PARAMETER
-#define SERIALISED_PARAMETER Serialiser *localSerialiser,
 
 struct VulkanDrawcallCallback
 {
@@ -147,6 +160,11 @@ struct VulkanDrawcallCallback
   virtual void PreDispatch(uint32_t eid, VkCommandBuffer cmd) = 0;
   virtual bool PostDispatch(uint32_t eid, VkCommandBuffer cmd) = 0;
   virtual void PostRedispatch(uint32_t eid, VkCommandBuffer cmd) = 0;
+
+  // finally, these are for copy/blit/resolve/clear/etc
+  virtual void PreMisc(uint32_t eid, DrawFlags flags, VkCommandBuffer cmd) = 0;
+  virtual bool PostMisc(uint32_t eid, DrawFlags flags, VkCommandBuffer cmd) = 0;
+  virtual void PostRemisc(uint32_t eid, DrawFlags flags, VkCommandBuffer cmd) = 0;
 
   // should we re-record all command buffers? this needs to be true if the range
   // being replayed is larger than one command buffer (which usually means the
@@ -192,8 +210,7 @@ private:
   void Serialise_DebugMessages(Serialiser *localSerialiser, bool isDrawcall);
   vector<DebugMessage> GetDebugMessages();
   void AddDebugMessage(DebugMessage msg);
-  void AddDebugMessage(DebugMessageCategory c, DebugMessageSeverity sv, DebugMessageSource src,
-                       std::string d);
+  void AddDebugMessage(MessageCategory c, MessageSeverity sv, MessageSource src, std::string d);
 
   enum
   {
@@ -246,20 +263,16 @@ private:
 
   // util function to handle fetching the right eventID, calling any
   // aliases then calling PreDraw/PreDispatch.
-  uint32_t HandlePreCallback(VkCommandBuffer commandBuffer, bool dispatch = false,
+  uint32_t HandlePreCallback(VkCommandBuffer commandBuffer, DrawFlags type = DrawFlags::Drawcall,
                              uint32_t multiDrawOffset = 0);
 
   vector<WindowingSystem> m_SupportedWindowSystems;
 
   uint32_t m_FrameCounter;
 
-  PerformanceTimer m_FrameTimer;
-  vector<double> m_FrameTimes;
-  double m_TotalTime, m_AvgFrametime, m_MinFrametime, m_MaxFrametime;
-
-  vector<FetchFrameInfo> m_CapturedFrames;
-  FetchFrameRecord m_FrameRecord;
-  vector<FetchDrawcall *> m_Drawcalls;
+  vector<FrameDescription> m_CapturedFrames;
+  FrameRecord m_FrameRecord;
+  vector<DrawcallDescription *> m_Drawcalls;
 
   struct PhysicalDeviceData
   {
@@ -305,8 +318,16 @@ private:
       m_QueueFamilyIdx;    // the family index that we've selected in CreateDevice for our queue
   VkQueue m_Queue;         // the queue used for our own command buffer work
 
-  // the physical devices
+  // the physical devices. At capture time this is trivial, just the enumerated devices.
+  // At replay time this is re-ordered from the real list to try and match
   vector<VkPhysicalDevice> m_PhysicalDevices;
+
+  // replay only, information we need for remapping. The original vector keeps information about the
+  // physical devices used at capture time, and the replay vector contains the real unmodified list
+  // of physical devices at replay time.
+  vector<PhysicalDeviceData> m_OriginalPhysicalDevices;
+  vector<VkPhysicalDevice> m_ReplayPhysicalDevices;
+  vector<bool> m_ReplayPhysicalDevicesUsed;
 
   // the single queue family supported for each physical device
   vector<pair<uint32_t, VkQueueFamilyProperties> > m_SupportedQueueFamilies;
@@ -356,8 +377,8 @@ private:
 
   vector<VkDeviceMemory> m_CleanupMems;
   vector<VkEvent> m_CleanupEvents;
+  vector<VkEvent> m_PersistentEvents;
 
-  const VkPhysicalDeviceFeatures &GetDeviceFeatures() { return m_PhysicalDeviceData.features; }
   const VkPhysicalDeviceProperties &GetDeviceProps() { return m_PhysicalDeviceData.props; }
   VkDriverInfo GetDriverVersion() { return VkDriverInfo(m_PhysicalDeviceData.props); }
   const VkFormatProperties &GetFormatProperties(VkFormat f)
@@ -381,7 +402,7 @@ private:
     {
     }
     ~BakedCmdBufferInfo() { SAFE_DELETE(draw); }
-    vector<FetchAPIEvent> curEvents;
+    vector<APIEvent> curEvents;
     vector<DebugMessage> debugMessages;
     list<VulkanDrawcallTreeNode *> drawStack;
 
@@ -612,7 +633,7 @@ private:
 
   void ApplyInitialContents();
 
-  vector<FetchAPIEvent> m_RootEvents, m_Events;
+  vector<APIEvent> m_RootEvents, m_Events;
   bool m_AddedDrawcall;
 
   uint64_t m_CurChunkOffset;
@@ -620,6 +641,8 @@ private:
   uint32_t m_FirstEventID, m_LastEventID;
 
   VulkanDrawcallTreeNode m_ParentDrawcall;
+
+  bool m_ExtensionsEnabled[VkCheckExt_Max];
 
   // in vk_<platform>.cpp
   bool AddRequiredExtensions(bool instance, vector<string> &extensionList,
@@ -640,8 +663,8 @@ private:
   void ProcessChunk(uint64_t offset, VulkanChunkType context);
   void ContextReplayLog(LogState readType, uint32_t startEventID, uint32_t endEventID, bool partial);
   void ContextProcessChunk(uint64_t offset, VulkanChunkType chunk);
-  void AddDrawcall(const FetchDrawcall &d, bool hasEvents);
-  void AddEvent(VulkanChunkType type, string description);
+  void AddDrawcall(const DrawcallDescription &d, bool hasEvents);
+  void AddEvent(string description);
 
   void AddUsage(VulkanDrawcallTreeNode &drawNode, vector<DebugMessage> &debugMessages);
 
@@ -681,15 +704,21 @@ public:
 
   bool ReleaseResource(WrappedVkRes *res);
 
-  ReplayCreateStatus Initialise(VkInitParams &params);
+  ReplayStatus Initialise(VkInitParams &params);
+  uint32_t GetLogVersion() { return m_InitParams.SerialiseVersion; }
   void Shutdown();
   void ReplayLog(uint32_t startEventID, uint32_t endEventID, ReplayLogType replayType);
   void ReadLogInitialisation();
 
-  FetchFrameRecord &GetFrameRecord() { return m_FrameRecord; }
-  FetchAPIEvent GetEvent(uint32_t eventID);
+  FrameRecord &GetFrameRecord() { return m_FrameRecord; }
+  APIEvent GetEvent(uint32_t eventID);
   uint32_t GetMaxEID() { return m_Events.back().eventID; }
-  const FetchDrawcall *GetDrawcall(uint32_t eventID);
+  const DrawcallDescription *GetDrawcall(uint32_t eventID);
+
+  ResourceId GetDescLayoutForDescSet(ResourceId descSet)
+  {
+    return m_DescriptorSetState[descSet].layout;
+  }
 
   vector<EventUsage> GetUsage(ResourceId id) { return m_ResourceUses[id]; }
   // return the pre-selected device and queue
@@ -722,11 +751,13 @@ public:
 
   VulkanRenderState &GetRenderState() { return m_RenderState; }
   void SetDrawcallCB(VulkanDrawcallCallback *cb) { m_DrawcallCallback = cb; }
+  bool IsSupportedExtension(const char *extName);
   VkResult FilterDeviceExtensionProperties(VkPhysicalDevice physDev, uint32_t *pPropertyCount,
                                            VkExtensionProperties *pProperties);
   static VkResult GetProvidedExtensionProperties(uint32_t *pPropertyCount,
                                                  VkExtensionProperties *pProperties);
 
+  const VkPhysicalDeviceFeatures &GetDeviceFeatures() { return m_PhysicalDeviceData.features; }
   // Device initialization
 
   IMPLEMENT_FUNCTION_SERIALISED(VkResult, vkCreateInstance, const VkInstanceCreateInfo *pCreateInfo,
@@ -1324,21 +1355,43 @@ public:
                            const VkAllocationCallbacks *pAllocator);
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
+  // VK_KHR_win32_surface
   VkResult vkCreateWin32SurfaceKHR(VkInstance instance,
                                    const VkWin32SurfaceCreateInfoKHR *pCreateInfo,
                                    const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
 
   VkBool32 vkGetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice physicalDevice,
                                                           uint32_t queueFamilyIndex);
+
+  // VK_NV_external_memory_win32
+  VkResult vkGetMemoryWin32HandleNV(VkDevice device, VkDeviceMemory memory,
+                                    VkExternalMemoryHandleTypeFlagsNV handleType, HANDLE *pHandle);
+
+  // VK_KHX_external_memory_win32
+  VkResult vkGetMemoryWin32HandleKHX(VkDevice device, VkDeviceMemory memory,
+                                     VkExternalMemoryHandleTypeFlagBitsKHX handleType,
+                                     HANDLE *pHandle);
+  VkResult vkGetMemoryWin32HandlePropertiesKHX(
+      VkDevice device, VkExternalMemoryHandleTypeFlagBitsKHX handleType, HANDLE handle,
+      VkMemoryWin32HandlePropertiesKHX *pMemoryWin32HandleProperties);
+
+  // VK_KHX_external_semaphore_win32
+  VkResult vkImportSemaphoreWin32HandleKHX(
+      VkDevice device, const VkImportSemaphoreWin32HandleInfoKHX *pImportSemaphoreWin32HandleInfo);
+  VkResult vkGetSemaphoreWin32HandleKHX(VkDevice device, VkSemaphore semaphore,
+                                        VkExternalSemaphoreHandleTypeFlagBitsKHX handleType,
+                                        HANDLE *pHandle);
 #endif
 
 #if defined(VK_USE_PLATFORM_ANDROID_KHR)
+  // VK_KHR_android_surface
   VkResult vkCreateAndroidSurfaceKHR(VkInstance instance,
                                      const VkAndroidSurfaceCreateInfoKHR *pCreateInfo,
                                      const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
 #endif
 
 #if defined(VK_USE_PLATFORM_XCB_KHR)
+  // VK_KHR_xcb_surface
   VkResult vkCreateXcbSurfaceKHR(VkInstance instance, const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
                                  const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
 
@@ -1349,12 +1402,20 @@ public:
 #endif
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
+  // VK_KHR_xlib_surface
   VkResult vkCreateXlibSurfaceKHR(VkInstance instance, const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
                                   const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
 
   VkBool32 vkGetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice physicalDevice,
                                                          uint32_t queueFamilyIndex, Display *dpy,
                                                          VisualID visualID);
+
+  // VK_EXT_acquire_xlib_display
+  VkResult vkAcquireXlibDisplayEXT(VkPhysicalDevice physicalDevice, Display *dpy,
+                                   VkDisplayKHR display);
+  VkResult vkGetRandROutputDisplayEXT(VkPhysicalDevice physicalDevice, Display *dpy,
+                                      RROutput rrOutput, VkDisplayKHR *pDisplay);
+
 #endif
 
   // VK_KHR_display and VK_KHR_display_swapchain. These have no library or include dependencies so
@@ -1392,4 +1453,77 @@ public:
                                        const VkSwapchainCreateInfoKHR *pCreateInfos,
                                        const VkAllocationCallbacks *pAllocator,
                                        VkSwapchainKHR *pSwapchains);
+
+  // VK_NV_external_memory_capabilities
+  VkResult vkGetPhysicalDeviceExternalImageFormatPropertiesNV(
+      VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkImageTiling tiling,
+      VkImageUsageFlags usage, VkImageCreateFlags flags,
+      VkExternalMemoryHandleTypeFlagsNV externalHandleType,
+      VkExternalImageFormatPropertiesNV *pExternalImageFormatProperties);
+
+  // VK_KHR_maintenance1
+  void vkTrimCommandPoolKHR(VkDevice device, VkCommandPool commandPool,
+                            VkCommandPoolTrimFlagsKHR flags);
+
+  // VK_KHR_get_physical_device_properties2
+  void vkGetPhysicalDeviceFeatures2KHR(VkPhysicalDevice physicalDevice,
+                                       VkPhysicalDeviceFeatures2KHR *pFeatures);
+  void vkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice physicalDevice,
+                                         VkPhysicalDeviceProperties2KHR *pProperties);
+  void vkGetPhysicalDeviceFormatProperties2KHR(VkPhysicalDevice physicalDevice, VkFormat format,
+                                               VkFormatProperties2KHR *pFormatProperties);
+  VkResult vkGetPhysicalDeviceImageFormatProperties2KHR(
+      VkPhysicalDevice physicalDevice, const VkPhysicalDeviceImageFormatInfo2KHR *pImageFormatInfo,
+      VkImageFormatProperties2KHR *pImageFormatProperties);
+  void vkGetPhysicalDeviceQueueFamilyProperties2KHR(VkPhysicalDevice physicalDevice, uint32_t *pCount,
+                                                    VkQueueFamilyProperties2KHR *pQueueFamilyProperties);
+  void vkGetPhysicalDeviceMemoryProperties2KHR(VkPhysicalDevice physicalDevice,
+                                               VkPhysicalDeviceMemoryProperties2KHR *pMemoryProperties);
+  void vkGetPhysicalDeviceSparseImageFormatProperties2KHR(
+      VkPhysicalDevice physicalDevice, const VkPhysicalDeviceSparseImageFormatInfo2KHR *pFormatInfo,
+      uint32_t *pPropertyCount, VkSparseImageFormatProperties2KHR *pProperties);
+
+  // VK_EXT_display_surface_counter
+  VkResult vkGetPhysicalDeviceSurfaceCapabilities2EXT(VkPhysicalDevice physicalDevice,
+                                                      VkSurfaceKHR surface,
+                                                      VkSurfaceCapabilities2EXT *pSurfaceCapabilities);
+
+  // VK_EXT_display_control
+  VkResult vkDisplayPowerControlEXT(VkDevice device, VkDisplayKHR display,
+                                    const VkDisplayPowerInfoEXT *pDisplayPowerInfo);
+  VkResult vkRegisterDeviceEventEXT(VkDevice device, const VkDeviceEventInfoEXT *pDeviceEventInfo,
+                                    const VkAllocationCallbacks *pAllocator, VkFence *pFence);
+  VkResult vkRegisterDisplayEventEXT(VkDevice device, VkDisplayKHR display,
+                                     const VkDisplayEventInfoEXT *pDisplayEventInfo,
+                                     const VkAllocationCallbacks *pAllocator, VkFence *pFence);
+  VkResult vkGetSwapchainCounterEXT(VkDevice device, VkSwapchainKHR swapchain,
+                                    VkSurfaceCounterFlagBitsEXT counter, uint64_t *pCounterValue);
+
+  // VK_EXT_direct_mode_display
+  VkResult vkReleaseDisplayEXT(VkPhysicalDevice physicalDevice, VkDisplayKHR display);
+
+  // VK_KHX_external_memory_capabilities
+  void vkGetPhysicalDeviceExternalBufferPropertiesKHX(
+      VkPhysicalDevice physicalDevice,
+      const VkPhysicalDeviceExternalBufferInfoKHX *pExternalBufferInfo,
+      VkExternalBufferPropertiesKHX *pExternalBufferProperties);
+
+  // VK_KHX_external_memory_fd
+  VkResult vkGetMemoryFdKHX(VkDevice device, VkDeviceMemory memory,
+                            VkExternalMemoryHandleTypeFlagBitsKHX handleType, int *pFd);
+  VkResult vkGetMemoryFdPropertiesKHX(VkDevice device,
+                                      VkExternalMemoryHandleTypeFlagBitsKHX handleType, int fd,
+                                      VkMemoryFdPropertiesKHX *pMemoryFdProperties);
+
+  // VK_KHX_external_semaphore_capabilities
+  void vkGetPhysicalDeviceExternalSemaphorePropertiesKHX(
+      VkPhysicalDevice physicalDevice,
+      const VkPhysicalDeviceExternalSemaphoreInfoKHX *pExternalSemaphoreInfo,
+      VkExternalSemaphorePropertiesKHX *pExternalSemaphoreProperties);
+
+  // VK_KHX_external_semaphore_fd
+  VkResult vkImportSemaphoreFdKHX(VkDevice device,
+                                  const VkImportSemaphoreFdInfoKHX *pImportSemaphoreFdInfo);
+  VkResult vkGetSemaphoreFdKHX(VkDevice device, VkSemaphore semaphore,
+                               VkExternalSemaphoreHandleTypeFlagBitsKHX handleType, int *pFd);
 };

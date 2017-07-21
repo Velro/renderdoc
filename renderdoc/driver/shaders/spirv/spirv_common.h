@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,21 +26,40 @@
 
 #include <stdint.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include "3rdparty/glslang/SPIRV/spirv.hpp"
 
 using std::string;
 using std::vector;
 
-enum SPIRVShaderStage
+enum class SPIRVShaderStage
 {
-  eSPIRVVertex,
-  eSPIRVTessControl,
-  eSPIRVTessEvaluation,
-  eSPIRVGeometry,
-  eSPIRVFragment,
-  eSPIRVCompute,
-  eSPIRVInvalid,
+  Vertex,
+  TessControl,
+  TessEvaluation,
+  Geometry,
+  Fragment,
+  Compute,
+  Invalid,
+};
+
+enum class SPIRVSourceLanguage
+{
+  Unknown,
+  OpenGLGLSL,
+  VulkanGLSL,
+  VulkanHLSL,
+};
+
+struct SPIRVCompilationSettings
+{
+  SPIRVCompilationSettings(SPIRVSourceLanguage l, SPIRVShaderStage s) : stage(s), lang(l) {}
+  SPIRVCompilationSettings() = default;
+
+  SPIRVShaderStage stage = SPIRVShaderStage::Invalid;
+  SPIRVSourceLanguage lang = SPIRVSourceLanguage::Unknown;
+  std::string entryPoint;
 };
 
 void InitSPIRVCompiler();
@@ -48,8 +67,27 @@ void ShutdownSPIRVCompiler();
 
 struct SPVInstruction;
 
+enum class ShaderStage : uint32_t;
 struct ShaderReflection;
 struct ShaderBindpointMapping;
+
+// extra information that goes along with a ShaderReflection that has extra information for SPIR-V
+// patching
+struct SPIRVPatchData
+{
+  struct OutputAccess
+  {
+    // ID of the base output variable
+    uint32_t ID;
+
+    // the access chain of indices
+    std::vector<uint32_t> accessChain;
+  };
+
+  // matches the output signature array, with details of where to fetch the output from in the
+  // SPIR-V.
+  std::vector<OutputAccess> outputs;
+};
 
 struct SPVModule
 {
@@ -66,6 +104,8 @@ struct SPVModule
 
   spv::SourceLanguage sourceLang;
   uint32_t sourceVer;
+
+  vector<std::pair<string, string>> sourceFiles;
 
   vector<string> extensions;
 
@@ -86,10 +126,12 @@ struct SPVModule
   SPVInstruction *GetByID(uint32_t id);
   string Disassemble(const string &entryPoint);
 
-  void MakeReflection(const string &entryPoint, ShaderReflection *reflection,
-                      ShaderBindpointMapping *mapping);
+  ShaderStage StageForEntry(const string &entryPoint) const;
+
+  void MakeReflection(ShaderStage stage, const string &entryPoint, ShaderReflection &reflection,
+                      ShaderBindpointMapping &mapping, SPIRVPatchData &patchData);
 };
 
-string CompileSPIRV(SPIRVShaderStage shadType, const vector<string> &sources,
+string CompileSPIRV(const SPIRVCompilationSettings &settings, const vector<string> &sources,
                     vector<uint32_t> &spirv);
 void ParseSPIRV(uint32_t *spirv, size_t spirvLength, SPVModule &module);

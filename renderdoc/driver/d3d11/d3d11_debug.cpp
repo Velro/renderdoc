@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,6 +28,7 @@
 #include "data/resource.h"
 #include "driver/d3d11/d3d11_resources.h"
 #include "driver/dx/official/d3dcompiler.h"
+#include "driver/ihv/amd/amd_counters.h"
 #include "driver/shaders/dxbc/dxbc_debug.h"
 #include "maths/camera.h"
 #include "maths/formatpacking.h"
@@ -84,9 +85,14 @@ D3D11DebugManager::D3D11DebugManager(WrappedID3D11Device *wrapper)
   if(RenderDoc::Inst().GetCrashHandler())
     RenderDoc::Inst().GetCrashHandler()->RegisterMemoryRegion(this, sizeof(D3D11DebugManager));
 
-  m_pDevice = wrapper->GetReal();
+  m_WrappedDevice = wrapper;
+  m_pDevice = wrapper;
   m_pDevice->GetImmediateContext(&m_pImmediateContext);
   m_ResourceManager = wrapper->GetResourceManager();
+
+  m_WrappedContext = wrapper->GetImmediateContext();
+
+  m_HighlightCache.driver = wrapper->GetReplay();
 
   m_OutputWindowID = 1;
 
@@ -95,11 +101,7 @@ D3D11DebugManager::D3D11DebugManager(WrappedID3D11Device *wrapper)
 
   m_width = m_height = 1;
 
-  m_WrappedDevice = wrapper;
-  ID3D11DeviceContext *ctx = NULL;
-  m_WrappedDevice->GetImmediateContext(&ctx);
-  m_WrappedDevice->InternalRef();
-  m_WrappedContext = (WrappedID3D11DeviceContext *)ctx;
+  wrapper->InternalRef();
 
   RenderDoc::Inst().SetProgress(DebugManagerInit, 0.0f);
 
@@ -108,7 +110,7 @@ D3D11DebugManager::D3D11DebugManager(WrappedID3D11Device *wrapper)
   HRESULT hr = S_OK;
 
   IDXGIDevice *pDXGIDevice;
-  hr = m_WrappedDevice->QueryInterface(__uuidof(IDXGIDevice), (void **)&pDXGIDevice);
+  hr = m_pDevice->QueryInterface(__uuidof(IDXGIDevice), (void **)&pDXGIDevice);
 
   if(FAILED(hr))
   {
@@ -155,10 +157,23 @@ D3D11DebugManager::D3D11DebugManager(WrappedID3D11Device *wrapper)
   PostDeviceInitCounters();
 
   RenderDoc::Inst().SetProgress(DebugManagerInit, 1.0f);
+
+  AMDCounters *counters = new AMDCounters();
+  if(counters->Init((void *)m_pDevice))
+  {
+    m_pAMDCounters = counters;
+  }
+  else
+  {
+    delete counters;
+    m_pAMDCounters = NULL;
+  }
 }
 
 D3D11DebugManager::~D3D11DebugManager()
 {
+  SAFE_DELETE(m_pAMDCounters);
+
   PreDeviceShutdownCounters();
 
   if(m_ShaderCacheDirty)
@@ -202,9 +217,8 @@ D3D11DebugManager::~D3D11DebugManager()
 
   m_PostVSData.clear();
 
-  SAFE_RELEASE(m_WrappedContext);
-  m_WrappedDevice->InternalRelease();
   SAFE_RELEASE(m_pImmediateContext);
+  m_WrappedDevice->InternalRelease();
 
   if(RenderDoc::Inst().GetCrashHandler())
     RenderDoc::Inst().GetCrashHandler()->UnregisterMemoryRegion(this);
@@ -422,7 +436,7 @@ ID3D11ComputeShader *D3D11DebugManager::MakeCShader(const char *source, const ch
 }
 
 void D3D11DebugManager::BuildShader(string source, string entry, const uint32_t compileFlags,
-                                    ShaderStageType type, ResourceId *id, string *errors)
+                                    ShaderStage type, ResourceId *id, string *errors)
 {
   if(id == NULL || errors == NULL)
   {
@@ -435,12 +449,12 @@ void D3D11DebugManager::BuildShader(string source, string entry, const uint32_t 
 
   switch(type)
   {
-    case eShaderStage_Vertex: profile = "vs_5_0"; break;
-    case eShaderStage_Hull: profile = "hs_5_0"; break;
-    case eShaderStage_Domain: profile = "ds_5_0"; break;
-    case eShaderStage_Geometry: profile = "gs_5_0"; break;
-    case eShaderStage_Pixel: profile = "ps_5_0"; break;
-    case eShaderStage_Compute: profile = "cs_5_0"; break;
+    case ShaderStage::Vertex: profile = "vs_5_0"; break;
+    case ShaderStage::Hull: profile = "hs_5_0"; break;
+    case ShaderStage::Domain: profile = "ds_5_0"; break;
+    case ShaderStage::Geometry: profile = "gs_5_0"; break;
+    case ShaderStage::Pixel: profile = "ps_5_0"; break;
+    case ShaderStage::Compute: profile = "cs_5_0"; break;
     default:
       RDCERR("Unexpected type in BuildShader!");
       *id = ResourceId();
@@ -458,10 +472,10 @@ void D3D11DebugManager::BuildShader(string source, string entry, const uint32_t 
 
   switch(type)
   {
-    case eShaderStage_Vertex:
+    case ShaderStage::Vertex:
     {
       ID3D11VertexShader *sh = NULL;
-      m_WrappedDevice->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
+      m_pDevice->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
 
       SAFE_RELEASE(blob);
 
@@ -471,10 +485,10 @@ void D3D11DebugManager::BuildShader(string source, string entry, const uint32_t 
         *id = ResourceId();
       return;
     }
-    case eShaderStage_Hull:
+    case ShaderStage::Hull:
     {
       ID3D11HullShader *sh = NULL;
-      m_WrappedDevice->CreateHullShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
+      m_pDevice->CreateHullShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
 
       SAFE_RELEASE(blob);
 
@@ -484,10 +498,10 @@ void D3D11DebugManager::BuildShader(string source, string entry, const uint32_t 
         *id = ResourceId();
       return;
     }
-    case eShaderStage_Domain:
+    case ShaderStage::Domain:
     {
       ID3D11DomainShader *sh = NULL;
-      m_WrappedDevice->CreateDomainShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
+      m_pDevice->CreateDomainShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
 
       SAFE_RELEASE(blob);
 
@@ -497,11 +511,10 @@ void D3D11DebugManager::BuildShader(string source, string entry, const uint32_t 
         *id = ResourceId();
       return;
     }
-    case eShaderStage_Geometry:
+    case ShaderStage::Geometry:
     {
       ID3D11GeometryShader *sh = NULL;
-      m_WrappedDevice->CreateGeometryShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL,
-                                            &sh);
+      m_pDevice->CreateGeometryShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
 
       SAFE_RELEASE(blob);
 
@@ -511,10 +524,10 @@ void D3D11DebugManager::BuildShader(string source, string entry, const uint32_t 
         *id = ResourceId();
       return;
     }
-    case eShaderStage_Pixel:
+    case ShaderStage::Pixel:
     {
       ID3D11PixelShader *sh = NULL;
-      m_WrappedDevice->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
+      m_pDevice->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
 
       SAFE_RELEASE(blob);
 
@@ -524,11 +537,10 @@ void D3D11DebugManager::BuildShader(string source, string entry, const uint32_t 
         *id = ResourceId();
       return;
     }
-    case eShaderStage_Compute:
+    case ShaderStage::Compute:
     {
       ID3D11ComputeShader *sh = NULL;
-      m_WrappedDevice->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL,
-                                           &sh);
+      m_pDevice->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(), NULL, &sh);
 
       SAFE_RELEASE(blob);
 
@@ -647,25 +659,31 @@ bool D3D11DebugManager::InitDebugRendering()
 
   if(RenderDoc::Inst().IsReplayApp())
   {
-    D3D11_INPUT_ELEMENT_DESC inputDesc;
+    D3D11_INPUT_ELEMENT_DESC inputDescSecondary[2];
 
-    inputDesc.SemanticName = "POSITION";
-    inputDesc.SemanticIndex = 0;
-    inputDesc.Format = DXGI_FORMAT_R32G32B32_FLOAT;
-    inputDesc.InputSlot = 0;
-    inputDesc.InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-    inputDesc.AlignedByteOffset = 0;
-    inputDesc.InstanceDataStepRate = 0;
+    inputDescSecondary[0].SemanticName = "pos";
+    inputDescSecondary[0].SemanticIndex = 0;
+    inputDescSecondary[0].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    inputDescSecondary[0].InputSlot = 0;
+    inputDescSecondary[0].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
+    inputDescSecondary[0].AlignedByteOffset = 0;
+    inputDescSecondary[0].InstanceDataStepRate = 0;
+
+    inputDescSecondary[1].SemanticName = "sec";
+    inputDescSecondary[1].SemanticIndex = 0;
+    inputDescSecondary[1].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    inputDescSecondary[1].InputSlot = 0;
+    inputDescSecondary[1].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
+    inputDescSecondary[1].AlignedByteOffset = 0;
+    inputDescSecondary[1].InstanceDataStepRate = 0;
 
     vector<byte> bytecode;
 
     m_DebugRender.GenericVS = MakeVShader(displayhlsl.c_str(), "RENDERDOC_DebugVS", "vs_4_0");
     m_DebugRender.TexDisplayPS =
         MakePShader(displayhlsl.c_str(), "RENDERDOC_TexDisplayPS", "ps_5_0");
-    m_DebugRender.WireframeVS = MakeVShader(meshhlsl.c_str(), "RENDERDOC_WireframeVS", "vs_4_0", 1,
-                                            &inputDesc, &m_DebugRender.GenericLayout);
-    m_DebugRender.MeshVS =
-        MakeVShader(meshhlsl.c_str(), "RENDERDOC_MeshVS", "vs_4_0", 0, NULL, NULL, &bytecode);
+    m_DebugRender.MeshVS = MakeVShader(meshhlsl.c_str(), "RENDERDOC_MeshVS", "vs_4_0", 2,
+                                       inputDescSecondary, &m_DebugRender.GenericLayout, &bytecode);
     m_DebugRender.MeshGS = MakeGShader(meshhlsl.c_str(), "RENDERDOC_MeshGS", "gs_4_0");
     m_DebugRender.MeshPS = MakePShader(meshhlsl.c_str(), "RENDERDOC_MeshPS", "ps_4_0");
 
@@ -677,32 +695,6 @@ bool D3D11DebugManager::InitDebugRendering()
     m_DebugRender.MeshVSBytecode = new byte[bytecode.size()];
     m_DebugRender.MeshVSBytelen = (uint32_t)bytecode.size();
     memcpy(m_DebugRender.MeshVSBytecode, &bytecode[0], bytecode.size());
-
-    D3D11_INPUT_ELEMENT_DESC inputDescHomog[2];
-
-    inputDescHomog[0].SemanticName = "pos";
-    inputDescHomog[0].SemanticIndex = 0;
-    inputDescHomog[0].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    inputDescHomog[0].InputSlot = 0;
-    inputDescHomog[0].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-    inputDescHomog[0].AlignedByteOffset = 0;
-    inputDescHomog[0].InstanceDataStepRate = 0;
-
-    inputDescHomog[1].SemanticName = "sec";
-    inputDescHomog[1].SemanticIndex = 0;
-    inputDescHomog[1].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    inputDescHomog[1].InputSlot = 0;
-    inputDescHomog[1].InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-    inputDescHomog[1].AlignedByteOffset = 0;
-    inputDescHomog[1].InstanceDataStepRate = 0;
-
-    m_DebugRender.WireframeHomogVS =
-        MakeVShader(meshhlsl.c_str(), "RENDERDOC_WireframeHomogVS", "vs_4_0", 2, inputDescHomog,
-                    &m_DebugRender.GenericHomogLayout, &bytecode);
-
-    m_DebugRender.MeshHomogVSBytecode = new byte[bytecode.size()];
-    m_DebugRender.MeshHomogVSBytelen = (uint32_t)bytecode.size();
-    memcpy(m_DebugRender.MeshHomogVSBytecode, &bytecode[0], bytecode.size());
 
     m_DebugRender.WireframePS = MakePShader(displayhlsl.c_str(), "RENDERDOC_WireframePS", "ps_4_0");
     m_DebugRender.OverlayPS = MakePShader(displayhlsl.c_str(), "RENDERDOC_OverlayPS", "ps_4_0");
@@ -731,6 +723,9 @@ bool D3D11DebugManager::InitDebugRendering()
 
     for(int t = eTexType_1D; t < eTexType_Max; t++)
     {
+      if(t == eTexType_Unused)
+        continue;
+
       // float, uint, sint
       for(int i = 0; i < 3; i++)
       {
@@ -1011,10 +1006,8 @@ bool D3D11DebugManager::InitDebugRendering()
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     srvDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    srvDesc.Buffer.ElementOffset = 0;
     srvDesc.Buffer.FirstElement = 0;
-    srvDesc.Buffer.ElementWidth = 4 * sizeof(float);
-    srvDesc.Buffer.NumElements = bDesc.ByteWidth / srvDesc.Buffer.ElementWidth;
+    srvDesc.Buffer.NumElements = bDesc.ByteWidth / sizeof(Vec4f);
 
     hr = m_pDevice->CreateShaderResourceView(m_DebugRender.tileResultBuff, &srvDesc,
                                              &m_DebugRender.tileResultSRV[0]);
@@ -1187,7 +1180,8 @@ void D3D11DebugManager::ShutdownFontRendering()
 void D3D11DebugManager::ShutdownStreamOut()
 {
   SAFE_RELEASE(m_SOBuffer);
-  SAFE_RELEASE(m_SOStatsQuery);
+  for(ID3D11Query *q : m_SOStatsQueries)
+    SAFE_RELEASE(q);
   SAFE_RELEASE(m_SOStagingBuffer);
 
   SAFE_RELEASE(m_WireframeHelpersRS);
@@ -1197,7 +1191,6 @@ void D3D11DebugManager::ShutdownStreamOut()
   SAFE_RELEASE(m_SolidHelpersRS);
 
   SAFE_RELEASE(m_MeshDisplayLayout);
-  SAFE_RELEASE(m_PostMeshDisplayLayout);
 
   SAFE_RELEASE(m_FrustumHelper);
   SAFE_RELEASE(m_AxisHelper);
@@ -1206,30 +1199,18 @@ void D3D11DebugManager::ShutdownStreamOut()
 
 bool D3D11DebugManager::InitStreamOut()
 {
+  CreateSOBuffers();
+
   m_MeshDisplayLayout = NULL;
-  m_PostMeshDisplayLayout = NULL;
 
-  D3D11_BUFFER_DESC bufferDesc = {
-      m_SOBufferSize, D3D11_USAGE_DEFAULT, D3D11_BIND_STREAM_OUTPUT, 0, 0, 0};
   HRESULT hr = S_OK;
-
-  hr = m_pDevice->CreateBuffer(&bufferDesc, NULL, &m_SOBuffer);
-
-  if(FAILED(hr))
-    RDCERR("Failed to create m_SOBuffer %08x", hr);
-
-  bufferDesc.Usage = D3D11_USAGE_STAGING;
-  bufferDesc.BindFlags = 0;
-  bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  hr = m_pDevice->CreateBuffer(&bufferDesc, NULL, &m_SOStagingBuffer);
-  if(FAILED(hr))
-    RDCERR("Failed to create m_SOStagingBuffer %08x", hr);
 
   D3D11_QUERY_DESC qdesc;
   qdesc.MiscFlags = 0;
   qdesc.Query = D3D11_QUERY_SO_STATISTICS;
 
-  hr = m_pDevice->CreateQuery(&qdesc, &m_SOStatsQuery);
+  m_SOStatsQueries.push_back(NULL);
+  hr = m_pDevice->CreateQuery(&qdesc, &m_SOStatsQueries[0]);
   if(FAILED(hr))
     RDCERR("Failed to create m_SOStatsQuery %08x", hr);
 
@@ -1293,9 +1274,9 @@ bool D3D11DebugManager::InitStreamOut()
   }
 
   {
-    Vec3f axisVB[6] = {
-        Vec3f(0.0f, 0.0f, 0.0f), Vec3f(1.0f, 0.0f, 0.0f), Vec3f(0.0f, 0.0f, 0.0f),
-        Vec3f(0.0f, 1.0f, 0.0f), Vec3f(0.0f, 0.0f, 0.0f), Vec3f(0.0f, 0.0f, 1.0f),
+    Vec4f axisVB[6] = {
+        Vec4f(0.0f, 0.0f, 0.0f, 1.0f), Vec4f(1.0f, 0.0f, 0.0f, 1.0f), Vec4f(0.0f, 0.0f, 0.0f, 1.0f),
+        Vec4f(0.0f, 1.0f, 0.0f, 1.0f), Vec4f(0.0f, 0.0f, 0.0f, 1.0f), Vec4f(0.0f, 0.0f, 1.0f, 1.0f),
     };
 
     D3D11_SUBRESOURCE_DATA data;
@@ -1315,18 +1296,18 @@ bool D3D11DebugManager::InitStreamOut()
   }
 
   {
-    Vec3f TLN = Vec3f(-1.0f, 1.0f, 0.0f);    // TopLeftNear, etc...
-    Vec3f TRN = Vec3f(1.0f, 1.0f, 0.0f);
-    Vec3f BLN = Vec3f(-1.0f, -1.0f, 0.0f);
-    Vec3f BRN = Vec3f(1.0f, -1.0f, 0.0f);
+    Vec4f TLN = Vec4f(-1.0f, 1.0f, 0.0f, 1.0f);    // TopLeftNear, etc...
+    Vec4f TRN = Vec4f(1.0f, 1.0f, 0.0f, 1.0f);
+    Vec4f BLN = Vec4f(-1.0f, -1.0f, 0.0f, 1.0f);
+    Vec4f BRN = Vec4f(1.0f, -1.0f, 0.0f, 1.0f);
 
-    Vec3f TLF = Vec3f(-1.0f, 1.0f, 1.0f);
-    Vec3f TRF = Vec3f(1.0f, 1.0f, 1.0f);
-    Vec3f BLF = Vec3f(-1.0f, -1.0f, 1.0f);
-    Vec3f BRF = Vec3f(1.0f, -1.0f, 1.0f);
+    Vec4f TLF = Vec4f(-1.0f, 1.0f, 1.0f, 1.0f);
+    Vec4f TRF = Vec4f(1.0f, 1.0f, 1.0f, 1.0f);
+    Vec4f BLF = Vec4f(-1.0f, -1.0f, 1.0f, 1.0f);
+    Vec4f BRF = Vec4f(1.0f, -1.0f, 1.0f, 1.0f);
 
     // 12 frustum lines => 24 verts
-    Vec3f axisVB[24] = {
+    Vec4f axisVB[24] = {
         TLN, TRN, TRN, BRN, BRN, BLN, BLN, TLN,
 
         TLN, TLF, TRN, TRF, BLN, BLF, BRN, BRF,
@@ -1366,6 +1347,29 @@ bool D3D11DebugManager::InitStreamOut()
   }
 
   return true;
+}
+
+void D3D11DebugManager::CreateSOBuffers()
+{
+  HRESULT hr = S_OK;
+
+  SAFE_RELEASE(m_SOBuffer);
+  SAFE_RELEASE(m_SOStagingBuffer);
+
+  D3D11_BUFFER_DESC bufferDesc = {
+      m_SOBufferSize, D3D11_USAGE_DEFAULT, D3D11_BIND_STREAM_OUTPUT, 0, 0, 0};
+
+  hr = m_pDevice->CreateBuffer(&bufferDesc, NULL, &m_SOBuffer);
+
+  if(FAILED(hr))
+    RDCERR("Failed to create m_SOBuffer %08x", hr);
+
+  bufferDesc.Usage = D3D11_USAGE_STAGING;
+  bufferDesc.BindFlags = 0;
+  bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  hr = m_pDevice->CreateBuffer(&bufferDesc, NULL, &m_SOStagingBuffer);
+  if(FAILED(hr))
+    RDCERR("Failed to create m_SOStagingBuffer %08x", hr);
 }
 
 bool D3D11DebugManager::InitFontRendering()
@@ -1474,10 +1478,18 @@ bool D3D11DebugManager::InitFontRendering()
 
 void D3D11DebugManager::SetOutputWindow(HWND w)
 {
-  RECT rect;
+  RECT rect = {0, 0, 0, 0};
   GetClientRect(w, &rect);
-  m_supersamplingX = float(m_width) / float(rect.right - rect.left);
-  m_supersamplingY = float(m_height) / float(rect.bottom - rect.top);
+  if(rect.right == rect.left || rect.bottom == rect.top)
+  {
+    m_supersamplingX = 1.0f;
+    m_supersamplingY = 1.0f;
+  }
+  else
+  {
+    m_supersamplingX = float(m_width) / float(rect.right - rect.left);
+    m_supersamplingY = float(m_height) / float(rect.bottom - rect.top);
+  }
 }
 
 void D3D11DebugManager::OutputWindow::MakeRTV()
@@ -1549,7 +1561,7 @@ void D3D11DebugManager::OutputWindow::MakeDSV()
 
 uint64_t D3D11DebugManager::MakeOutputWindow(WindowingSystem system, void *data, bool depth)
 {
-  RDCASSERT(system == eWindowingSystem_Win32, system);
+  RDCASSERT(system == WindowingSystem::Win32, system);
 
   OutputWindow outw;
   outw.wnd = (HWND)data;
@@ -1575,7 +1587,7 @@ uint64_t D3D11DebugManager::MakeOutputWindow(WindowingSystem system, void *data,
 
   HRESULT hr = S_OK;
 
-  hr = m_pFactory->CreateSwapChain(m_WrappedDevice, &swapDesc, &outw.swap);
+  hr = m_pFactory->CreateSwapChain(m_pDevice, &swapDesc, &outw.swap);
 
   if(FAILED(hr))
   {
@@ -1629,7 +1641,9 @@ bool D3D11DebugManager::CheckResizeOutputWindow(uint64_t id)
     outw.width = w;
     outw.height = h;
 
-    m_WrappedContext->OMSetRenderTargets(0, 0, 0);
+    D3D11RenderStateTracker tracker(m_WrappedContext);
+
+    m_pImmediateContext->OMSetRenderTargets(0, 0, 0);
 
     if(outw.width > 0 && outw.height > 0)
     {
@@ -1667,12 +1681,12 @@ void D3D11DebugManager::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32
   h = m_OutputWindows[id].height;
 }
 
-void D3D11DebugManager::ClearOutputWindowColour(uint64_t id, float col[4])
+void D3D11DebugManager::ClearOutputWindowColor(uint64_t id, float col[4])
 {
   if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
     return;
 
-  m_WrappedContext->ClearRenderTargetView(m_OutputWindows[id].rtv, col);
+  m_pImmediateContext->ClearRenderTargetView(m_OutputWindows[id].rtv, col);
 }
 
 void D3D11DebugManager::ClearOutputWindowDepth(uint64_t id, float depth, uint8_t stencil)
@@ -1681,7 +1695,7 @@ void D3D11DebugManager::ClearOutputWindowDepth(uint64_t id, float depth, uint8_t
     return;
 
   if(m_OutputWindows[id].dsv)
-    m_WrappedContext->ClearDepthStencilView(
+    m_pImmediateContext->ClearDepthStencilView(
         m_OutputWindows[id].dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, depth, stencil);
 }
 
@@ -1690,12 +1704,18 @@ void D3D11DebugManager::BindOutputWindow(uint64_t id, bool depth)
   if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
     return;
 
-  m_WrappedContext->OMSetRenderTargets(
+  if(m_RealState.active)
+    RDCERR("Trashing RealState! Mismatched use of BindOutputWindow / FlipOutputWindow");
+
+  m_RealState.active = true;
+  m_RealState.state.CopyState(*m_WrappedContext->GetCurrentPipelineState());
+
+  m_pImmediateContext->OMSetRenderTargets(
       1, &m_OutputWindows[id].rtv, depth && m_OutputWindows[id].dsv ? m_OutputWindows[id].dsv : NULL);
 
   D3D11_VIEWPORT viewport = {
       0, 0, (float)m_OutputWindows[id].width, (float)m_OutputWindows[id].height, 0.0f, 1.0f};
-  m_WrappedContext->RSSetViewports(1, &viewport);
+  m_pImmediateContext->RSSetViewports(1, &viewport);
 
   SetOutputDimensions(m_OutputWindows[id].width, m_OutputWindows[id].height);
 }
@@ -1715,12 +1735,22 @@ void D3D11DebugManager::FlipOutputWindow(uint64_t id)
 
   if(m_OutputWindows[id].swap)
     m_OutputWindows[id].swap->Present(0, 0);
+
+  if(m_RealState.active)
+  {
+    m_RealState.active = false;
+    m_RealState.state.ApplyState(m_WrappedContext);
+    m_RealState.state.Clear();
+  }
+  else
+  {
+    RDCERR("RealState wasn't active! Mismatched use of BindOutputWindow / FlipOutputWindow");
+  }
 }
 
 uint32_t D3D11DebugManager::GetStructCount(ID3D11UnorderedAccessView *uav)
 {
-  m_pImmediateContext->CopyStructureCount(m_DebugRender.StageBuffer, 0,
-                                          UNWRAP(WrappedID3D11UnorderedAccessView1, uav));
+  m_pImmediateContext->CopyStructureCount(m_DebugRender.StageBuffer, 0, uav);
 
   D3D11_MAPPED_SUBRESOURCE mapped;
   HRESULT hr = m_pImmediateContext->Map(m_DebugRender.StageBuffer, 0, D3D11_MAP_READ, 0, &mapped);
@@ -1739,8 +1769,8 @@ uint32_t D3D11DebugManager::GetStructCount(ID3D11UnorderedAccessView *uav)
 }
 
 bool D3D11DebugManager::GetHistogram(ResourceId texid, uint32_t sliceFace, uint32_t mip,
-                                     uint32_t sample, FormatComponentType typeHint, float minval,
-                                     float maxval, bool channels[4], vector<uint32_t> &histogram)
+                                     uint32_t sample, CompType typeHint, float minval, float maxval,
+                                     bool channels[4], vector<uint32_t> &histogram)
 {
   if(minval >= maxval)
     return false;
@@ -1796,7 +1826,7 @@ bool D3D11DebugManager::GetHistogram(ResourceId texid, uint32_t sliceFace, uint3
   }
 
   if(details.texType == eTexType_3D)
-    cdata.HistogramSlice = float(sliceFace) / float(details.texDepth) + 0.001f;
+    cdata.HistogramSlice = float(sliceFace);
 
   ID3D11Buffer *cbuf = MakeCBuffer(&cdata, sizeof(cdata));
 
@@ -1854,8 +1884,8 @@ bool D3D11DebugManager::GetHistogram(ResourceId texid, uint32_t sliceFace, uint3
   return true;
 }
 
-bool D3D11DebugManager::GetMinMax(ResourceId texid, uint32_t sliceFace, uint32_t mip, uint32_t sample,
-                                  FormatComponentType typeHint, float *minval, float *maxval)
+bool D3D11DebugManager::GetMinMax(ResourceId texid, uint32_t sliceFace, uint32_t mip,
+                                  uint32_t sample, CompType typeHint, float *minval, float *maxval)
 {
   TextureShaderDetails details = GetShaderDetails(texid, typeHint, true);
 
@@ -1897,7 +1927,7 @@ bool D3D11DebugManager::GetMinMax(ResourceId texid, uint32_t sliceFace, uint32_t
   }
 
   if(details.texType == eTexType_3D)
-    cdata.HistogramSlice = float(sliceFace) / float(details.texDepth) + 0.001f;
+    cdata.HistogramSlice = float(sliceFace);
 
   ID3D11Buffer *cbuf = MakeCBuffer(&cdata, sizeof(cdata));
 
@@ -1977,11 +2007,11 @@ void D3D11DebugManager::GetBufferData(ResourceId buff, uint64_t offset, uint64_t
 
   RDCASSERT(buffer);
 
-  GetBufferData(buffer, offset, length, retData, true);
+  GetBufferData(buffer, offset, length, retData);
 }
 
 void D3D11DebugManager::GetBufferData(ID3D11Buffer *buffer, uint64_t offset, uint64_t length,
-                                      vector<byte> &ret, bool unwrap)
+                                      vector<byte> &ret)
 {
   D3D11_MAPPED_SUBRESOURCE mapped;
 
@@ -2025,8 +2055,6 @@ void D3D11DebugManager::GetBufferData(ID3D11Buffer *buffer, uint64_t offset, uin
   box.front = 0;
   box.back = 1;
 
-  ID3D11Buffer *src = unwrap ? UNWRAP(WrappedID3D11Buffer, buffer) : buffer;
-
   while(len > 0)
   {
     uint32_t chunkSize = RDCMIN(len, STAGE_BUFFER_BYTE_SIZE);
@@ -2040,7 +2068,8 @@ void D3D11DebugManager::GetBufferData(ID3D11Buffer *buffer, uint64_t offset, uin
     if(box.right - box.left == 0)
       break;
 
-    m_pImmediateContext->CopySubresourceRegion(m_DebugRender.StageBuffer, 0, 0, 0, 0, src, 0, &box);
+    m_pImmediateContext->CopySubresourceRegion(m_DebugRender.StageBuffer, 0, 0, 0, 0, buffer, 0,
+                                               &box);
 
     HRESULT hr = m_pImmediateContext->Map(m_DebugRender.StageBuffer, 0, D3D11_MAP_READ, 0, &mapped);
 
@@ -2063,6 +2092,9 @@ void D3D11DebugManager::GetBufferData(ID3D11Buffer *buffer, uint64_t offset, uin
 
 void D3D11DebugManager::CopyArrayToTex2DMS(ID3D11Texture2D *destMS, ID3D11Texture2D *srcArray)
 {
+  // unlike CopyTex2DMSToArray we can use the wrapped context here, but for consistency
+  // we accept unwrapped parameters.
+
   D3D11RenderStateTracker tracker(m_WrappedContext);
 
   // copy to textures with right bind flags for operation
@@ -2111,7 +2143,7 @@ void D3D11DebugManager::CopyArrayToTex2DMS(ID3D11Texture2D *destMS, ID3D11Textur
     return;
   }
 
-  m_pImmediateContext->CopyResource(srvResource, srcArray);
+  m_WrappedContext->GetReal()->CopyResource(UNWRAP(WrappedID3D11Texture2D1, srvResource), srcArray);
 
   ID3D11UnorderedAccessView *uavs[D3D11_1_UAV_SLOT_COUNT] = {NULL};
   const UINT numUAVs =
@@ -2174,7 +2206,7 @@ void D3D11DebugManager::CopyArrayToTex2DMS(ID3D11Texture2D *destMS, ID3D11Textur
   D3D11_RENDER_TARGET_VIEW_DESC rtvDesc;
   rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY;
   rtvDesc.Format =
-      depth ? GetUIntTypedFormat(descMS.Format) : GetTypedFormat(descMS.Format, eCompType_UInt);
+      depth ? GetUIntTypedFormat(descMS.Format) : GetTypedFormat(descMS.Format, CompType::UInt);
   rtvDesc.Texture2DMSArray.ArraySize = descMS.ArraySize;
   rtvDesc.Texture2DMSArray.FirstArraySlice = 0;
 
@@ -2188,7 +2220,7 @@ void D3D11DebugManager::CopyArrayToTex2DMS(ID3D11Texture2D *destMS, ID3D11Textur
   D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
   srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
   srvDesc.Format =
-      depth ? GetUIntTypedFormat(descArr.Format) : GetTypedFormat(descArr.Format, eCompType_UInt);
+      depth ? GetUIntTypedFormat(descArr.Format) : GetTypedFormat(descArr.Format, CompType::UInt);
   srvDesc.Texture2DArray.ArraySize = descArr.ArraySize;
   srvDesc.Texture2DArray.FirstArraySlice = 0;
   srvDesc.Texture2DArray.MipLevels = descArr.MipLevels;
@@ -2260,6 +2292,7 @@ void D3D11DebugManager::CopyArrayToTex2DMS(ID3D11Texture2D *destMS, ID3D11Textur
       hr = m_pDevice->CreateRenderTargetView(rtvResource, &rtvDesc, &rtvMS);
     if(FAILED(hr))
     {
+      SAFE_RELEASE(srvArray);
       RDCERR("0x%08x", hr);
       return;
     }
@@ -2322,6 +2355,8 @@ void D3D11DebugManager::CopyArrayToTex2DMS(ID3D11Texture2D *destMS, ID3D11Textur
       hr = m_pDevice->CreateDepthStencilView(rtvResource, &dsvDesc, &dsvMS);
       if(FAILED(hr))
       {
+        SAFE_RELEASE(srvArray);
+        SAFE_RELEASE(dsState);
         RDCERR("0x%08x", hr);
         return;
       }
@@ -2346,18 +2381,170 @@ void D3D11DebugManager::CopyArrayToTex2DMS(ID3D11Texture2D *destMS, ID3D11Textur
       SAFE_RELEASE(dsvMS);
     }
 
+    SAFE_RELEASE(srvArray);
     SAFE_RELEASE(dsState);
   }
 
-  m_pImmediateContext->CopyResource(destMS, rtvResource);
+  m_WrappedContext->GetReal()->CopyResource(destMS, UNWRAP(WrappedID3D11Texture2D1, rtvResource));
 
   SAFE_RELEASE(rtvResource);
   SAFE_RELEASE(srvResource);
 }
 
+struct Tex2DMSToArrayStateTracker
+{
+  Tex2DMSToArrayStateTracker(WrappedID3D11DeviceContext *wrappedContext)
+  {
+    m_WrappedContext = wrappedContext;
+    D3D11RenderState *rs = wrappedContext->GetCurrentPipelineState();
+
+    // first copy the properties. We don't need to keep refs as the objects won't be deleted by
+    // being unbound and we won't do anything with them
+    Layout = rs->IA.Layout;
+    memcpy(&VS, &rs->VS, sizeof(VS));
+    memcpy(&PS, &rs->PS, sizeof(PS));
+
+    memcpy(CSUAVs, rs->CSUAVs, sizeof(CSUAVs));
+
+    memcpy(&RS, &rs->RS, sizeof(RS));
+    memcpy(&OM, &rs->OM, sizeof(OM));
+
+    RDCCOMPILE_ASSERT(sizeof(VS) == sizeof(rs->VS), "Struct sizes have changed, ensure full copy");
+    RDCCOMPILE_ASSERT(sizeof(RS) == sizeof(rs->RS), "Struct sizes have changed, ensure full copy");
+    RDCCOMPILE_ASSERT(sizeof(OM) == sizeof(rs->OM), "Struct sizes have changed, ensure full copy");
+
+    // now unwrap everything in place.
+    Layout = UNWRAP(WrappedID3D11InputLayout, Layout);
+    VS.Shader = UNWRAP(WrappedID3D11Shader<ID3D11VertexShader>, VS.Shader);
+    PS.Shader = UNWRAP(WrappedID3D11Shader<ID3D11PixelShader>, PS.Shader);
+
+    // only need to save/restore constant buffer 0
+    PS.ConstantBuffers[0] = UNWRAP(WrappedID3D11Buffer, PS.ConstantBuffers[0]);
+
+    // same for the first 8 SRVs
+    for(int i = 0; i < 8; i++)
+      PS.SRVs[i] = UNWRAP(WrappedID3D11ShaderResourceView1, PS.SRVs[i]);
+
+    for(int i = 0; i < D3D11_SHADER_MAX_INTERFACES; i++)
+    {
+      VS.Instances[i] = UNWRAP(WrappedID3D11ClassInstance, VS.Instances[i]);
+      PS.Instances[i] = UNWRAP(WrappedID3D11ClassInstance, PS.Instances[i]);
+    }
+
+    for(int i = 0; i < D3D11_1_UAV_SLOT_COUNT; i++)
+      CSUAVs[i] = UNWRAP(WrappedID3D11UnorderedAccessView1, CSUAVs[i]);
+
+    RS.State = UNWRAP(WrappedID3D11RasterizerState2, RS.State);
+    OM.DepthStencilState = UNWRAP(WrappedID3D11DepthStencilState, OM.DepthStencilState);
+    OM.BlendState = UNWRAP(WrappedID3D11BlendState1, OM.BlendState);
+    OM.DepthView = UNWRAP(WrappedID3D11DepthStencilView, OM.DepthView);
+
+    for(int i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++)
+      OM.RenderTargets[i] = UNWRAP(WrappedID3D11RenderTargetView1, OM.RenderTargets[i]);
+
+    for(int i = 0; i < D3D11_1_UAV_SLOT_COUNT; i++)
+      OM.UAVs[i] = UNWRAP(WrappedID3D11UnorderedAccessView1, OM.UAVs[i]);
+  }
+  ~Tex2DMSToArrayStateTracker()
+  {
+    ID3D11DeviceContext *context = m_WrappedContext->GetReal();
+    ID3D11DeviceContext1 *context1 = m_WrappedContext->GetReal1();
+
+    context->IASetInputLayout(Layout);
+    context->VSSetShader((ID3D11VertexShader *)VS.Shader, VS.Instances, VS.NumInstances);
+
+    context->PSSetShaderResources(0, 8, PS.SRVs);
+    context->PSSetShader((ID3D11PixelShader *)PS.Shader, PS.Instances, PS.NumInstances);
+
+    if(m_WrappedContext->IsFL11_1())
+      context1->PSSetConstantBuffers1(0, 1, PS.ConstantBuffers, PS.CBOffsets, PS.CBCounts);
+    else
+      context->PSSetConstantBuffers(0, 1, PS.ConstantBuffers);
+
+    UINT UAV_keepcounts[D3D11_1_UAV_SLOT_COUNT] = {(UINT)-1, (UINT)-1, (UINT)-1, (UINT)-1,
+                                                   (UINT)-1, (UINT)-1, (UINT)-1, (UINT)-1};
+
+    if(m_WrappedContext->IsFL11_1())
+      context->CSSetUnorderedAccessViews(0, D3D11_1_UAV_SLOT_COUNT, CSUAVs, UAV_keepcounts);
+    else
+      context->CSSetUnorderedAccessViews(0, D3D11_PS_CS_UAV_REGISTER_COUNT, CSUAVs, UAV_keepcounts);
+
+    context->RSSetState(RS.State);
+    context->RSSetViewports(RS.NumViews, RS.Viewports);
+
+    context->OMSetBlendState(OM.BlendState, OM.BlendFactor, OM.SampleMask);
+    context->OMSetDepthStencilState(OM.DepthStencilState, OM.StencRef);
+
+    if(m_WrappedContext->IsFL11_1())
+      context->OMSetRenderTargetsAndUnorderedAccessViews(
+          OM.UAVStartSlot, OM.RenderTargets, OM.DepthView, OM.UAVStartSlot,
+          D3D11_1_UAV_SLOT_COUNT - OM.UAVStartSlot, OM.UAVs, UAV_keepcounts);
+    else
+      context->OMSetRenderTargetsAndUnorderedAccessViews(
+          OM.UAVStartSlot, OM.RenderTargets, OM.DepthView, OM.UAVStartSlot,
+          D3D11_PS_CS_UAV_REGISTER_COUNT - OM.UAVStartSlot, OM.UAVs, UAV_keepcounts);
+  }
+
+  WrappedID3D11DeviceContext *m_WrappedContext;
+
+  ID3D11InputLayout *Layout;
+
+  struct shader
+  {
+    ID3D11DeviceChild *Shader;
+    ID3D11Buffer *ConstantBuffers[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
+    UINT CBOffsets[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
+    UINT CBCounts[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT];
+    ID3D11ShaderResourceView *SRVs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+    ID3D11SamplerState *Samplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
+    ID3D11ClassInstance *Instances[D3D11_SHADER_MAX_INTERFACES];
+    UINT NumInstances;
+
+    bool Used_CB(uint32_t slot) const;
+    bool Used_SRV(uint32_t slot) const;
+    bool Used_UAV(uint32_t slot) const;
+  } VS, PS;
+
+  ID3D11UnorderedAccessView *CSUAVs[D3D11_1_UAV_SLOT_COUNT];
+
+  struct rasterizer
+  {
+    UINT NumViews, NumScissors;
+    D3D11_VIEWPORT Viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+    D3D11_RECT Scissors[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+    ID3D11RasterizerState *State;
+  } RS;
+
+  struct outmerger
+  {
+    ID3D11DepthStencilState *DepthStencilState;
+    UINT StencRef;
+
+    ID3D11BlendState *BlendState;
+    FLOAT BlendFactor[4];
+    UINT SampleMask;
+
+    ID3D11DepthStencilView *DepthView;
+
+    ID3D11RenderTargetView *RenderTargets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
+
+    UINT UAVStartSlot;
+    ID3D11UnorderedAccessView *UAVs[D3D11_1_UAV_SLOT_COUNT];
+  } OM;
+};
+
 void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Texture2D *srcMS)
 {
-  D3D11RenderStateTracker tracker(m_WrappedContext);
+  // we have to use exclusively the unwrapped context here as this might be happening during
+  // capture and we don't want to serialise any of this work, and the parameters might not exist
+  // as wrapped objects for that reason
+
+  // use the wrapped context's state tracked to avoid needing our own tracking, just restore it to
+  // the unwrapped context
+  Tex2DMSToArrayStateTracker tracker(m_WrappedContext);
+
+  ID3D11Device *dev = m_WrappedDevice->GetReal();
+  ID3D11DeviceContext *ctx = m_WrappedContext->GetReal();
 
   // copy to textures with right bind flags for operation
   D3D11_TEXTURE2D_DESC descMS;
@@ -2391,21 +2578,21 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
 
   HRESULT hr = S_OK;
 
-  hr = m_pDevice->CreateTexture2D(&rtvResDesc, NULL, &rtvResource);
+  hr = dev->CreateTexture2D(&rtvResDesc, NULL, &rtvResource);
   if(FAILED(hr))
   {
     RDCERR("0x%08x", hr);
     return;
   }
 
-  hr = m_pDevice->CreateTexture2D(&srvResDesc, NULL, &srvResource);
+  hr = dev->CreateTexture2D(&srvResDesc, NULL, &srvResource);
   if(FAILED(hr))
   {
     RDCERR("0x%08x", hr);
     return;
   }
 
-  m_pImmediateContext->CopyResource(srvResource, srcMS);
+  ctx->CopyResource(srvResource, srcMS);
 
   ID3D11UnorderedAccessView *uavs[D3D11_1_UAV_SLOT_COUNT] = {NULL};
   UINT uavCounts[D3D11_1_UAV_SLOT_COUNT];
@@ -2413,20 +2600,23 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
   const UINT numUAVs =
       m_WrappedContext->IsFL11_1() ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
 
-  m_pImmediateContext->CSSetUnorderedAccessViews(0, numUAVs, uavs, uavCounts);
+  ctx->CSSetUnorderedAccessViews(0, numUAVs, uavs, uavCounts);
 
-  m_pImmediateContext->VSSetShader(m_DebugRender.FullscreenVS, NULL, 0);
-  m_pImmediateContext->PSSetShader(
-      depth ? m_DebugRender.DepthCopyMSToArrayPS : m_DebugRender.CopyMSToArrayPS, NULL, 0);
+  ctx->VSSetShader(UNWRAP(WrappedID3D11Shader<ID3D11VertexShader>, m_DebugRender.FullscreenVS),
+                   NULL, 0);
+  ctx->PSSetShader(
+      depth ? UNWRAP(WrappedID3D11Shader<ID3D11PixelShader>, m_DebugRender.DepthCopyMSToArrayPS)
+            : UNWRAP(WrappedID3D11Shader<ID3D11PixelShader>, m_DebugRender.CopyMSToArrayPS),
+      NULL, 0);
 
   D3D11_VIEWPORT view = {0.0f, 0.0f, (float)descArr.Width, (float)descArr.Height, 0.0f, 1.0f};
 
-  m_pImmediateContext->RSSetState(m_DebugRender.RastState);
-  m_pImmediateContext->RSSetViewports(1, &view);
+  ctx->RSSetState(UNWRAP(WrappedID3D11RasterizerState2, m_DebugRender.RastState));
+  ctx->RSSetViewports(1, &view);
 
-  m_pImmediateContext->IASetInputLayout(NULL);
+  ctx->IASetInputLayout(NULL);
   float blendFactor[] = {1.0f, 1.0f, 1.0f, 1.0f};
-  m_pImmediateContext->OMSetBlendState(NULL, blendFactor, ~0U);
+  ctx->OMSetBlendState(NULL, blendFactor, ~0U);
 
   if(depth)
   {
@@ -2447,13 +2637,14 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
     dsDesc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
     dsDesc.StencilReadMask = dsDesc.StencilWriteMask = 0xff;
 
-    m_pDevice->CreateDepthStencilState(&dsDesc, &dsState);
-    m_pImmediateContext->OMSetDepthStencilState(dsState, 0);
+    dev->CreateDepthStencilState(&dsDesc, &dsState);
+    ctx->OMSetDepthStencilState(dsState, 0);
     SAFE_RELEASE(dsState);
   }
   else
   {
-    m_pImmediateContext->OMSetDepthStencilState(m_DebugRender.AllPassDepthState, 0);
+    ctx->OMSetDepthStencilState(
+        UNWRAP(WrappedID3D11DepthStencilState, m_DebugRender.AllPassDepthState), 0);
   }
 
   ID3D11RenderTargetView *rtvArray = NULL;
@@ -2463,7 +2654,7 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
   D3D11_RENDER_TARGET_VIEW_DESC rtvDesc;
   rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
   rtvDesc.Format =
-      depth ? GetUIntTypedFormat(descArr.Format) : GetTypedFormat(descArr.Format, eCompType_UInt);
+      depth ? GetUIntTypedFormat(descArr.Format) : GetTypedFormat(descArr.Format, CompType::UInt);
   rtvDesc.Texture2DArray.FirstArraySlice = 0;
   rtvDesc.Texture2DArray.ArraySize = 1;
   rtvDesc.Texture2DArray.MipSlice = 0;
@@ -2479,7 +2670,7 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
   D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
   srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY;
   srvDesc.Format =
-      depth ? GetUIntTypedFormat(descMS.Format) : GetTypedFormat(descMS.Format, eCompType_UInt);
+      depth ? GetUIntTypedFormat(descMS.Format) : GetTypedFormat(descMS.Format, CompType::UInt);
   srvDesc.Texture2DMSArray.ArraySize = descMS.ArraySize;
   srvDesc.Texture2DMSArray.FirstArraySlice = 0;
 
@@ -2517,7 +2708,7 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
     }
   }
 
-  hr = m_pDevice->CreateShaderResourceView(srvResource, &srvDesc, &srvMS);
+  hr = dev->CreateShaderResourceView(srvResource, &srvDesc, &srvMS);
   if(FAILED(hr))
   {
     RDCERR("0x%08x", hr);
@@ -2534,7 +2725,7 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
 
   srvs[srvIndex] = srvMS;
 
-  m_pImmediateContext->PSSetShaderResources(0, 8, srvs);
+  ctx->PSSetShaderResources(0, 8, srvs);
 
   // loop over every array slice in MS texture
   for(UINT slice = 0; slice < descMS.ArraySize; slice++)
@@ -2544,32 +2735,32 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
     {
       uint32_t cdata[4] = {descMS.SampleDesc.Count, 1000, sample, slice};
 
-      ID3D11Buffer *cbuf = MakeCBuffer(cdata, sizeof(cdata));
+      ID3D11Buffer *cbuf = UNWRAP(WrappedID3D11Buffer, MakeCBuffer(cdata, sizeof(cdata)));
 
-      m_pImmediateContext->PSSetConstantBuffers(0, 1, &cbuf);
+      ctx->PSSetConstantBuffers(0, 1, &cbuf);
 
       rtvDesc.Texture2DArray.FirstArraySlice = slice * descMS.SampleDesc.Count + sample;
       dsvDesc.Texture2DArray.FirstArraySlice = slice * descMS.SampleDesc.Count + sample;
 
       if(depth)
-        hr = m_pDevice->CreateDepthStencilView(rtvResource, &dsvDesc, &dsvArray);
+        hr = dev->CreateDepthStencilView(rtvResource, &dsvDesc, &dsvArray);
       else
-        hr = m_pDevice->CreateRenderTargetView(rtvResource, &rtvDesc, &rtvArray);
+        hr = dev->CreateRenderTargetView(rtvResource, &rtvDesc, &rtvArray);
 
       if(FAILED(hr))
       {
+        SAFE_RELEASE(rtvArray);
+        SAFE_RELEASE(dsvArray);
         RDCERR("0x%08x", hr);
         return;
       }
 
       if(depth)
-        m_pImmediateContext->OMSetRenderTargetsAndUnorderedAccessViews(0, NULL, dsvArray, 0, 0,
-                                                                       NULL, NULL);
+        ctx->OMSetRenderTargetsAndUnorderedAccessViews(0, NULL, dsvArray, 0, 0, NULL, NULL);
       else
-        m_pImmediateContext->OMSetRenderTargetsAndUnorderedAccessViews(1, &rtvArray, NULL, 0, 0,
-                                                                       NULL, NULL);
+        ctx->OMSetRenderTargetsAndUnorderedAccessViews(1, &rtvArray, NULL, 0, 0, NULL, NULL);
 
-      m_pImmediateContext->Draw(3, 0);
+      ctx->Draw(3, 0);
 
       SAFE_RELEASE(rtvArray);
       SAFE_RELEASE(dsvArray);
@@ -2582,14 +2773,14 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
   {
     srvDesc.Format = stencilFormat;
 
-    hr = m_pDevice->CreateShaderResourceView(srvResource, &srvDesc, &srvMS);
+    hr = dev->CreateShaderResourceView(srvResource, &srvDesc, &srvMS);
     if(FAILED(hr))
     {
       RDCERR("0x%08x", hr);
       return;
     }
 
-    m_pImmediateContext->PSSetShaderResources(10 + srvIndex, 1, &srvMS);
+    ctx->PSSetShaderResources(10 + srvIndex, 1, &srvMS);
 
     D3D11_DEPTH_STENCIL_DESC dsDesc;
     ID3D11DepthStencilState *dsState = NULL;
@@ -2611,7 +2802,7 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
     dsvDesc.Flags = D3D11_DSV_READ_ONLY_DEPTH;
     dsvDesc.Texture2DArray.ArraySize = 1;
 
-    m_pDevice->CreateDepthStencilState(&dsDesc, &dsState);
+    dev->CreateDepthStencilState(&dsDesc, &dsState);
 
     // loop over every array slice in MS texture
     for(UINT slice = 0; slice < descMS.ArraySize; slice++)
@@ -2621,28 +2812,29 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
       {
         dsvDesc.Texture2DArray.FirstArraySlice = slice * descMS.SampleDesc.Count + sample;
 
-        hr = m_pDevice->CreateDepthStencilView(rtvResource, &dsvDesc, &dsvArray);
+        hr = dev->CreateDepthStencilView(rtvResource, &dsvDesc, &dsvArray);
         if(FAILED(hr))
         {
+          SAFE_RELEASE(dsState);
+          SAFE_RELEASE(srvMS);
           RDCERR("0x%08x", hr);
           return;
         }
 
-        m_pImmediateContext->OMSetRenderTargetsAndUnorderedAccessViews(0, NULL, dsvArray, 0, 0,
-                                                                       NULL, NULL);
+        ctx->OMSetRenderTargetsAndUnorderedAccessViews(0, NULL, dsvArray, 0, 0, NULL, NULL);
 
         // loop over every stencil value (zzzzzz, no shader stencil read/write)
         for(UINT stencilval = 0; stencilval < 256; stencilval++)
         {
           uint32_t cdata[4] = {descMS.SampleDesc.Count, stencilval, sample, slice};
 
-          ID3D11Buffer *cbuf = MakeCBuffer(cdata, sizeof(cdata));
+          ID3D11Buffer *cbuf = UNWRAP(WrappedID3D11Buffer, MakeCBuffer(cdata, sizeof(cdata)));
 
-          m_pImmediateContext->PSSetConstantBuffers(0, 1, &cbuf);
+          ctx->PSSetConstantBuffers(0, 1, &cbuf);
 
-          m_pImmediateContext->OMSetDepthStencilState(dsState, stencilval);
+          ctx->OMSetDepthStencilState(dsState, stencilval);
 
-          m_pImmediateContext->Draw(3, 0);
+          ctx->Draw(3, 0);
         }
 
         SAFE_RELEASE(dsvArray);
@@ -2650,16 +2842,17 @@ void D3D11DebugManager::CopyTex2DMSToArray(ID3D11Texture2D *destArray, ID3D11Tex
     }
 
     SAFE_RELEASE(dsState);
+    SAFE_RELEASE(srvMS);
   }
 
-  m_pImmediateContext->CopyResource(destArray, rtvResource);
+  ctx->CopyResource(destArray, rtvResource);
 
   SAFE_RELEASE(rtvResource);
   SAFE_RELEASE(srvResource);
 }
 
-D3D11DebugManager::CacheElem &D3D11DebugManager::GetCachedElem(ResourceId id,
-                                                               FormatComponentType typeHint, bool raw)
+D3D11DebugManager::CacheElem &D3D11DebugManager::GetCachedElem(ResourceId id, CompType typeHint,
+                                                               bool raw)
 {
   for(auto it = m_ShaderItemCache.begin(); it != m_ShaderItemCache.end(); ++it)
   {
@@ -2678,8 +2871,9 @@ D3D11DebugManager::CacheElem &D3D11DebugManager::GetCachedElem(ResourceId id,
   return m_ShaderItemCache.front();
 }
 
-D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(
-    ResourceId id, FormatComponentType typeHint, bool rawOutput)
+D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(ResourceId id,
+                                                                            CompType typeHint,
+                                                                            bool rawOutput)
 {
   TextureShaderDetails details;
   HRESULT hr = S_OK;
@@ -2690,7 +2884,6 @@ D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(
 
   bool msaaDepth = false;
 
-  bool cube = false;
   DXGI_FORMAT srvFormat = DXGI_FORMAT_UNKNOWN;
 
   if(WrappedID3D11Texture1D::m_TextureList.find(id) != WrappedID3D11Texture1D::m_TextureList.end())
@@ -2718,7 +2911,7 @@ D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(
 
     srvFormat = GetTypedFormat(details.texFmt, typeHint);
 
-    details.srvResource = wrapTex1D->GetReal();
+    details.srvResource = wrapTex1D;
 
     if(mode == TEXDISPLAY_INDIRECT_VIEW || mode == TEXDISPLAY_DEPTH_TARGET)
     {
@@ -2764,9 +2957,6 @@ D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(
     D3D11_TEXTURE2D_DESC desc2d = {0};
     wrapTex2D->GetDesc(&desc2d);
 
-    if(desc2d.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE)
-      cube = true;
-
     details.texFmt = desc2d.Format;
     details.texWidth = desc2d.Width;
     details.texHeight = desc2d.Height;
@@ -2810,7 +3000,7 @@ D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(
 
     srvFormat = GetTypedFormat(details.texFmt, typeHint);
 
-    details.srvResource = wrapTex2D->GetReal();
+    details.srvResource = wrapTex2D;
 
     if(mode == TEXDISPLAY_INDIRECT_VIEW || mode == TEXDISPLAY_DEPTH_TARGET ||
        desc2d.SampleDesc.Count > 1 || desc2d.SampleDesc.Quality > 0)
@@ -2877,7 +3067,7 @@ D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(
 
     srvFormat = GetTypedFormat(details.texFmt, typeHint);
 
-    details.srvResource = wrapTex3D->GetReal();
+    details.srvResource = wrapTex3D;
 
     if(mode == TEXDISPLAY_INDIRECT_VIEW)
     {
@@ -2939,12 +3129,6 @@ D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(
   srvDesc[eTexType_3D].ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
   srvDesc[eTexType_3D].Texture3D.MipLevels = details.texMips;
   srvDesc[eTexType_3D].Texture3D.MostDetailedMip = 0;
-
-  srvDesc[eTexType_Cube].ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
-  srvDesc[eTexType_Cube].TextureCubeArray.First2DArrayFace = 0;
-  srvDesc[eTexType_Cube].TextureCubeArray.MipLevels = details.texMips;
-  srvDesc[eTexType_Cube].TextureCubeArray.MostDetailedMip = 0;
-  srvDesc[eTexType_Cube].TextureCubeArray.NumCubes = RDCMAX(1U, details.texArraySize / 6);
 
   for(int i = 0; i < eTexType_Max; i++)
     srvDesc[i].Format = srvFormat;
@@ -3045,22 +3229,6 @@ D3D11DebugManager::TextureShaderDetails D3D11DebugManager::GetShaderDetails(
     details.srv[eTexType_Stencil] = NULL;
     details.srv[eTexType_DepthMS] = cache.srv[0];
     details.srv[eTexType_StencilMS] = cache.srv[1];
-  }
-
-  if((details.texType == eTexType_2D || details.texType == eTexType_Depth ||
-      details.texType == eTexType_Stencil) &&
-     cube)
-  {
-    if(!cache.created)
-    {
-      hr = m_pDevice->CreateShaderResourceView(details.srvResource, &srvDesc[eTexType_Cube],
-                                               &cache.srv[2]);
-
-      if(FAILED(hr))
-        RDCERR("Failed to create cache SRV 2 %08x", hr);
-    }
-
-    details.srv[eTexType_Cube] = cache.srv[2];
   }
 
   cache.created = true;
@@ -3292,7 +3460,7 @@ bool D3D11DebugManager::RenderTexture(TextureDisplay cfg, bool blendAlpha)
             (WrappedID3D11Shader<ID3D11PixelShader> *)m_WrappedDevice->GetResourceManager()
                 ->GetLiveResource(cfg.CustomShader);
 
-        customPS = wrapped->GetReal();
+        customPS = wrapped;
 
         for(size_t i = 0; i < dxbc->m_CBuffers.size(); i++)
         {
@@ -3409,7 +3577,7 @@ bool D3D11DebugManager::RenderTexture(TextureDisplay cfg, bool blendAlpha)
   if(details.texType == eTexType_3D)
   {
     pixelData.OutputDisplayFormat = RESTYPE_TEX3D;
-    pixelData.Slice = (float(cfg.sliceFace) / float(details.texDepth)) + 0.001f;
+    pixelData.Slice = float(cfg.sliceFace);
   }
   else if(details.texType == eTexType_1D)
   {
@@ -3436,24 +3604,26 @@ bool D3D11DebugManager::RenderTexture(TextureDisplay cfg, bool blendAlpha)
     pixelData.OutputDisplayFormat = RESTYPE_TEX2D_MS;
   }
 
-  if(cfg.overlay == eTexOverlay_NaN)
+  if(cfg.overlay == DebugOverlay::NaN)
   {
     pixelData.OutputDisplayFormat |= TEXDISPLAY_NANS;
   }
 
-  if(cfg.overlay == eTexOverlay_Clipping)
+  if(cfg.overlay == DebugOverlay::Clipping)
   {
     pixelData.OutputDisplayFormat |= TEXDISPLAY_CLIPPING;
   }
 
   int srvOffset = 0;
 
-  if(IsUIntFormat(details.texFmt))
+  if(IsUIntFormat(details.texFmt) ||
+     (IsTypelessFormat(details.texFmt) && cfg.typeHint == CompType::UInt))
   {
     pixelData.OutputDisplayFormat |= TEXDISPLAY_UINT_TEX;
     srvOffset = 10;
   }
-  if(IsIntFormat(details.texFmt))
+  if(IsIntFormat(details.texFmt) ||
+     (IsTypelessFormat(details.texFmt) && cfg.typeHint == CompType::SInt))
   {
     pixelData.OutputDisplayFormat |= TEXDISPLAY_SINT_TEX;
     srvOffset = 20;
@@ -3482,7 +3652,7 @@ bool D3D11DebugManager::RenderTexture(TextureDisplay cfg, bool blendAlpha)
     if(customPS == NULL)
     {
       m_pImmediateContext->PSSetShader(m_DebugRender.TexDisplayPS, NULL, 0);
-      m_pImmediateContext->PSSetConstantBuffers(1, 1, &m_DebugRender.GenericPSCBuffer);
+      m_pImmediateContext->PSSetConstantBuffers(0, 1, &m_DebugRender.GenericPSCBuffer);
     }
     else
     {
@@ -3559,7 +3729,7 @@ void D3D11DebugManager::RenderHighlightBox(float w, float h, float scale)
   m_pImmediateContext->PSSetShader(m_DebugRender.OverlayPS, NULL, 0);
   m_pImmediateContext->OMSetBlendState(NULL, NULL, 0xffffffff);
 
-  m_pImmediateContext->PSSetConstantBuffers(1, 1, &pconst);
+  m_pImmediateContext->PSSetConstantBuffers(0, 1, &pconst);
   m_pImmediateContext->VSSetConstantBuffers(0, 1, &vconst);
 
   m_pImmediateContext->Draw(5, 0);
@@ -3575,7 +3745,7 @@ void D3D11DebugManager::RenderHighlightBox(float w, float h, float scale)
   pconst = MakeCBuffer(overlayConsts, sizeof(overlayConsts));
 
   m_pImmediateContext->VSSetConstantBuffers(0, 1, &vconst);
-  m_pImmediateContext->PSSetConstantBuffers(1, 1, &pconst);
+  m_pImmediateContext->PSSetConstantBuffers(0, 1, &pconst);
   m_pImmediateContext->Draw(5, 0);
 }
 
@@ -3622,7 +3792,7 @@ void D3D11DebugManager::RenderCheckerboard(Vec3f light, Vec3f dark)
     m_pImmediateContext->RSSetState(m_DebugRender.RastState);
 
     m_pImmediateContext->PSSetShader(m_DebugRender.CheckerboardPS, NULL, 0);
-    m_pImmediateContext->PSSetConstantBuffers(1, 1, &m_DebugRender.GenericPSCBuffer);
+    m_pImmediateContext->PSSetConstantBuffers(0, 1, &m_DebugRender.GenericPSCBuffer);
 
     float factor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     m_pImmediateContext->OMSetBlendState(NULL, factor, 0xffffffff);
@@ -3640,7 +3810,7 @@ MeshFormat D3D11DebugManager::GetPostVSBuffers(uint32_t eventID, uint32_t instID
   if(m_PostVSData.find(eventID) != m_PostVSData.end())
     postvs = m_PostVSData[eventID];
 
-  D3D11PostVSData::StageData s = postvs.GetStage(stage);
+  const D3D11PostVSData::StageData &s = postvs.GetStage(stage);
 
   MeshFormat ret;
 
@@ -3662,8 +3832,8 @@ MeshFormat D3D11DebugManager::GetPostVSBuffers(uint32_t eventID, uint32_t instID
 
   ret.compCount = 4;
   ret.compByteWidth = 4;
-  ret.compType = eCompType_Float;
-  ret.specialFormat = eSpecial_Unknown;
+  ret.compType = CompType::Float;
+  ret.specialFormat = SpecialFormat::Unknown;
 
   ret.showAlpha = false;
   ret.bgraOrder = false;
@@ -3674,6 +3844,14 @@ MeshFormat D3D11DebugManager::GetPostVSBuffers(uint32_t eventID, uint32_t instID
   ret.unproject = s.hasPosOut;
   ret.nearPlane = s.nearPlane;
   ret.farPlane = s.farPlane;
+
+  if(instID < s.instData.size())
+  {
+    D3D11PostVSData::InstData inst = s.instData[instID];
+
+    ret.offset = inst.bufOffset;
+    ret.numVerts = inst.numVerts;
+  }
 
   return ret;
 }
@@ -3712,8 +3890,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
   D3D11_PRIMITIVE_TOPOLOGY topo;
   m_pImmediateContext->IAGetPrimitiveTopology(&topo);
 
-  WrappedID3D11Shader<ID3D11VertexShader> *wrappedVS =
-      (WrappedID3D11Shader<ID3D11VertexShader> *)m_WrappedDevice->GetResourceManager()->GetWrapper(vs);
+  WrappedID3D11Shader<ID3D11VertexShader> *wrappedVS = (WrappedID3D11Shader<ID3D11VertexShader> *)vs;
 
   if(!wrappedVS)
   {
@@ -3721,7 +3898,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
     return;
   }
 
-  const FetchDrawcall *drawcall = m_WrappedDevice->GetDrawcall(eventID);
+  const DrawcallDescription *drawcall = m_WrappedDevice->GetDrawcall(eventID);
 
   if(drawcall->numIndices == 0)
     return;
@@ -3735,8 +3912,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
   if(gs)
   {
     WrappedID3D11Shader<ID3D11GeometryShader> *wrappedGS =
-        (WrappedID3D11Shader<ID3D11GeometryShader> *)m_WrappedDevice->GetResourceManager()->GetWrapper(
-            gs);
+        (WrappedID3D11Shader<ID3D11GeometryShader> *)gs;
 
     if(!wrappedGS)
     {
@@ -3754,8 +3930,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
   if(ds)
   {
     WrappedID3D11Shader<ID3D11DomainShader> *wrappedDS =
-        (WrappedID3D11Shader<ID3D11DomainShader> *)m_WrappedDevice->GetResourceManager()->GetWrapper(
-            ds);
+        (WrappedID3D11Shader<ID3D11DomainShader> *)ds;
 
     if(!wrappedDS)
     {
@@ -3792,7 +3967,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
       decl.StartComponent = 0;
       decl.ComponentCount = sign.compCount & 0xff;
 
-      if(sign.systemValue == eAttr_Position)
+      if(sign.systemValue == ShaderBuiltin::Position)
       {
         posidx = (int)sodecls.size();
         numPosComponents = decl.ComponentCount = 4;
@@ -3828,36 +4003,53 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
     SAFE_RELEASE(streamoutGS);
 
     UINT offset = 0;
-    m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
-
-    m_pImmediateContext->Begin(m_SOStatsQuery);
-
     ID3D11Buffer *idxBuf = NULL;
     DXGI_FORMAT idxFmt = DXGI_FORMAT_UNKNOWN;
+    UINT idxOffs = 0;
 
-    if((drawcall->flags & eDraw_UseIBuffer) == 0)
+    m_pImmediateContext->IAGetIndexBuffer(&idxBuf, &idxFmt, &idxOffs);
+
+    ID3D11Buffer *origBuf = idxBuf;
+
+    if(!(drawcall->flags & DrawFlags::UseIBuffer))
     {
       m_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
-      if(drawcall->flags & eDraw_Instanced)
+
+      SAFE_RELEASE(idxBuf);
+
+      uint32_t outputSize = stride * drawcall->numIndices;
+      if(drawcall->flags & DrawFlags::Instanced)
+        outputSize *= drawcall->numInstances;
+
+      if(m_SOBufferSize < outputSize)
+      {
+        int oldSize = m_SOBufferSize;
+        while(m_SOBufferSize < outputSize)
+          m_SOBufferSize *= 2;
+        RDCWARN("Resizing stream-out buffer from %d to %d", oldSize, m_SOBufferSize);
+        CreateSOBuffers();
+      }
+
+      m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
+
+      m_pImmediateContext->Begin(m_SOStatsQueries[0]);
+
+      if(drawcall->flags & DrawFlags::Instanced)
         m_pImmediateContext->DrawInstanced(drawcall->numIndices, drawcall->numInstances,
                                            drawcall->vertexOffset, drawcall->instanceOffset);
       else
         m_pImmediateContext->Draw(drawcall->numIndices, drawcall->vertexOffset);
-      m_pImmediateContext->IASetPrimitiveTopology(topo);
+
+      m_pImmediateContext->End(m_SOStatsQueries[0]);
     }
     else    // drawcall is indexed
     {
-      UINT idxOffs = 0;
-
-      m_WrappedContext->IAGetIndexBuffer(&idxBuf, &idxFmt, &idxOffs);
       bool index16 = (idxFmt == DXGI_FORMAT_R16_UINT);
       UINT bytesize = index16 ? 2 : 4;
 
-      ID3D11Buffer *origBuf = idxBuf;
-
       vector<byte> idxdata;
       GetBufferData(idxBuf, idxOffs + drawcall->indexOffset * bytesize,
-                    drawcall->numIndices * bytesize, idxdata, true);
+                    drawcall->numIndices * bytesize, idxdata);
 
       SAFE_RELEASE(idxBuf);
 
@@ -3937,20 +4129,40 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
       m_pImmediateContext->IASetIndexBuffer(idxBuf, DXGI_FORMAT_R32_UINT, 0);
       SAFE_RELEASE(idxBuf);
 
-      if(drawcall->flags & eDraw_Instanced)
+      uint32_t outputSize = stride * (uint32_t)indices.size();
+      if(drawcall->flags & DrawFlags::Instanced)
+        outputSize *= drawcall->numInstances;
+
+      if(m_SOBufferSize < outputSize)
+      {
+        int oldSize = m_SOBufferSize;
+        while(m_SOBufferSize < outputSize)
+          m_SOBufferSize *= 2;
+        RDCWARN("Resizing stream-out buffer from %d to %d", oldSize, m_SOBufferSize);
+        CreateSOBuffers();
+      }
+
+      m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
+
+      m_pImmediateContext->Begin(m_SOStatsQueries[0]);
+
+      if(drawcall->flags & DrawFlags::Instanced)
         m_pImmediateContext->DrawIndexedInstanced((UINT)indices.size(), drawcall->numInstances, 0,
                                                   0, drawcall->instanceOffset);
       else
         m_pImmediateContext->DrawIndexed((UINT)indices.size(), 0, 0);
 
-      m_pImmediateContext->IASetPrimitiveTopology(topo);
-      m_pImmediateContext->IASetIndexBuffer(UNWRAP(WrappedID3D11Buffer, origBuf), idxFmt, idxOffs);
+      m_pImmediateContext->End(m_SOStatsQueries[0]);
 
       // rebase existing index buffer to point to the right elements in our stream-out'd
       // vertex buffer
       for(uint32_t i = 0; i < numIndices; i++)
       {
         uint32_t i32 = index16 ? uint32_t(idx16[i]) : idx32[i];
+
+        // preserve primitive restart indices
+        if(i32 == (index16 ? 0xffff : 0xffffffff))
+          continue;
 
         // apply baseVertex but clamp to 0 (don't allow index to become negative)
         if(i32 < idxclamp)
@@ -3971,12 +4183,13 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
       initData.SysMemPitch = initData.SysMemSlicePitch = desc.ByteWidth;
 
       if(desc.ByteWidth > 0)
-        m_WrappedDevice->CreateBuffer(&desc, &initData, &idxBuf);
+        m_pDevice->CreateBuffer(&desc, &initData, &idxBuf);
       else
         idxBuf = NULL;
     }
 
-    m_pImmediateContext->End(m_SOStatsQuery);
+    m_pImmediateContext->IASetPrimitiveTopology(topo);
+    m_pImmediateContext->IASetIndexBuffer(origBuf, idxFmt, idxOffs);
 
     m_pImmediateContext->GSSetShader(NULL, NULL, 0);
     m_pImmediateContext->SOSetTargets(0, NULL, NULL);
@@ -3987,7 +4200,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
 
     do
     {
-      hr = m_pImmediateContext->GetData(m_SOStatsQuery, &numPrims,
+      hr = m_pImmediateContext->GetData(m_SOStatsQueries[0], &numPrims,
                                         sizeof(D3D11_QUERY_DATA_SO_STATISTICS), 0);
     } while(hr == S_FALSE);
 
@@ -4015,15 +4228,6 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
                                     0,
                                     0};
 
-    if(bufferDesc.ByteWidth >= m_SOBufferSize)
-    {
-      RDCERR("Generated output data too large: %08x", bufferDesc.ByteWidth);
-
-      m_pImmediateContext->Unmap(m_SOStagingBuffer, 0);
-      SAFE_RELEASE(idxBuf);
-      return;
-    }
-
     ID3D11Buffer *vsoutBuffer = NULL;
 
     // we need to map this data into memory for read anyway, might as well make this VB
@@ -4033,7 +4237,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
     initialData.SysMemPitch = bufferDesc.ByteWidth;
     initialData.SysMemSlicePitch = bufferDesc.ByteWidth;
 
-    hr = m_WrappedDevice->CreateBuffer(&bufferDesc, &initialData, &vsoutBuffer);
+    hr = m_pDevice->CreateBuffer(&bufferDesc, &initialData, &vsoutBuffer);
 
     if(FAILED(hr))
     {
@@ -4112,11 +4316,11 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
     m_PostVSData[eventID].vsout.nearPlane = nearp;
     m_PostVSData[eventID].vsout.farPlane = farp;
 
-    m_PostVSData[eventID].vsout.useIndices = (drawcall->flags & eDraw_UseIBuffer) > 0;
+    m_PostVSData[eventID].vsout.useIndices = bool(drawcall->flags & DrawFlags::UseIBuffer);
     m_PostVSData[eventID].vsout.numVerts = drawcall->numIndices;
 
     m_PostVSData[eventID].vsout.instStride = 0;
-    if(drawcall->flags & eDraw_Instanced)
+    if(drawcall->flags & DrawFlags::Instanced)
       m_PostVSData[eventID].vsout.instStride =
           bufferDesc.ByteWidth / RDCMAX(1U, drawcall->numInstances);
 
@@ -4176,7 +4380,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
       decl.StartComponent = 0;
       decl.ComponentCount = sign.compCount & 0xff;
 
-      if(sign.systemValue == eAttr_Position)
+      if(sign.systemValue == ShaderBuiltin::Position)
       {
         posidx = (int)sodecls.size();
         numPosComponents = decl.ComponentCount = 4;
@@ -4214,21 +4418,19 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
     SAFE_RELEASE(streamoutGS);
 
     UINT offset = 0;
-    m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
 
-    m_pImmediateContext->Begin(m_SOStatsQuery);
+    D3D11_QUERY_DATA_SO_STATISTICS numPrims = {0};
 
-    // trying to stream out a stream-out-auto based drawcall would be bad!
-    // instead just draw the number of verts we pre-calculated
-    if(drawcall->flags & eDraw_Auto)
+    // do the whole draw, and if our output buffer isn't large enough then loop around.
+    while(true)
     {
-      m_pImmediateContext->Draw(drawcall->numIndices, 0);
-    }
-    else
-    {
-      if(drawcall->flags & eDraw_UseIBuffer)
+      m_pImmediateContext->Begin(m_SOStatsQueries[0]);
+
+      m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
+
+      if(drawcall->flags & DrawFlags::Instanced)
       {
-        if(drawcall->flags & eDraw_Instanced)
+        if(drawcall->flags & DrawFlags::UseIBuffer)
         {
           m_pImmediateContext->DrawIndexedInstanced(drawcall->numIndices, drawcall->numInstances,
                                                     drawcall->indexOffset, drawcall->baseVertex,
@@ -4236,38 +4438,134 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
         }
         else
         {
-          m_pImmediateContext->DrawIndexed(drawcall->numIndices, drawcall->indexOffset,
-                                           drawcall->baseVertex);
+          m_pImmediateContext->DrawInstanced(drawcall->numIndices, drawcall->numInstances,
+                                             drawcall->vertexOffset, drawcall->instanceOffset);
         }
       }
       else
       {
-        if(drawcall->flags & eDraw_Instanced)
+        // trying to stream out a stream-out-auto based drawcall would be bad!
+        // instead just draw the number of verts we pre-calculated
+        if(drawcall->flags & DrawFlags::Auto)
         {
-          m_pImmediateContext->DrawInstanced(drawcall->numIndices, drawcall->numInstances,
-                                             drawcall->vertexOffset, drawcall->instanceOffset);
+          m_pImmediateContext->Draw(drawcall->numIndices, 0);
         }
         else
         {
-          m_pImmediateContext->Draw(drawcall->numIndices, drawcall->vertexOffset);
+          if(drawcall->flags & DrawFlags::UseIBuffer)
+          {
+            m_pImmediateContext->DrawIndexed(drawcall->numIndices, drawcall->indexOffset,
+                                             drawcall->baseVertex);
+          }
+          else
+          {
+            m_pImmediateContext->Draw(drawcall->numIndices, drawcall->vertexOffset);
+          }
+        }
+      }
+
+      m_pImmediateContext->End(m_SOStatsQueries[0]);
+
+      do
+      {
+        hr = m_pImmediateContext->GetData(m_SOStatsQueries[0], &numPrims,
+                                          sizeof(D3D11_QUERY_DATA_SO_STATISTICS), 0);
+      } while(hr == S_FALSE);
+
+      if(m_SOBufferSize < stride * (uint32_t)numPrims.PrimitivesStorageNeeded * 3)
+      {
+        int oldSize = m_SOBufferSize;
+        while(m_SOBufferSize < stride * (uint32_t)numPrims.PrimitivesStorageNeeded * 3)
+          m_SOBufferSize *= 2;
+        RDCWARN("Resizing stream-out buffer from %d to %d", oldSize, m_SOBufferSize);
+        CreateSOBuffers();
+        continue;
+      }
+
+      break;
+    }
+
+    // instanced draws must be replayed one at a time so we can record the number of primitives from
+    // each drawcall, as due to expansion this can vary per-instance.
+    if(drawcall->flags & DrawFlags::Instanced && drawcall->numInstances > 1)
+    {
+      // ensure we have enough queries
+      while(m_SOStatsQueries.size() < drawcall->numInstances)
+      {
+        D3D11_QUERY_DESC qdesc;
+        qdesc.MiscFlags = 0;
+        qdesc.Query = D3D11_QUERY_SO_STATISTICS;
+
+        ID3D11Query *q = NULL;
+        hr = m_pDevice->CreateQuery(&qdesc, &q);
+        if(FAILED(hr))
+          RDCERR("Failed to create m_SOStatsQuery %08x", hr);
+
+        m_SOStatsQueries.push_back(q);
+      }
+
+      // do incremental draws to get the output size. We have to do this O(N^2) style because
+      // there's no way to replay only a single instance. We have to replay 1, 2, 3, ... N
+      // instances and count the total number of verts each time, then we can see from the
+      // difference how much each instance wrote.
+      for(uint32_t inst = 1; inst <= drawcall->numInstances; inst++)
+      {
+        if(drawcall->flags & DrawFlags::UseIBuffer)
+        {
+          m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
+          m_pImmediateContext->Begin(m_SOStatsQueries[inst - 1]);
+          m_pImmediateContext->DrawIndexedInstanced(drawcall->numIndices, inst, drawcall->indexOffset,
+                                                    drawcall->baseVertex, drawcall->instanceOffset);
+          m_pImmediateContext->End(m_SOStatsQueries[inst - 1]);
+        }
+        else
+        {
+          m_pImmediateContext->SOSetTargets(1, &m_SOBuffer, &offset);
+          m_pImmediateContext->Begin(m_SOStatsQueries[inst - 1]);
+          m_pImmediateContext->DrawInstanced(drawcall->numIndices, inst, drawcall->vertexOffset,
+                                             drawcall->instanceOffset);
+          m_pImmediateContext->End(m_SOStatsQueries[inst - 1]);
         }
       }
     }
 
-    m_pImmediateContext->End(m_SOStatsQuery);
-
     m_pImmediateContext->GSSetShader(NULL, NULL, 0);
     m_pImmediateContext->SOSetTargets(0, NULL, NULL);
 
-    D3D11_QUERY_DATA_SO_STATISTICS numPrims;
-
     m_pImmediateContext->CopyResource(m_SOStagingBuffer, m_SOBuffer);
 
-    do
+    std::vector<D3D11PostVSData::InstData> instData;
+
+    if((drawcall->flags & DrawFlags::Instanced) && drawcall->numInstances > 1)
     {
-      hr = m_pImmediateContext->GetData(m_SOStatsQuery, &numPrims,
-                                        sizeof(D3D11_QUERY_DATA_SO_STATISTICS), 0);
-    } while(hr == S_FALSE);
+      uint64_t prevVertCount = 0;
+
+      for(uint32_t inst = 0; inst < drawcall->numInstances; inst++)
+      {
+        do
+        {
+          hr = m_pImmediateContext->GetData(m_SOStatsQueries[inst], &numPrims,
+                                            sizeof(D3D11_QUERY_DATA_SO_STATISTICS), 0);
+        } while(hr == S_FALSE);
+
+        uint64_t vertCount = 3 * numPrims.NumPrimitivesWritten;
+
+        D3D11PostVSData::InstData d;
+        d.numVerts = uint32_t(vertCount - prevVertCount);
+        d.bufOffset = uint32_t(stride * prevVertCount);
+        prevVertCount = vertCount;
+
+        instData.push_back(d);
+      }
+    }
+    else
+    {
+      do
+      {
+        hr = m_pImmediateContext->GetData(m_SOStatsQueries[0], &numPrims,
+                                          sizeof(D3D11_QUERY_DATA_SO_STATISTICS), 0);
+      } while(hr == S_FALSE);
+    }
 
     if(numPrims.NumPrimitivesWritten == 0)
     {
@@ -4307,7 +4605,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
     initialData.SysMemPitch = bufferDesc.ByteWidth;
     initialData.SysMemSlicePitch = bufferDesc.ByteWidth;
 
-    hr = m_WrappedDevice->CreateBuffer(&bufferDesc, &initialData, &gsoutBuffer);
+    hr = m_pDevice->CreateBuffer(&bufferDesc, &initialData, &gsoutBuffer);
 
     if(FAILED(hr))
     {
@@ -4381,7 +4679,7 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
 
     m_PostVSData[eventID].gsout.buf = gsoutBuffer;
     m_PostVSData[eventID].gsout.instStride = 0;
-    if(drawcall->flags & eDraw_Instanced)
+    if(drawcall->flags & DrawFlags::Instanced)
       m_PostVSData[eventID].gsout.instStride =
           bufferDesc.ByteWidth / RDCMAX(1U, drawcall->numInstances);
     m_PostVSData[eventID].gsout.vertStride = stride;
@@ -4451,91 +4749,11 @@ void D3D11DebugManager::InitPostVSBuffers(uint32_t eventID)
         break;
     }
 
-    if(drawcall->flags & eDraw_Instanced)
+    if(drawcall->flags & DrawFlags::Instanced)
       m_PostVSData[eventID].gsout.numVerts /= RDCMAX(1U, drawcall->numInstances);
+
+    m_PostVSData[eventID].gsout.instData = instData;
   }
-}
-
-FloatVector D3D11DebugManager::InterpretVertex(byte *data, uint32_t vert, const MeshDisplay &cfg,
-                                               byte *end, bool useidx, bool &valid)
-{
-  FloatVector ret(0.0f, 0.0f, 0.0f, 1.0f);
-
-  if(useidx && m_HighlightCache.useidx)
-  {
-    if(vert >= (uint32_t)m_HighlightCache.indices.size())
-    {
-      valid = false;
-      return ret;
-    }
-
-    vert = m_HighlightCache.indices[vert];
-  }
-
-  data += vert * cfg.position.stride;
-
-  float *out = &ret.x;
-
-  ResourceFormat fmt;
-  fmt.compByteWidth = cfg.position.compByteWidth;
-  fmt.compCount = cfg.position.compCount;
-  fmt.compType = cfg.position.compType;
-
-  if(cfg.position.specialFormat == eSpecial_R10G10B10A2)
-  {
-    if(data + 4 >= end)
-    {
-      valid = false;
-      return ret;
-    }
-
-    Vec4f v = ConvertFromR10G10B10A2(*(uint32_t *)data);
-    ret.x = v.x;
-    ret.y = v.y;
-    ret.z = v.z;
-    ret.w = v.w;
-    return ret;
-  }
-  else if(cfg.position.specialFormat == eSpecial_R11G11B10)
-  {
-    if(data + 4 >= end)
-    {
-      valid = false;
-      return ret;
-    }
-
-    Vec3f v = ConvertFromR11G11B10(*(uint32_t *)data);
-    ret.x = v.x;
-    ret.y = v.y;
-    ret.z = v.z;
-    return ret;
-  }
-
-  if(data + cfg.position.compCount * cfg.position.compByteWidth > end)
-  {
-    valid = false;
-    return ret;
-  }
-
-  for(uint32_t i = 0; i < cfg.position.compCount; i++)
-  {
-    *out = ConvertComponent(fmt, data);
-
-    data += cfg.position.compByteWidth;
-    out++;
-  }
-
-  if(cfg.position.bgraOrder)
-  {
-    FloatVector reversed;
-    reversed.x = ret.z;
-    reversed.y = ret.y;
-    reversed.z = ret.x;
-    reversed.w = ret.w;
-    return reversed;
-  }
-
-  return ret;
 }
 
 void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &secondaryDraws,
@@ -4553,7 +4771,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
   Matrix4f projMat =
       Matrix4f::Perspective(90.0f, 0.1f, 100000.0f, float(GetWidth()) / float(GetHeight()));
 
-  Matrix4f camMat = cfg.cam ? cfg.cam->GetMatrix() : Matrix4f::Identity();
+  Matrix4f camMat = cfg.cam ? ((Camera *)cfg.cam)->GetMatrix() : Matrix4f::Identity();
   Matrix4f guessProjInv;
 
   vertexData.ModelViewProj = projMat.Mul(camMat);
@@ -4567,7 +4785,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
   pixelData.WireframeColour = Vec3f(0.0f, 0.0f, 0.0f);
   FillCBuffer(m_DebugRender.GenericPSCBuffer, &pixelData, sizeof(DebugPixelCBufferData));
 
-  m_pImmediateContext->PSSetConstantBuffers(1, 1, &m_DebugRender.GenericPSCBuffer);
+  m_pImmediateContext->PSSetConstantBuffers(0, 1, &m_DebugRender.GenericPSCBuffer);
   m_pImmediateContext->PSSetShader(m_DebugRender.WireframePS, NULL, 0);
 
   m_pImmediateContext->HSSetShader(NULL, NULL, 0);
@@ -4585,7 +4803,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
   resFmt.compCount = cfg.position.compCount;
   resFmt.compType = cfg.position.compType;
   resFmt.special = false;
-  if(cfg.position.specialFormat != eSpecial_Unknown)
+  if(cfg.position.specialFormat != SpecialFormat::Unknown)
   {
     resFmt.special = true;
     resFmt.specialFormat = cfg.position.specialFormat;
@@ -4596,7 +4814,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
   resFmt2.compCount = cfg.second.compCount;
   resFmt2.compType = cfg.second.compType;
   resFmt2.special = false;
-  if(cfg.second.specialFormat != eSpecial_Unknown)
+  if(cfg.second.specialFormat != SpecialFormat::Unknown)
   {
     resFmt2.special = true;
     resFmt2.specialFormat = cfg.second.specialFormat;
@@ -4605,7 +4823,6 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
   if(m_PrevMeshFmt != resFmt || m_PrevMeshFmt2 != resFmt2)
   {
     SAFE_RELEASE(m_MeshDisplayLayout);
-    SAFE_RELEASE(m_PostMeshDisplayLayout);
 
     D3D11_INPUT_ELEMENT_DESC layoutdesc[2];
 
@@ -4613,7 +4830,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
     layoutdesc[0].SemanticIndex = 0;
     layoutdesc[0].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     if(cfg.position.buf != ResourceId() &&
-       (cfg.position.specialFormat != eSpecial_Unknown || cfg.position.compCount > 0))
+       (cfg.position.specialFormat != SpecialFormat::Unknown || cfg.position.compCount > 0))
       layoutdesc[0].Format = MakeDXGIFormat(resFmt);
     layoutdesc[0].AlignedByteOffset = 0;    // offset will be handled by vertex buffer offset
     layoutdesc[0].InputSlot = 0;
@@ -4624,7 +4841,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
     layoutdesc[1].SemanticIndex = 0;
     layoutdesc[1].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     if(cfg.second.buf != ResourceId() &&
-       (cfg.second.specialFormat != eSpecial_Unknown || cfg.second.compCount > 0))
+       (cfg.second.specialFormat != SpecialFormat::Unknown || cfg.second.compCount > 0))
       layoutdesc[1].Format = MakeDXGIFormat(resFmt2);
     layoutdesc[1].AlignedByteOffset = 0;
     layoutdesc[1].InputSlot = 1;
@@ -4638,15 +4855,6 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
     {
       RDCERR("Failed to create m_MeshDisplayLayout %08x", hr);
       m_MeshDisplayLayout = NULL;
-    }
-
-    hr = m_pDevice->CreateInputLayout(layoutdesc, 2, m_DebugRender.MeshHomogVSBytecode,
-                                      m_DebugRender.MeshHomogVSBytelen, &m_PostMeshDisplayLayout);
-
-    if(FAILED(hr))
-    {
-      RDCERR("Failed to create m_PostMeshDisplayLayout %08x", hr);
-      m_PostMeshDisplayLayout = NULL;
     }
   }
 
@@ -4686,22 +4894,23 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
     FillCBuffer(m_DebugRender.GenericVSCBuffer, &vertexData, sizeof(DebugVertexCBuffer));
 
     m_pImmediateContext->VSSetConstantBuffers(0, 1, &m_DebugRender.GenericVSCBuffer);
-    m_pImmediateContext->PSSetConstantBuffers(1, 1, &m_DebugRender.GenericPSCBuffer);
+    m_pImmediateContext->PSSetConstantBuffers(0, 1, &m_DebugRender.GenericPSCBuffer);
 
-    if(cfg.position.unproject)
-      m_pImmediateContext->VSSetShader(m_DebugRender.WireframeHomogVS, NULL, 0);
-    else
-      m_pImmediateContext->VSSetShader(m_DebugRender.MeshVS, NULL, 0);
+    Vec4f meshColour;
 
+    ID3D11Buffer *meshColourBuf = MakeCBuffer(&meshColour, sizeof(Vec4f));
+
+    m_pImmediateContext->VSSetShader(m_DebugRender.MeshVS, NULL, 0);
     m_pImmediateContext->PSSetShader(m_DebugRender.MeshPS, NULL, 0);
 
     // secondary draws - this is the "draw since last clear" feature. We don't have
     // full flexibility, it only draws wireframe, and only the final rasterized position.
     if(secondaryDraws.size() > 0)
     {
-      m_pImmediateContext->IASetInputLayout(m_DebugRender.GenericHomogLayout);
+      m_pImmediateContext->IASetInputLayout(m_DebugRender.GenericLayout);
 
       pixelData.OutputDisplayFormat = MESHDISPLAY_SOLID;
+      FillCBuffer(m_DebugRender.GenericPSCBuffer, &pixelData, sizeof(DebugPixelCBufferData));
 
       for(size_t i = 0; i < secondaryDraws.size(); i++)
       {
@@ -4709,14 +4918,15 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
 
         if(fmt.buf != ResourceId())
         {
-          pixelData.WireframeColour = Vec3f(fmt.meshColour.x, fmt.meshColour.y, fmt.meshColour.z);
-          FillCBuffer(m_DebugRender.GenericPSCBuffer, &pixelData, sizeof(DebugPixelCBufferData));
+          meshColour = Vec4f(fmt.meshColor.x, fmt.meshColor.y, fmt.meshColor.z, 1.0f);
+          FillCBuffer(meshColourBuf, &meshColour, sizeof(meshColour));
+          m_pImmediateContext->PSSetConstantBuffers(2, 1, &meshColourBuf);
 
           m_pImmediateContext->IASetPrimitiveTopology(MakeD3DPrimitiveTopology(fmt.topo));
 
           auto it = WrappedID3D11Buffer::m_BufferList.find(fmt.buf);
 
-          ID3D11Buffer *buf = UNWRAP(WrappedID3D11Buffer, it->second.m_Buffer);
+          ID3D11Buffer *buf = it->second.m_Buffer;
           m_pImmediateContext->IASetVertexBuffers(0, 1, &buf, (UINT *)&fmt.stride,
                                                   (UINT *)&fmt.offset);
           if(fmt.idxbuf != ResourceId())
@@ -4724,7 +4934,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
             RDCASSERT(fmt.idxoffs < 0xffffffff);
 
             it = WrappedID3D11Buffer::m_BufferList.find(fmt.idxbuf);
-            buf = UNWRAP(WrappedID3D11Buffer, it->second.m_Buffer);
+            buf = it->second.m_Buffer;
             m_pImmediateContext->IASetIndexBuffer(
                 buf, fmt.idxByteWidth == 2 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT,
                 (UINT)fmt.idxoffs);
@@ -4739,8 +4949,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
       }
     }
 
-    ID3D11InputLayout *layout =
-        cfg.position.unproject ? m_PostMeshDisplayLayout : m_MeshDisplayLayout;
+    ID3D11InputLayout *layout = m_MeshDisplayLayout;
 
     if(layout == NULL)
     {
@@ -4760,17 +4969,17 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
       auto it = WrappedID3D11Buffer::m_BufferList.find(cfg.position.buf);
 
       if(it != WrappedID3D11Buffer::m_BufferList.end())
-        vbs[0] = UNWRAP(WrappedID3D11Buffer, it->second.m_Buffer);
+        vbs[0] = it->second.m_Buffer;
 
       it = WrappedID3D11Buffer::m_BufferList.find(cfg.second.buf);
 
       if(it != WrappedID3D11Buffer::m_BufferList.end())
-        vbs[1] = UNWRAP(WrappedID3D11Buffer, it->second.m_Buffer);
+        vbs[1] = it->second.m_Buffer;
 
       it = WrappedID3D11Buffer::m_BufferList.find(cfg.position.idxbuf);
 
       if(it != WrappedID3D11Buffer::m_BufferList.end())
-        ibuf = UNWRAP(WrappedID3D11Buffer, it->second.m_Buffer);
+        ibuf = it->second.m_Buffer;
 
       if(cfg.position.idxByteWidth == 4)
         ifmt = DXGI_FORMAT_R32_UINT;
@@ -4783,21 +4992,24 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
       m_pImmediateContext->IASetIndexBuffer(NULL, DXGI_FORMAT_UNKNOWN, NULL);
 
     // draw solid shaded mode
-    if(cfg.solidShadeMode != eShade_None && cfg.position.topo < eTopology_PatchList_1CPs)
+    if(cfg.solidShadeMode != SolidShade::NoSolid && cfg.position.topo < Topology::PatchList_1CPs)
     {
       m_pImmediateContext->RSSetState(m_DebugRender.RastState);
 
       m_pImmediateContext->IASetPrimitiveTopology(topo);
 
       pixelData.OutputDisplayFormat = (int)cfg.solidShadeMode;
-      if(cfg.solidShadeMode == eShade_Secondary && cfg.second.showAlpha)
+      if(cfg.solidShadeMode == SolidShade::Secondary && cfg.second.showAlpha)
         pixelData.OutputDisplayFormat = MESHDISPLAY_SECONDARY_ALPHA;
-      pixelData.WireframeColour = Vec3f(0.8f, 0.8f, 0.0f);
       FillCBuffer(m_DebugRender.GenericPSCBuffer, &pixelData, sizeof(DebugPixelCBufferData));
 
-      m_pImmediateContext->PSSetConstantBuffers(1, 1, &m_DebugRender.GenericPSCBuffer);
+      meshColour = Vec4f(0.8f, 0.8f, 0.0f, 1.0f);
+      FillCBuffer(meshColourBuf, &meshColour, sizeof(meshColour));
+      m_pImmediateContext->PSSetConstantBuffers(2, 1, &meshColourBuf);
 
-      if(cfg.solidShadeMode == eShade_Lit)
+      m_pImmediateContext->PSSetConstantBuffers(0, 1, &m_DebugRender.GenericPSCBuffer);
+
+      if(cfg.solidShadeMode == SolidShade::Lit)
       {
         DebugGeometryCBuffer geomData;
 
@@ -4814,26 +5026,29 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
       else
         m_pImmediateContext->Draw(cfg.position.numVerts, 0);
 
-      if(cfg.solidShadeMode == eShade_Lit)
+      if(cfg.solidShadeMode == SolidShade::Lit)
         m_pImmediateContext->GSSetShader(NULL, NULL, 0);
     }
 
     // draw wireframe mode
-    if(cfg.solidShadeMode == eShade_None || cfg.wireframeDraw ||
-       cfg.position.topo >= eTopology_PatchList_1CPs)
+    if(cfg.solidShadeMode == SolidShade::NoSolid || cfg.wireframeDraw ||
+       cfg.position.topo >= Topology::PatchList_1CPs)
     {
       m_pImmediateContext->RSSetState(m_WireframeHelpersRS);
 
       m_pImmediateContext->OMSetDepthStencilState(m_DebugRender.LEqualDepthState, 0);
 
       pixelData.OutputDisplayFormat = MESHDISPLAY_SOLID;
-      pixelData.WireframeColour =
-          Vec3f(cfg.position.meshColour.x, cfg.position.meshColour.y, cfg.position.meshColour.z);
       FillCBuffer(m_DebugRender.GenericPSCBuffer, &pixelData, sizeof(DebugPixelCBufferData));
 
-      m_pImmediateContext->PSSetConstantBuffers(1, 1, &m_DebugRender.GenericPSCBuffer);
+      meshColour =
+          Vec4f(cfg.position.meshColor.x, cfg.position.meshColor.y, cfg.position.meshColor.z, 1.0f);
+      FillCBuffer(meshColourBuf, &meshColour, sizeof(meshColour));
+      m_pImmediateContext->PSSetConstantBuffers(2, 1, &meshColourBuf);
 
-      if(cfg.position.topo >= eTopology_PatchList_1CPs)
+      m_pImmediateContext->PSSetConstantBuffers(0, 1, &m_DebugRender.GenericPSCBuffer);
+
+      if(cfg.position.topo >= Topology::PatchList_1CPs)
         m_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
       else
         m_pImmediateContext->IASetPrimitiveTopology(topo);
@@ -4857,17 +5072,17 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
     m_pImmediateContext->OMSetDepthStencilState(m_DebugRender.NoDepthState, 0);
 
     m_pImmediateContext->VSSetConstantBuffers(0, 1, &m_DebugRender.GenericVSCBuffer);
-    m_pImmediateContext->VSSetShader(m_DebugRender.WireframeVS, NULL, 0);
-    m_pImmediateContext->PSSetConstantBuffers(1, 1, &m_DebugRender.GenericPSCBuffer);
+    m_pImmediateContext->VSSetShader(m_DebugRender.MeshVS, NULL, 0);
+    m_pImmediateContext->PSSetConstantBuffers(0, 1, &m_DebugRender.GenericPSCBuffer);
     m_pImmediateContext->PSSetShader(m_DebugRender.WireframePS, NULL, 0);
   }
 
   // axis markers
   if(!cfg.position.unproject)
   {
-    m_pImmediateContext->PSSetConstantBuffers(1, 1, &m_DebugRender.GenericPSCBuffer);
+    m_pImmediateContext->PSSetConstantBuffers(0, 1, &m_DebugRender.GenericPSCBuffer);
 
-    UINT strides[] = {sizeof(Vec3f)};
+    UINT strides[] = {sizeof(Vec4f)};
     UINT offsets[] = {0};
 
     m_pImmediateContext->IASetVertexBuffers(0, 1, &m_AxisHelper, strides, offsets);
@@ -4889,76 +5104,12 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
 
   if(cfg.highlightVert != ~0U)
   {
-    MeshDataStage stage = cfg.type;
-
-    if(m_HighlightCache.EID != eventID || stage != m_HighlightCache.stage ||
-       cfg.position.buf != m_HighlightCache.buf || cfg.position.offset != m_HighlightCache.offs)
-    {
-      RDCASSERT(cfg.position.offset < 0xffffffff);
-
-      m_HighlightCache.EID = eventID;
-      m_HighlightCache.buf = cfg.position.buf;
-      m_HighlightCache.offs = (uint32_t)cfg.position.offset;
-      m_HighlightCache.stage = stage;
-
-      bool index16 = (ifmt == DXGI_FORMAT_R16_UINT);
-      UINT bytesize = index16 ? 2 : 4;
-
-      GetBufferData(cfg.position.buf, 0, 0, m_HighlightCache.data);
-
-      if(cfg.position.idxByteWidth == 0 || stage == eMeshDataStage_GSOut)
-      {
-        m_HighlightCache.indices.clear();
-        m_HighlightCache.useidx = false;
-      }
-      else
-      {
-        m_HighlightCache.useidx = true;
-
-        vector<byte> idxdata;
-        if(cfg.position.idxbuf != ResourceId())
-          GetBufferData(cfg.position.idxbuf, ioffs, cfg.position.numVerts * bytesize, idxdata);
-
-        uint16_t *idx16 = (uint16_t *)&idxdata[0];
-        uint32_t *idx32 = (uint32_t *)&idxdata[0];
-
-        uint32_t numIndices = RDCMIN(cfg.position.numVerts, uint32_t(idxdata.size() / bytesize));
-
-        m_HighlightCache.indices.resize(numIndices);
-
-        uint32_t sub = uint32_t(-cfg.position.baseVertex);
-        uint32_t add = uint32_t(cfg.position.baseVertex);
-
-        for(uint32_t i = 0; i < numIndices; i++)
-        {
-          m_HighlightCache.indices[i] = index16 ? uint32_t(idx16[i]) : idx32[i];
-
-          if(cfg.position.baseVertex < 0)
-          {
-            if(m_HighlightCache.indices[i] < sub)
-              m_HighlightCache.indices[i] = 0;
-            else
-              m_HighlightCache.indices[i] -= sub;
-          }
-          else
-            m_HighlightCache.indices[i] += add;
-        }
-      }
-    }
+    m_HighlightCache.CacheHighlightingData(eventID, cfg);
 
     D3D11_PRIMITIVE_TOPOLOGY meshtopo = topo;
 
-    uint32_t idx = cfg.highlightVert;
-
-    byte *data = &m_HighlightCache.data[0];    // buffer start
-    byte *dataEnd = data + m_HighlightCache.data.size();
-
-    data += cfg.position.offset;    // to start of position data
-
     ///////////////////////////////////////////////////////////////
     // vectors to be set from buffers, depending on topology
-
-    bool valid = true;
 
     // this vert (blue dot, required)
     FloatVector activeVertex;
@@ -4988,268 +5139,8 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
       primTopo = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
     }
 
-    activeVertex = InterpretVertex(data, idx, cfg, dataEnd, true, valid);
-
-    // see http://msdn.microsoft.com/en-us/library/windows/desktop/bb205124(v=vs.85).aspx for
-    // how primitive topologies are laid out
-    if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_LINELIST)
-    {
-      uint32_t v = uint32_t(idx / 2) * 2;    // find first vert in primitive
-
-      activePrim.push_back(InterpretVertex(data, v + 0, cfg, dataEnd, true, valid));
-      activePrim.push_back(InterpretVertex(data, v + 1, cfg, dataEnd, true, valid));
-    }
-    else if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
-    {
-      uint32_t v = uint32_t(idx / 3) * 3;    // find first vert in primitive
-
-      activePrim.push_back(InterpretVertex(data, v + 0, cfg, dataEnd, true, valid));
-      activePrim.push_back(InterpretVertex(data, v + 1, cfg, dataEnd, true, valid));
-      activePrim.push_back(InterpretVertex(data, v + 2, cfg, dataEnd, true, valid));
-    }
-    else if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_LINELIST_ADJ)
-    {
-      uint32_t v = uint32_t(idx / 4) * 4;    // find first vert in primitive
-
-      FloatVector vs[] = {
-          InterpretVertex(data, v + 0, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 1, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 2, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 3, cfg, dataEnd, true, valid),
-      };
-
-      adjacentPrimVertices.push_back(vs[0]);
-      adjacentPrimVertices.push_back(vs[1]);
-
-      adjacentPrimVertices.push_back(vs[2]);
-      adjacentPrimVertices.push_back(vs[3]);
-
-      activePrim.push_back(vs[1]);
-      activePrim.push_back(vs[2]);
-    }
-    else if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ)
-    {
-      uint32_t v = uint32_t(idx / 6) * 6;    // find first vert in primitive
-
-      FloatVector vs[] = {
-          InterpretVertex(data, v + 0, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 1, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 2, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 3, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 4, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 5, cfg, dataEnd, true, valid),
-      };
-
-      adjacentPrimVertices.push_back(vs[0]);
-      adjacentPrimVertices.push_back(vs[1]);
-      adjacentPrimVertices.push_back(vs[2]);
-
-      adjacentPrimVertices.push_back(vs[2]);
-      adjacentPrimVertices.push_back(vs[3]);
-      adjacentPrimVertices.push_back(vs[4]);
-
-      adjacentPrimVertices.push_back(vs[4]);
-      adjacentPrimVertices.push_back(vs[5]);
-      adjacentPrimVertices.push_back(vs[0]);
-
-      activePrim.push_back(vs[0]);
-      activePrim.push_back(vs[2]);
-      activePrim.push_back(vs[4]);
-    }
-    else if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP)
-    {
-      // find first vert in primitive. In strips a vert isn't
-      // in only one primitive, so we pick the first primitive
-      // it's in. This means the first N points are in the first
-      // primitive, and thereafter each point is in the next primitive
-      uint32_t v = RDCMAX(idx, 1U) - 1;
-
-      activePrim.push_back(InterpretVertex(data, v + 0, cfg, dataEnd, true, valid));
-      activePrim.push_back(InterpretVertex(data, v + 1, cfg, dataEnd, true, valid));
-    }
-    else if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP)
-    {
-      // find first vert in primitive. In strips a vert isn't
-      // in only one primitive, so we pick the first primitive
-      // it's in. This means the first N points are in the first
-      // primitive, and thereafter each point is in the next primitive
-      uint32_t v = RDCMAX(idx, 2U) - 2;
-
-      activePrim.push_back(InterpretVertex(data, v + 0, cfg, dataEnd, true, valid));
-      activePrim.push_back(InterpretVertex(data, v + 1, cfg, dataEnd, true, valid));
-      activePrim.push_back(InterpretVertex(data, v + 2, cfg, dataEnd, true, valid));
-    }
-    else if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ)
-    {
-      // find first vert in primitive. In strips a vert isn't
-      // in only one primitive, so we pick the first primitive
-      // it's in. This means the first N points are in the first
-      // primitive, and thereafter each point is in the next primitive
-      uint32_t v = RDCMAX(idx, 3U) - 3;
-
-      FloatVector vs[] = {
-          InterpretVertex(data, v + 0, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 1, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 2, cfg, dataEnd, true, valid),
-          InterpretVertex(data, v + 3, cfg, dataEnd, true, valid),
-      };
-
-      adjacentPrimVertices.push_back(vs[0]);
-      adjacentPrimVertices.push_back(vs[1]);
-
-      adjacentPrimVertices.push_back(vs[2]);
-      adjacentPrimVertices.push_back(vs[3]);
-
-      activePrim.push_back(vs[1]);
-      activePrim.push_back(vs[2]);
-    }
-    else if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ)
-    {
-      // Triangle strip with adjacency is the most complex topology, as
-      // we need to handle the ends separately where the pattern breaks.
-
-      uint32_t numidx = cfg.position.numVerts;
-
-      if(numidx < 6)
-      {
-        // not enough indices provided, bail to make sure logic below doesn't
-        // need to have tons of edge case detection
-        valid = false;
-      }
-      else if(idx <= 4 || numidx <= 7)
-      {
-        FloatVector vs[] = {
-            InterpretVertex(data, 0, cfg, dataEnd, true, valid),
-            InterpretVertex(data, 1, cfg, dataEnd, true, valid),
-            InterpretVertex(data, 2, cfg, dataEnd, true, valid),
-            InterpretVertex(data, 3, cfg, dataEnd, true, valid),
-            InterpretVertex(data, 4, cfg, dataEnd, true, valid),
-
-            // note this one isn't used as it's adjacency for the next triangle
-            InterpretVertex(data, 5, cfg, dataEnd, true, valid),
-
-            // min() with number of indices in case this is a tiny strip
-            // that is basically just a list
-            InterpretVertex(data, RDCMIN(6U, numidx - 1), cfg, dataEnd, true, valid),
-        };
-
-        // these are the triangles on the far left of the MSDN diagram above
-        adjacentPrimVertices.push_back(vs[0]);
-        adjacentPrimVertices.push_back(vs[1]);
-        adjacentPrimVertices.push_back(vs[2]);
-
-        adjacentPrimVertices.push_back(vs[4]);
-        adjacentPrimVertices.push_back(vs[3]);
-        adjacentPrimVertices.push_back(vs[0]);
-
-        adjacentPrimVertices.push_back(vs[4]);
-        adjacentPrimVertices.push_back(vs[2]);
-        adjacentPrimVertices.push_back(vs[6]);
-
-        activePrim.push_back(vs[0]);
-        activePrim.push_back(vs[2]);
-        activePrim.push_back(vs[4]);
-      }
-      else if(idx > numidx - 4)
-      {
-        // in diagram, numidx == 14
-
-        FloatVector vs[] = {
-            /*[0]=*/InterpretVertex(data, numidx - 8, cfg, dataEnd, true, valid),    // 6 in diagram
-
-            // as above, unused since this is adjacency for 2-previous triangle
-            /*[1]=*/InterpretVertex(data, numidx - 7, cfg, dataEnd, true, valid),    // 7 in diagram
-            /*[2]=*/InterpretVertex(data, numidx - 6, cfg, dataEnd, true, valid),    // 8 in diagram
-
-            // as above, unused since this is adjacency for previous triangle
-            /*[3]=*/InterpretVertex(data, numidx - 5, cfg, dataEnd, true, valid),    // 9 in diagram
-            /*[4]=*/InterpretVertex(data, numidx - 4, cfg, dataEnd, true,
-                                    valid),    // 10 in diagram
-            /*[5]=*/InterpretVertex(data, numidx - 3, cfg, dataEnd, true,
-                                    valid),    // 11 in diagram
-            /*[6]=*/InterpretVertex(data, numidx - 2, cfg, dataEnd, true,
-                                    valid),    // 12 in diagram
-            /*[7]=*/InterpretVertex(data, numidx - 1, cfg, dataEnd, true,
-                                    valid),    // 13 in diagram
-        };
-
-        // these are the triangles on the far right of the MSDN diagram above
-        adjacentPrimVertices.push_back(vs[2]);    // 8 in diagram
-        adjacentPrimVertices.push_back(vs[0]);    // 6 in diagram
-        adjacentPrimVertices.push_back(vs[4]);    // 10 in diagram
-
-        adjacentPrimVertices.push_back(vs[4]);    // 10 in diagram
-        adjacentPrimVertices.push_back(vs[7]);    // 13 in diagram
-        adjacentPrimVertices.push_back(vs[6]);    // 12 in diagram
-
-        adjacentPrimVertices.push_back(vs[6]);    // 12 in diagram
-        adjacentPrimVertices.push_back(vs[5]);    // 11 in diagram
-        adjacentPrimVertices.push_back(vs[2]);    // 8 in diagram
-
-        activePrim.push_back(vs[2]);    // 8 in diagram
-        activePrim.push_back(vs[4]);    // 10 in diagram
-        activePrim.push_back(vs[6]);    // 12 in diagram
-      }
-      else
-      {
-        // we're in the middle somewhere. Each primitive has two vertices for it
-        // so our step rate is 2. The first 'middle' primitive starts at indices 5&6
-        // and uses indices all the way back to 0
-        uint32_t v = RDCMAX(((idx + 1) / 2) * 2, 6U) - 6;
-
-        // these correspond to the indices in the MSDN diagram, with {2,4,6} as the
-        // main triangle
-        FloatVector vs[] = {
-            InterpretVertex(data, v + 0, cfg, dataEnd, true, valid),
-
-            // this one is adjacency for 2-previous triangle
-            InterpretVertex(data, v + 1, cfg, dataEnd, true, valid),
-            InterpretVertex(data, v + 2, cfg, dataEnd, true, valid),
-
-            // this one is adjacency for previous triangle
-            InterpretVertex(data, v + 3, cfg, dataEnd, true, valid),
-            InterpretVertex(data, v + 4, cfg, dataEnd, true, valid),
-            InterpretVertex(data, v + 5, cfg, dataEnd, true, valid),
-            InterpretVertex(data, v + 6, cfg, dataEnd, true, valid),
-            InterpretVertex(data, v + 7, cfg, dataEnd, true, valid),
-            InterpretVertex(data, v + 8, cfg, dataEnd, true, valid),
-        };
-
-        // these are the triangles around {2,4,6} in the MSDN diagram above
-        adjacentPrimVertices.push_back(vs[0]);
-        adjacentPrimVertices.push_back(vs[2]);
-        adjacentPrimVertices.push_back(vs[4]);
-
-        adjacentPrimVertices.push_back(vs[2]);
-        adjacentPrimVertices.push_back(vs[5]);
-        adjacentPrimVertices.push_back(vs[6]);
-
-        adjacentPrimVertices.push_back(vs[6]);
-        adjacentPrimVertices.push_back(vs[8]);
-        adjacentPrimVertices.push_back(vs[4]);
-
-        activePrim.push_back(vs[2]);
-        activePrim.push_back(vs[4]);
-        activePrim.push_back(vs[6]);
-      }
-    }
-    else if(meshtopo >= D3D11_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST)
-    {
-      uint32_t dim = (meshtopo - D3D11_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST) + 1;
-
-      uint32_t v0 = uint32_t(idx / dim) * dim;
-
-      for(uint32_t v = v0; v < v0 + dim; v++)
-      {
-        if(v != idx && valid)
-          inactiveVertices.push_back(InterpretVertex(data, v, cfg, dataEnd, true, valid));
-      }
-    }
-    else    // if(meshtopo == D3D11_PRIMITIVE_TOPOLOGY_POINTLIST) point list, or unknown/unhandled
-            // type
-    {
-      // no adjacency, inactive verts or active primitive
-    }
+    bool valid = m_HighlightCache.FetchHighlightPositions(cfg, activeVertex, activePrim,
+                                                          adjacentPrimVertices, inactiveVertices);
 
     if(valid)
     {
@@ -5258,16 +5149,11 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
 
       // if data is from post transform, it will be in clipspace
       if(cfg.position.unproject)
-      {
         vertexData.ModelViewProj = projMat.Mul(camMat.Mul(guessProjInv));
-        m_pImmediateContext->VSSetShader(m_DebugRender.WireframeHomogVS, NULL, 0);
-        m_pImmediateContext->IASetInputLayout(m_DebugRender.GenericHomogLayout);
-      }
       else
-      {
         vertexData.ModelViewProj = projMat.Mul(camMat);
-        m_pImmediateContext->IASetInputLayout(m_DebugRender.GenericLayout);
-      }
+
+      m_pImmediateContext->IASetInputLayout(m_DebugRender.GenericLayout);
 
       FillCBuffer(m_DebugRender.GenericVSCBuffer, &vertexData, sizeof(DebugVertexCBuffer));
 
@@ -5378,7 +5264,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
     }
 
     if(cfg.position.unproject)
-      m_pImmediateContext->VSSetShader(m_DebugRender.WireframeVS, NULL, 0);
+      m_pImmediateContext->VSSetShader(m_DebugRender.MeshVS, NULL, 0);
   }
 
   // bounding box
@@ -5441,7 +5327,7 @@ void D3D11DebugManager::RenderMesh(uint32_t eventID, const vector<MeshFormat> &s
   // 'fake' helper frustum
   if(cfg.position.unproject)
   {
-    UINT strides[] = {sizeof(Vec3f)};
+    UINT strides[] = {sizeof(Vec4f)};
     UINT offsets[] = {0};
 
     vertexData.SpriteSize = Vec2f();

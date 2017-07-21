@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -174,7 +174,8 @@ namespace renderdocui.Code
         public string LastCapturePath = "";
         public string LastCaptureExe = "";
         public List<string> RecentCaptureSettings = new List<string>();
-        public int CallstackLevelSkip = 0;
+        public string AdbExecutablePath = "";
+        public uint MaxConnectTimeout = 30;
 
         // for historical reasons, this was named CaptureSavePath
         [XmlElement("CaptureSavePath")]
@@ -222,7 +223,7 @@ namespace renderdocui.Code
 
         [XmlIgnore] // not directly serializable
         public Dictionary<string, string> ConfigSettings = new Dictionary<string, string>();
-        private List<SerializableKeyValuePair<string, string>> ConfigSettingsValues = new List<SerializableKeyValuePair<string, string>>();
+        public List<SerializableKeyValuePair<string, string>> ConfigSettingsValues = new List<SerializableKeyValuePair<string, string>>();
 
         public void SetConfigSetting(string name, string value)
         {
@@ -262,9 +263,12 @@ namespace renderdocui.Code
 
         public TimeUnit EventBrowser_TimeUnit = TimeUnit.Microseconds;
         public bool EventBrowser_HideEmpty = false;
+        public bool EventBrowser_HideAPICalls = false;
 
         public bool EventBrowser_ApplyColours = true;
         public bool EventBrowser_ColourEventRow = true;
+
+        public bool EventBrowser_AddFake = true;
 
         public int Formatter_MinFigures = 2;
         public int Formatter_MaxFigures = 5;
@@ -320,7 +324,6 @@ namespace renderdocui.Code
 
         public PersistantConfig()
         {
-            CallstackLevelSkip = 0;
             RecentLogFiles.Clear();
             RecentCaptureSettings.Clear();
         }
@@ -330,6 +333,9 @@ namespace renderdocui.Code
         public void Serialize(string file)
         {
             if (ReadOnly) return;
+
+            StaticExports.SetConfigSetting("Disassembly_FriendlyNaming",
+                                           ShaderViewer_FriendlyNaming ? "1" : "0");
 
             try
             {
@@ -361,6 +367,9 @@ namespace renderdocui.Code
             StreamReader reader = File.OpenText(file);
             PersistantConfig c = (PersistantConfig)xs.Deserialize(reader);
             reader.Close();
+
+            StaticExports.SetConfigSetting("Disassembly_FriendlyNaming",
+                                           c.ShaderViewer_FriendlyNaming ? "1" : "0");
 
             foreach (var kv in c.ConfigSettingsValues)
             {
@@ -400,6 +409,28 @@ namespace renderdocui.Code
             }
 
             return c;
+        }
+
+        public void AddAndroidHosts()
+        {
+            for (int i = RemoteHosts.Count - 1; i >= 0; i--)
+            {
+                if (RemoteHosts[i].Hostname.StartsWith("adb:"))
+                    RemoteHosts.RemoveAt(i);
+            }
+
+            string adbExePath = File.Exists(AdbExecutablePath) ? AdbExecutablePath : "";
+
+            // Set the config setting as it will be reused when we start the remoteserver etc.
+            StaticExports.SetConfigSetting("adbExePath", adbExePath);
+
+            string[] androidHosts = StaticExports.EnumerateAndroidDevices();
+            foreach(string hostName in androidHosts)
+            {
+                RemoteHost host = new RemoteHost();
+                host.Hostname = hostName;
+                RemoteHosts.Add(host);
+            }
         }
     }
 }

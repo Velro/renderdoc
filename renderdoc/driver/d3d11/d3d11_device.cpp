@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -196,6 +196,8 @@ const char *D3D11ChunkNames[] = {
 
     "ID3D11DeviceContext::ExecuteCommandList",
     "ID3D11DeviceContext::FinishCommandList",
+
+    "ID3D11DeviceContext1::SwapDeviceContextState",
 };
 
 WRAPPED_POOL_INST(WrappedID3D11Device);
@@ -236,9 +238,11 @@ const uint32_t D3D11InitParams::D3D11_OLD_VERSIONS[D3D11InitParams::D3D11_NUM_SU
     // capture now. So on replay if deferred contexts are present, we go through a
     // flattening stpe.
     0x000009,
+    // from 0xA to 0xB, we added the SwapDeviceContextState from ID3D11DeviceContext1
+    0x00000A,
 };
 
-ReplayCreateStatus D3D11InitParams::Serialise()
+ReplayStatus D3D11InitParams::Serialise()
 {
   SERIALISE_ELEMENT(uint32_t, ver, D3D11_SERIALISE_VERSION);
   SerialiseVersion = ver;
@@ -262,7 +266,7 @@ ReplayCreateStatus D3D11InitParams::Serialise()
     {
       RDCERR("Incompatible D3D11 serialise version, expected %d got %d", D3D11_SERIALISE_VERSION,
              ver);
-      return eReplayCreate_APIIncompatibleVersion;
+      return ReplayStatus::APIIncompatibleVersion;
     }
   }
 
@@ -276,7 +280,7 @@ ReplayCreateStatus D3D11InitParams::Serialise()
   NumFeatureLevels = numlevels;
   m_pSerialiser->SerialisePODArray<ARRAY_COUNT(FeatureLevels)>("FeatureLevels", FeatureLevels);
 
-  return eReplayCreate_Success;
+  return ReplayStatus::Succeeded;
 }
 
 void WrappedID3D11Device::NewSwapchainBuffer(IUnknown *backbuffer)
@@ -293,7 +297,7 @@ void WrappedID3D11Device::NewSwapchainBuffer(IUnknown *backbuffer)
 
 void WrappedID3D11Device::SetLogFile(const char *logfile)
 {
-#if defined(RELEASE)
+#if ENABLED(RDOC_RELEASE)
   const bool debugSerialiser = false;
 #else
   const bool debugSerialiser = true;
@@ -336,6 +340,7 @@ WrappedID3D11Device::WrappedID3D11Device(ID3D11Device *realDevice, D3D11InitPara
   m_Alive = true;
 
   m_DummyInfoQueue.m_pDevice = this;
+  m_DummyD3D10Multithread.m_pDevice = this;
   m_DummyDebug.m_pDevice = this;
   m_WrappedDebug.m_pDevice = this;
 
@@ -346,13 +351,9 @@ WrappedID3D11Device::WrappedID3D11Device(ID3D11Device *realDevice, D3D11InitPara
 
   m_ChunkAtomic = 0;
 
-  m_FrameTimer.Restart();
-
   m_AppControlledCapture = false;
 
-  m_TotalTime = m_AvgFrametime = m_MinFrametime = m_MaxFrametime = 0.0;
-
-#if defined(RELEASE)
+#if ENABLED(RDOC_RELEASE)
   const bool debugSerialiser = false;
 #else
   const bool debugSerialiser = true;
@@ -362,6 +363,8 @@ WrappedID3D11Device::WrappedID3D11Device(ID3D11Device *realDevice, D3D11InitPara
   {
     m_State = READING;
     m_pSerialiser = NULL;
+
+    D3D11MarkerRegion::device = this;
 
     string shaderSearchPathString = RenderDoc::Inst().GetConfigSetting("shader.debug.searchPaths");
     split(shaderSearchPathString, m_ShaderSearchPaths, ';');
@@ -405,6 +408,11 @@ WrappedID3D11Device::WrappedID3D11Device(ID3D11Device *realDevice, D3D11InitPara
 
   realDevice->QueryInterface(__uuidof(ID3D11InfoQueue), (void **)&m_pInfoQueue);
   realDevice->QueryInterface(__uuidof(ID3D11Debug), (void **)&m_WrappedDebug.m_pDebug);
+
+  // useful for marking regions during replay for self-captures
+  m_RealAnnotations = NULL;
+  m_pImmediateContext->GetReal()->QueryInterface(__uuidof(ID3DUserDefinedAnnotation),
+                                                 (void **)&m_RealAnnotations);
 
   if(m_pInfoQueue)
   {
@@ -472,6 +480,8 @@ WrappedID3D11Device::~WrappedID3D11Device()
   if(m_pCurrentWrappedDevice == this)
     m_pCurrentWrappedDevice = NULL;
 
+  D3D11MarkerRegion::device = NULL;
+
   RenderDoc::Inst().RemoveDeviceFrameCapturer((ID3D11Device *)this);
 
   for(auto it = m_CachedStateObjects.begin(); it != m_CachedStateObjects.end(); ++it)
@@ -484,6 +494,8 @@ WrappedID3D11Device::~WrappedID3D11Device()
   SAFE_RELEASE(m_pDevice2);
   SAFE_RELEASE(m_pDevice3);
   SAFE_RELEASE(m_pDevice4);
+
+  SAFE_RELEASE(m_RealAnnotations);
 
   SAFE_RELEASE(m_pImmediateContext);
 
@@ -513,6 +525,11 @@ WrappedID3D11Device::~WrappedID3D11Device()
 
   SAFE_DELETE(m_pSerialiser);
 
+  RDCASSERT(WrappedID3D11Buffer::m_BufferList.empty());
+  RDCASSERT(WrappedID3D11Texture1D::m_TextureList.empty());
+  RDCASSERT(WrappedID3D11Texture2D1::m_TextureList.empty());
+  RDCASSERT(WrappedID3D11Texture3D1::m_TextureList.empty());
+
   if(RenderDoc::Inst().GetCrashHandler())
     RenderDoc::Inst().GetCrashHandler()->UnregisterMemoryRegion(this);
 }
@@ -532,6 +549,18 @@ void WrappedID3D11Device::CheckForDeath()
       delete this;
     }
   }
+}
+
+ULONG STDMETHODCALLTYPE DummyID3D10Multithread::AddRef()
+{
+  m_pDevice->AddRef();
+  return 1;
+}
+
+ULONG STDMETHODCALLTYPE DummyID3D10Multithread::Release()
+{
+  m_pDevice->Release();
+  return 1;
 }
 
 ULONG STDMETHODCALLTYPE DummyID3D11InfoQueue::AddRef()
@@ -610,6 +639,10 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
   static const GUID IRenderDoc_uuid = {
       0xa7aa6116, 0x9c8d, 0x4bba, {0x90, 0x83, 0xb4, 0xd8, 0x16, 0xb7, 0x1b, 0x78}};
 
+  // UUID for returning unwrapped ID3D11InfoQueue {3FC4E618-3F70-452A-8B8F-A73ACCB58E3D}
+  static const GUID unwrappedID3D11InfoQueue__uuid = {
+      0x3fc4e618, 0x3f70, 0x452a, {0x8b, 0x8f, 0xa7, 0x3a, 0xcc, 0xb5, 0x8e, 0x3d}};
+
   HRESULT hr = S_OK;
 
   if(riid == __uuidof(IUnknown))
@@ -625,7 +658,7 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
     if(SUCCEEDED(hr))
     {
       IDXGIDevice *real = (IDXGIDevice *)(*ppvObject);
-      *ppvObject = (IDXGIDevice *)(new WrappedIDXGIDevice(real, this));
+      *ppvObject = (IDXGIDevice *)(new WrappedIDXGIDevice4(real, this));
       return S_OK;
     }
     else
@@ -641,7 +674,7 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
     if(SUCCEEDED(hr))
     {
       IDXGIDevice1 *real = (IDXGIDevice1 *)(*ppvObject);
-      *ppvObject = (IDXGIDevice1 *)(new WrappedIDXGIDevice1(real, this));
+      *ppvObject = (IDXGIDevice1 *)(new WrappedIDXGIDevice4(real, this));
       return S_OK;
     }
     else
@@ -657,7 +690,7 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
     if(SUCCEEDED(hr))
     {
       IDXGIDevice2 *real = (IDXGIDevice2 *)(*ppvObject);
-      *ppvObject = (IDXGIDevice2 *)(new WrappedIDXGIDevice2(real, this));
+      *ppvObject = (IDXGIDevice2 *)(new WrappedIDXGIDevice4(real, this));
       return S_OK;
     }
     else
@@ -673,7 +706,7 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
     if(SUCCEEDED(hr))
     {
       IDXGIDevice3 *real = (IDXGIDevice3 *)(*ppvObject);
-      *ppvObject = (IDXGIDevice3 *)(new WrappedIDXGIDevice3(real, this));
+      *ppvObject = (IDXGIDevice3 *)(new WrappedIDXGIDevice4(real, this));
       return S_OK;
     }
     else
@@ -754,6 +787,15 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
       return E_NOINTERFACE;
     }
   }
+  else if(riid == __uuidof(ID3D10Multithread))
+  {
+    RDCWARN(
+        "Returning a dummy ID3D10Multithread that does nothing. This ID3D10Multithread will not "
+        "work!");
+    *ppvObject = (ID3D10Multithread *)&m_DummyD3D10Multithread;
+    m_DummyD3D10Multithread.AddRef();
+    return S_OK;
+  }
   else if(riid == ID3D11ShaderTraceFactory_uuid)
   {
     RDCWARN("Trying to get ID3D11ShaderTraceFactory. Not supported at this time.");
@@ -763,10 +805,36 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
   else if(riid == __uuidof(ID3D11InfoQueue))
   {
     RDCWARN(
-        "Returning a dummy ID3D11InfoQueue that does nothing. This ID3D11InfoQueue will not work!");
+        "Returning a dummy ID3D11InfoQueue that does nothing. RenderDoc takes control of the debug "
+        "layer.");
+    RDCWARN(
+        "If you want direct access, enable API validation and query for %s. This will return the "
+        "real ID3D11InfoQueue - be careful as it is unwrapped so you should not call "
+        "QueryInterface on it.",
+        ToStr::Get(unwrappedID3D11InfoQueue__uuid).c_str());
     *ppvObject = (ID3D11InfoQueue *)&m_DummyInfoQueue;
     m_DummyInfoQueue.AddRef();
     return S_OK;
+  }
+  else if(riid == unwrappedID3D11InfoQueue__uuid)
+  {
+    if(m_pInfoQueue)
+    {
+      *ppvObject = m_pInfoQueue;
+      m_pInfoQueue->AddRef();
+      return S_OK;
+    }
+    else
+    {
+      if(!RenderDoc::Inst().GetCaptureOptions().APIValidation)
+      {
+        RDCWARN("API Validation is not enabled, RenderDoc disabled the debug layer.");
+        RDCWARN(
+            "Enable this either in the capture options, or using the RenderDoc API before device "
+            "creation.");
+      }
+      return E_NOINTERFACE;
+    }
   }
   else if(riid == __uuidof(ID3D11Debug))
   {
@@ -828,13 +896,13 @@ void WrappedID3D11Device::LazyInit()
     m_DebugManager = new D3D11DebugManager(this);
 }
 
-void WrappedID3D11Device::AddDebugMessage(DebugMessageCategory c, DebugMessageSeverity sv,
-                                          DebugMessageSource src, std::string d)
+void WrappedID3D11Device::AddDebugMessage(MessageCategory c, MessageSeverity sv, MessageSource src,
+                                          std::string d)
 {
   // Only add runtime warnings while executing.
   // While reading, add the messages from the log, and while writing add messages
   // we add (on top of the API debug messages)
-  if(m_State != EXECUTING || src == eDbgSource_RuntimeWarning)
+  if(m_State != EXECUTING || src == MessageSource::RuntimeWarning)
   {
     DebugMessage msg;
     msg.eventID = m_State >= WRITING ? 0 : m_pImmediateContext->GetEventID();
@@ -844,18 +912,13 @@ void WrappedID3D11Device::AddDebugMessage(DebugMessageCategory c, DebugMessageSe
     msg.severity = sv;
     msg.description = d;
 
-    // at runtime we are finding any warnings for the event *after* the current
-    // event ID, as that's the one we just replayed
-    if(src == eDbgSource_RuntimeWarning)
-      msg.eventID++;
-
     m_DebugMessages.push_back(msg);
   }
 }
 
 void WrappedID3D11Device::AddDebugMessage(DebugMessage msg)
 {
-  if(m_State != EXECUTING || msg.source == eDbgSource_RuntimeWarning)
+  if(m_State != EXECUTING || msg.source == MessageSource::RuntimeWarning)
     m_DebugMessages.push_back(msg);
 }
 
@@ -888,37 +951,47 @@ vector<DebugMessage> WrappedID3D11Device::GetDebugMessages()
 
     DebugMessage msg;
     msg.eventID = 0;
-    msg.source = eDbgSource_API;
-    msg.category = eDbgCategory_Miscellaneous;
-    msg.severity = eDbgSeverity_Medium;
+    msg.source = MessageSource::API;
+    msg.category = MessageCategory::Miscellaneous;
+    msg.severity = MessageSeverity::Medium;
 
     switch(message->Category)
     {
       case D3D11_MESSAGE_CATEGORY_APPLICATION_DEFINED:
-        msg.category = eDbgCategory_Application_Defined;
+        msg.category = MessageCategory::Application_Defined;
         break;
-      case D3D11_MESSAGE_CATEGORY_MISCELLANEOUS: msg.category = eDbgCategory_Miscellaneous; break;
-      case D3D11_MESSAGE_CATEGORY_INITIALIZATION: msg.category = eDbgCategory_Initialization; break;
-      case D3D11_MESSAGE_CATEGORY_CLEANUP: msg.category = eDbgCategory_Cleanup; break;
-      case D3D11_MESSAGE_CATEGORY_COMPILATION: msg.category = eDbgCategory_Compilation; break;
-      case D3D11_MESSAGE_CATEGORY_STATE_CREATION: msg.category = eDbgCategory_State_Creation; break;
-      case D3D11_MESSAGE_CATEGORY_STATE_SETTING: msg.category = eDbgCategory_State_Setting; break;
-      case D3D11_MESSAGE_CATEGORY_STATE_GETTING: msg.category = eDbgCategory_State_Getting; break;
+      case D3D11_MESSAGE_CATEGORY_MISCELLANEOUS:
+        msg.category = MessageCategory::Miscellaneous;
+        break;
+      case D3D11_MESSAGE_CATEGORY_INITIALIZATION:
+        msg.category = MessageCategory::Initialization;
+        break;
+      case D3D11_MESSAGE_CATEGORY_CLEANUP: msg.category = MessageCategory::Cleanup; break;
+      case D3D11_MESSAGE_CATEGORY_COMPILATION: msg.category = MessageCategory::Compilation; break;
+      case D3D11_MESSAGE_CATEGORY_STATE_CREATION:
+        msg.category = MessageCategory::State_Creation;
+        break;
+      case D3D11_MESSAGE_CATEGORY_STATE_SETTING:
+        msg.category = MessageCategory::State_Setting;
+        break;
+      case D3D11_MESSAGE_CATEGORY_STATE_GETTING:
+        msg.category = MessageCategory::State_Getting;
+        break;
       case D3D11_MESSAGE_CATEGORY_RESOURCE_MANIPULATION:
-        msg.category = eDbgCategory_Resource_Manipulation;
+        msg.category = MessageCategory::Resource_Manipulation;
         break;
-      case D3D11_MESSAGE_CATEGORY_EXECUTION: msg.category = eDbgCategory_Execution; break;
-      case D3D11_MESSAGE_CATEGORY_SHADER: msg.category = eDbgCategory_Shaders; break;
+      case D3D11_MESSAGE_CATEGORY_EXECUTION: msg.category = MessageCategory::Execution; break;
+      case D3D11_MESSAGE_CATEGORY_SHADER: msg.category = MessageCategory::Shaders; break;
       default: RDCWARN("Unexpected message category: %d", message->Category); break;
     }
 
     switch(message->Severity)
     {
-      case D3D11_MESSAGE_SEVERITY_CORRUPTION: msg.severity = eDbgSeverity_High; break;
-      case D3D11_MESSAGE_SEVERITY_ERROR: msg.severity = eDbgSeverity_Medium; break;
-      case D3D11_MESSAGE_SEVERITY_WARNING: msg.severity = eDbgSeverity_Low; break;
-      case D3D11_MESSAGE_SEVERITY_INFO: msg.severity = eDbgSeverity_Info; break;
-      case D3D11_MESSAGE_SEVERITY_MESSAGE: msg.severity = eDbgSeverity_Info; break;
+      case D3D11_MESSAGE_SEVERITY_CORRUPTION: msg.severity = MessageSeverity::High; break;
+      case D3D11_MESSAGE_SEVERITY_ERROR: msg.severity = MessageSeverity::Medium; break;
+      case D3D11_MESSAGE_SEVERITY_WARNING: msg.severity = MessageSeverity::Low; break;
+      case D3D11_MESSAGE_SEVERITY_INFO: msg.severity = MessageSeverity::Info; break;
+      case D3D11_MESSAGE_SEVERITY_MESSAGE: msg.severity = MessageSeverity::Info; break;
       default: RDCWARN("Unexpected message severity: %d", message->Severity); break;
     }
 
@@ -1032,32 +1105,31 @@ void WrappedID3D11Device::Serialise_CaptureScope(uint64_t offset)
   else
   {
     m_FrameRecord.frameInfo.fileOffset = offset;
-    m_FrameRecord.frameInfo.firstEvent = m_pImmediateContext->GetEventID();
     m_FrameRecord.frameInfo.frameNumber = FrameNumber;
 
-    FetchFrameStatistics &stats = m_FrameRecord.frameInfo.stats;
+    FrameStatistics &stats = m_FrameRecord.frameInfo.stats;
     RDCEraseEl(stats);
 
     // #mivance GL/Vulkan don't set this so don't get stats in window
-    stats.recorded = 1;
+    stats.recorded = true;
 
-    for(uint32_t stage = eShaderStage_First; stage < eShaderStage_Count; stage++)
+    for(uint32_t stage = uint32_t(ShaderStage::First); stage < uint32_t(ShaderStage::Count); stage++)
     {
       create_array(stats.constants[stage].bindslots,
                    D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT + 1);
-      create_array(stats.constants[stage].sizes, FetchFrameConstantBindStats::BUCKET_COUNT);
+      create_array(stats.constants[stage].sizes, ConstantBindStats::BucketCount);
 
       create_array(stats.samplers[stage].bindslots, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT + 1);
 
-      create_array(stats.resources[stage].types, eResType_Count);
+      create_array(stats.resources[stage].types, uint32_t(TextureDim::Count));
       create_array(stats.resources[stage].bindslots,
                    D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT + 1);
     }
 
-    create_array(stats.updates.types, eResType_Count);
-    create_array(stats.updates.sizes, FetchFrameUpdateStats::BUCKET_COUNT);
+    create_array(stats.updates.types, uint32_t(TextureDim::Count));
+    create_array(stats.updates.sizes, ResourceUpdateStats::BucketCount);
 
-    create_array(stats.draws.counts, FetchFrameDrawStats::BUCKET_COUNT);
+    create_array(stats.draws.counts, DrawcallStats::BucketCount);
 
     create_array(stats.vertices.bindslots, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT + 1);
 
@@ -1139,9 +1211,10 @@ void WrappedID3D11Device::ReadLogInitialisation()
       break;
   }
 
-  SetupDrawcallPointers(&m_Drawcalls, m_FrameRecord.drawcallList, NULL, NULL);
+  DrawcallDescription *previous = NULL;
+  SetupDrawcallPointers(&m_Drawcalls, GetFrameRecord().drawcallList, NULL, previous);
 
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
   for(auto it = chunkInfos.begin(); it != chunkInfos.end(); ++it)
   {
     double dcount = double(it->second.count);
@@ -1155,7 +1228,8 @@ void WrappedID3D11Device::ReadLogInitialisation()
   }
 #endif
 
-  m_FrameRecord.frameInfo.fileSize = m_pSerialiser->GetSize();
+  m_FrameRecord.frameInfo.uncompressedFileSize = m_pSerialiser->GetSize();
+  m_FrameRecord.frameInfo.compressedFileSize = m_pSerialiser->GetFileSize();
   m_FrameRecord.frameInfo.persistentSize = m_pSerialiser->GetSize() - frameOffset;
   m_FrameRecord.frameInfo.initDataSize = chunkInfos[(D3D11ChunkType)INITIAL_CONTENTS].totalsize;
 
@@ -2381,7 +2455,7 @@ void WrappedID3D11Device::ReplayLog(uint32_t startEventID, uint32_t endEventID,
 
   if(startEventID == 0 && (replayType == eReplay_WithoutDraw || replayType == eReplay_Full))
   {
-    startEventID = m_FrameRecord.frameInfo.firstEvent;
+    startEventID = 1;
     partial = false;
   }
 
@@ -2395,6 +2469,7 @@ void WrappedID3D11Device::ReplayLog(uint32_t startEventID, uint32_t endEventID,
 
   if(!partial)
   {
+    D3D11MarkerRegion apply("ApplyInitialContents");
     GetResourceManager()->ApplyInitialContents();
     GetResourceManager()->ReleaseInFrameResources();
   }
@@ -2402,17 +2477,42 @@ void WrappedID3D11Device::ReplayLog(uint32_t startEventID, uint32_t endEventID,
   m_State = EXECUTING;
 
   if(replayType == eReplay_Full)
+  {
+    D3D11MarkerRegion exec(
+        StringFormat::Fmt("Replay: Full %u->%u (partial %u)", startEventID, endEventID, partial));
     m_pImmediateContext->ReplayLog(EXECUTING, startEventID, endEventID, partial);
+  }
   else if(replayType == eReplay_WithoutDraw)
+  {
+    D3D11MarkerRegion exec(StringFormat::Fmt("Replay: W/O Draw %u->%u (partial %u)", startEventID,
+                                             endEventID, partial));
     m_pImmediateContext->ReplayLog(EXECUTING, startEventID, RDCMAX(1U, endEventID) - 1, partial);
+  }
   else if(replayType == eReplay_OnlyDraw)
+  {
+    D3D11MarkerRegion exec(StringFormat::Fmt("Replay: Draw Only %u->%u (partial %u)", endEventID,
+                                             endEventID, partial));
     m_pImmediateContext->ReplayLog(EXECUTING, endEventID, endEventID, partial);
+  }
   else
+  {
     RDCFATAL("Unexpected replay type");
+  }
 }
 
-void WrappedID3D11Device::ReleaseSwapchainResources(WrappedIDXGISwapChain3 *swap)
+void WrappedID3D11Device::ReleaseSwapchainResources(WrappedIDXGISwapChain4 *swap, UINT QueueCount,
+                                                    IUnknown *const *ppPresentQueue,
+                                                    IUnknown **unwrappedQueues)
 {
+  RDCASSERT(ppPresentQueue == NULL);
+
+  if(ppPresentQueue)
+  {
+    RDCERR("D3D11 doesn't support present queues - passing through unmodified");
+    for(UINT i = 0; i < QueueCount; i++)
+      unwrappedQueues[i] = ppPresentQueue[i];
+  }
+
   for(int i = 0; i < swap->GetNumBackbuffers(); i++)
   {
     WrappedID3D11Texture2D1 *wrapped11 = (WrappedID3D11Texture2D1 *)swap->GetBackbuffers()[i];
@@ -2423,6 +2523,15 @@ void WrappedID3D11Device::ReleaseSwapchainResources(WrappedIDXGISwapChain3 *swap
       GetImmediateContext()->GetCurrentPipelineState()->UnbindIUnknownForWrite(range);
       GetImmediateContext()->GetCurrentPipelineState()->UnbindIUnknownForRead(range, false, false);
 
+      {
+        SCOPED_LOCK(WrappedID3DDeviceContextState::m_Lock);
+        for(size_t s = 0; s < WrappedID3DDeviceContextState::m_List.size(); s++)
+        {
+          WrappedID3DDeviceContextState::m_List[s]->state->UnbindIUnknownForWrite(range);
+          WrappedID3DDeviceContextState::m_List[s]->state->UnbindIUnknownForRead(range, false, false);
+        }
+      }
+
       wrapped11->ViewRelease();
     }
 
@@ -2431,8 +2540,7 @@ void WrappedID3D11Device::ReleaseSwapchainResources(WrappedIDXGISwapChain3 *swap
 
   if(swap)
   {
-    DXGI_SWAP_CHAIN_DESC desc;
-    swap->GetDesc(&desc);
+    DXGI_SWAP_CHAIN_DESC desc = swap->GetDescWithHWND();
 
     Keyboard::RemoveInputWindow(desc.OutputWindow);
 
@@ -2447,7 +2555,7 @@ void WrappedID3D11Device::ReleaseSwapchainResources(WrappedIDXGISwapChain3 *swap
   }
 }
 
-bool WrappedID3D11Device::Serialise_WrapSwapchainBuffer(WrappedIDXGISwapChain3 *swap,
+bool WrappedID3D11Device::Serialise_WrapSwapchainBuffer(WrappedIDXGISwapChain4 *swap,
                                                         DXGI_SWAP_CHAIN_DESC *swapDesc, UINT buffer,
                                                         IUnknown *realSurface)
 {
@@ -2456,6 +2564,8 @@ bool WrappedID3D11Device::Serialise_WrapSwapchainBuffer(WrappedIDXGISwapChain3 *
   SERIALISE_ELEMENT(DXGI_FORMAT, swapFormat, swapDesc->BufferDesc.Format);
   SERIALISE_ELEMENT(uint32_t, BuffNum, buffer);
   SERIALISE_ELEMENT(ResourceId, pTexture, GetIDForResource(pTex));
+
+  m_BBID = pTexture;
 
   if(m_State >= WRITING)
   {
@@ -2501,7 +2611,7 @@ bool WrappedID3D11Device::Serialise_WrapSwapchainBuffer(WrappedIDXGISwapChain3 *
   return true;
 }
 
-IUnknown *WrappedID3D11Device::WrapSwapchainBuffer(WrappedIDXGISwapChain3 *swap,
+IUnknown *WrappedID3D11Device::WrapSwapchainBuffer(WrappedIDXGISwapChain4 *swap,
                                                    DXGI_SWAP_CHAIN_DESC *swapDesc, UINT buffer,
                                                    IUnknown *realSurface)
 {
@@ -2563,8 +2673,7 @@ IUnknown *WrappedID3D11Device::WrapSwapchainBuffer(WrappedIDXGISwapChain3 *swap,
 
   if(swap)
   {
-    DXGI_SWAP_CHAIN_DESC sdesc;
-    swap->GetDesc(&sdesc);
+    DXGI_SWAP_CHAIN_DESC sdesc = swap->GetDescWithHWND();
 
     Keyboard::AddInputWindow(sdesc.OutputWindow);
 
@@ -2617,7 +2726,7 @@ void WrappedID3D11Device::StartFrameCapture(void *dev, void *wnd)
 
   m_FrameCounter = RDCMAX(1 + (uint32_t)m_CapturedFrames.size(), m_FrameCounter);
 
-  FetchFrameInfo frame;
+  FrameDescription frame;
   frame.frameNumber = m_FrameCounter + 1;
   frame.captureTime = Timing::GetUnixTimestamp();
   m_CapturedFrames.push_back(frame);
@@ -2662,14 +2771,13 @@ bool WrappedID3D11Device::EndFrameCapture(void *dev, void *wnd)
 
   CaptureFailReason reason;
 
-  WrappedIDXGISwapChain3 *swap = NULL;
+  WrappedIDXGISwapChain4 *swap = NULL;
 
   if(wnd)
   {
     for(auto it = m_SwapChains.begin(); it != m_SwapChains.end(); ++it)
     {
-      DXGI_SWAP_CHAIN_DESC swapDesc;
-      it->first->GetDesc(&swapDesc);
+      DXGI_SWAP_CHAIN_DESC swapDesc = it->first->GetDescWithHWND();
 
       if(swapDesc.OutputWindow == wnd)
       {
@@ -2712,7 +2820,7 @@ bool WrappedID3D11Device::EndFrameCapture(void *dev, void *wnd)
       }
     }
 
-    const uint32_t maxSize = 1024;
+    const uint32_t maxSize = 2048;
 
     byte *thpixels = NULL;
     uint32_t thwidth = 0;
@@ -2812,7 +2920,7 @@ bool WrappedID3D11Device::EndFrameCapture(void *dev, void *wnd)
             bool buf1010102 = false;
             bool bufBGRA = (fmt.bgraOrder != false);
 
-            if(fmt.special && fmt.specialFormat == eSpecial_R10G10B10A2)
+            if(fmt.special && fmt.specialFormat == SpecialFormat::R10G10B10A2)
             {
               stride = 4;
               buf1010102 = true;
@@ -2894,8 +3002,7 @@ bool WrappedID3D11Device::EndFrameCapture(void *dev, void *wnd)
       jpgbuf = new byte[len];
 
       jpge::params p;
-
-      p.m_quality = 40;
+      p.m_quality = 80;
 
       bool success = jpge::compress_image_to_jpeg_file_in_memory(jpgbuf, len, thwidth, thheight, 3,
                                                                  thpixels, p);
@@ -2966,7 +3073,7 @@ bool WrappedID3D11Device::EndFrameCapture(void *dev, void *wnd)
 
     SAFE_DELETE(m_pFileSerialiser);
 
-    RenderDoc::Inst().SuccessfullyWrittenLog();
+    RenderDoc::Inst().SuccessfullyWrittenLog(m_FrameCounter);
 
     m_State = WRITING_IDLE;
 
@@ -3014,8 +3121,7 @@ bool WrappedID3D11Device::EndFrameCapture(void *dev, void *wnd)
       {
         m_pImmediateContext->GetReal()->OMSetRenderTargets(1, &rtv, NULL);
 
-        DXGI_SWAP_CHAIN_DESC swapDesc = {0};
-        swap->GetDesc(&swapDesc);
+        DXGI_SWAP_CHAIN_DESC swapDesc = swap->GetDescWithHWND();
         GetDebugManager()->SetOutputDimensions(swapDesc.BufferDesc.Width, swapDesc.BufferDesc.Height);
         GetDebugManager()->SetOutputWindow(swapDesc.OutputWindow);
 
@@ -3201,10 +3307,9 @@ void WrappedID3D11Device::UnlockForChunkRemoval()
   }
 }
 
-void WrappedID3D11Device::FirstFrame(WrappedIDXGISwapChain3 *swapChain)
+void WrappedID3D11Device::FirstFrame(WrappedIDXGISwapChain4 *swapChain)
 {
-  DXGI_SWAP_CHAIN_DESC swapdesc;
-  swapChain->GetDesc(&swapdesc);
+  DXGI_SWAP_CHAIN_DESC swapdesc = swapChain->GetDescWithHWND();
 
   // if we have to capture the first frame, begin capturing immediately
   if(m_State == WRITING_IDLE && RenderDoc::Inst().ShouldTriggerCapture(0))
@@ -3215,7 +3320,7 @@ void WrappedID3D11Device::FirstFrame(WrappedIDXGISwapChain3 *swapChain)
   }
 }
 
-HRESULT WrappedID3D11Device::Present(WrappedIDXGISwapChain3 *swap, UINT SyncInterval, UINT Flags)
+HRESULT WrappedID3D11Device::Present(WrappedIDXGISwapChain4 *swap, UINT SyncInterval, UINT Flags)
 {
   if((Flags & DXGI_PRESENT_TEST) != 0)
     return S_OK;
@@ -3231,40 +3336,12 @@ HRESULT WrappedID3D11Device::Present(WrappedIDXGISwapChain3 *swap, UINT SyncInte
 
   m_pImmediateContext->BeginFrame();
 
-  DXGI_SWAP_CHAIN_DESC swapdesc;
-  swap->GetDesc(&swapdesc);
+  DXGI_SWAP_CHAIN_DESC swapdesc = swap->GetDescWithHWND();
   bool activeWindow = RenderDoc::Inst().IsActiveWindow((ID3D11Device *)this, swapdesc.OutputWindow);
 
   if(m_State == WRITING_IDLE)
   {
     D3D11RenderState old = *m_pImmediateContext->GetCurrentPipelineState();
-
-    m_FrameTimes.push_back(m_FrameTimer.GetMilliseconds());
-    m_TotalTime += m_FrameTimes.back();
-    m_FrameTimer.Restart();
-
-    // update every second
-    if(m_TotalTime > 1000.0)
-    {
-      m_MinFrametime = 10000.0;
-      m_MaxFrametime = 0.0;
-      m_AvgFrametime = 0.0;
-
-      m_TotalTime = 0.0;
-
-      for(size_t i = 0; i < m_FrameTimes.size(); i++)
-      {
-        m_AvgFrametime += m_FrameTimes[i];
-        if(m_FrameTimes[i] < m_MinFrametime)
-          m_MinFrametime = m_FrameTimes[i];
-        if(m_FrameTimes[i] > m_MaxFrametime)
-          m_MaxFrametime = m_FrameTimes[i];
-      }
-
-      m_AvgFrametime /= double(m_FrameTimes.size());
-
-      m_FrameTimes.clear();
-    }
 
     uint32_t overlay = RenderDoc::Inst().GetOverlayBits();
 
@@ -3279,114 +3356,25 @@ HRESULT WrappedID3D11Device::Present(WrappedIDXGISwapChain3 *swap, UINT SyncInte
       GetDebugManager()->SetOutputDimensions(swapDesc.BufferDesc.Width, swapDesc.BufferDesc.Height);
       GetDebugManager()->SetOutputWindow(swapDesc.OutputWindow);
 
-      if(activeWindow)
+      int flags = activeWindow ? RenderDoc::eOverlay_ActiveWindow : 0;
+      string overlayText = RenderDoc::Inst().GetOverlayText(RDC_D3D11, m_FrameCounter, flags);
+
+      if(activeWindow && m_FailedFrame > 0)
       {
-        vector<RENDERDOC_InputButton> keys = RenderDoc::Inst().GetCaptureKeys();
-
-        string overlayText = "D3D11. ";
-
-        if(Keyboard::PlatformHasKeyInput())
+        const char *reasonString = "Unknown reason";
+        switch(m_FailedReason)
         {
-          for(size_t i = 0; i < keys.size(); i++)
-          {
-            if(i > 0)
-              overlayText += ", ";
-
-            overlayText += ToStr::Get(keys[i]);
-          }
-
-          if(!keys.empty())
-            overlayText += " to capture.";
-        }
-        else
-        {
-          if(RenderDoc::Inst().IsTargetControlConnected())
-            overlayText += "Connected by " + RenderDoc::Inst().GetTargetControlUsername() + ".";
-          else
-            overlayText += "No remote access connection.";
+          case CaptureFailed_UncappedCmdlist: reasonString = "Uncapped command list"; break;
+          case CaptureFailed_UncappedUnmap: reasonString = "Uncapped Map()/Unmap()"; break;
+          default: break;
         }
 
-        if(overlay & eRENDERDOC_Overlay_FrameNumber)
-        {
-          overlayText += StringFormat::Fmt(" Frame: %d.", m_FrameCounter);
-        }
-        if(overlay & eRENDERDOC_Overlay_FrameRate)
-        {
-          overlayText += StringFormat::Fmt(" %.2lf ms (%.2lf .. %.2lf) (%.0lf FPS)", m_AvgFrametime,
-                                           m_MinFrametime, m_MaxFrametime,
-                                           // max with 0.01ms so that we don't divide by zero
-                                           1000.0f / RDCMAX(0.01, m_AvgFrametime));
-        }
-
-        float y = 0.0f;
-
-        if(!overlayText.empty())
-        {
-          GetDebugManager()->RenderText(0.0f, y, overlayText.c_str());
-          y += 1.0f;
-        }
-
-        if(overlay & eRENDERDOC_Overlay_CaptureList)
-        {
-          GetDebugManager()->RenderText(0.0f, y, "%d Captures saved.\n",
-                                        (uint32_t)m_CapturedFrames.size());
-          y += 1.0f;
-
-          uint64_t now = Timing::GetUnixTimestamp();
-          for(size_t i = 0; i < m_CapturedFrames.size(); i++)
-          {
-            if(now - m_CapturedFrames[i].captureTime < 20)
-            {
-              GetDebugManager()->RenderText(0.0f, y, "Captured frame %d.\n",
-                                            m_CapturedFrames[i].frameNumber);
-              y += 1.0f;
-            }
-          }
-        }
-
-        if(m_FailedFrame > 0)
-        {
-          const char *reasonString = "Unknown reason";
-          switch(m_FailedReason)
-          {
-            case CaptureFailed_UncappedCmdlist: reasonString = "Uncapped command list"; break;
-            case CaptureFailed_UncappedUnmap: reasonString = "Uncapped Map()/Unmap()"; break;
-            default: break;
-          }
-
-          GetDebugManager()->RenderText(0.0f, y, "Failed capture at frame %d:\n", m_FailedFrame);
-          y += 1.0f;
-          GetDebugManager()->RenderText(0.0f, y, "    %s\n", reasonString);
-          y += 1.0f;
-        }
-
-#if !defined(RELEASE)
-        GetDebugManager()->RenderText(0.0f, y, "%llu chunks - %.2f MB", Chunk::NumLiveChunks(),
-                                      float(Chunk::TotalMem()) / 1024.0f / 1024.0f);
-        y += 1.0f;
-#endif
+        overlayText += StringFormat::Fmt("Failed capture at frame %d:\n", m_FailedFrame);
+        overlayText += StringFormat::Fmt("    %s\n", reasonString);
       }
-      else
-      {
-        vector<RENDERDOC_InputButton> keys = RenderDoc::Inst().GetFocusKeys();
 
-        string str = "D3D11. Inactive swapchain.";
-
-        for(size_t i = 0; i < keys.size(); i++)
-        {
-          if(i == 0)
-            str += " ";
-          else
-            str += ", ";
-
-          str += ToStr::Get(keys[i]);
-        }
-
-        if(!keys.empty())
-          str += " to cycle between swapchains";
-
-        GetDebugManager()->RenderText(0.0f, 0.0f, str.c_str());
-      }
+      if(!overlayText.empty())
+        GetDebugManager()->RenderText(0.0f, 0.0f, overlayText.c_str());
 
       old.ApplyState(m_pImmediateContext);
     }
@@ -3472,7 +3460,7 @@ bool WrappedID3D11Device::Serialise_SetShaderDebugPath(ID3D11DeviceChild *res, c
     auto it = WrappedShader::m_ShaderList.find(GetResourceManager()->GetLiveID(resource));
 
     if(it != WrappedShader::m_ShaderList.end())
-      it->second->SetDebugInfoPath(&m_ShaderSearchPaths, debugPath);
+      it->second->SetDebugInfoPath(debugPath);
   }
 
   return true;
@@ -3665,6 +3653,9 @@ void WrappedID3D11Device::ReleaseResource(ID3D11DeviceChild *res)
      (type == Resource_CommandList && !cmdList->IsCaptured()))
     serialiseRelease = false;
 
+  if(type == Resource_DeviceState)
+    serialiseRelease = false;
+
   if(type == Resource_CommandList && !cmdList->IsCaptured())
   {
     record = GetResourceManager()->GetResourceRecord(idx);
@@ -3713,7 +3704,7 @@ WrappedID3D11DeviceContext *WrappedID3D11Device::GetDeferredContext(size_t idx)
   return *it;
 }
 
-const FetchDrawcall *WrappedID3D11Device::GetDrawcall(uint32_t eventID)
+const DrawcallDescription *WrappedID3D11Device::GetDrawcall(uint32_t eventID)
 {
   if(eventID >= m_Drawcalls.size())
     return NULL;

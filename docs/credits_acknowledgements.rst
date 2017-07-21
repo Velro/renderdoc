@@ -46,7 +46,7 @@ The following libraries and components are incorporated into RenderDoc, listed h
 
 * `stb <https://github.com/nothings/stb>`_ - Released to the Public Domain by Sean Barrett.
 
-  Used to read and write various image formats.
+  Used to read, write and resize various image formats.
 
 * `Source Code Pro <https://github.com/adobe-fonts/source-code-pro>`_ - Copyright 2010, 2012 Adobe Systems Incorporated, distributed under the SIL Open Font License 1.1.
 
@@ -79,6 +79,22 @@ The following libraries and components are incorporated into RenderDoc, listed h
 * `plthook <https://github.com/kubo/plthook>`_ - Copyright 2013-2014 Kubo Takehiro, distributed under the 2-clause BSD license.
 
   Used for hooking some libraries loaded with DEEPBIND on linux.
+
+* `tinyfiledialogs <https://sourceforge.net/projects/tinyfiledialogs/>`_ - Copyright (c) 2014 - 2016 Guillaume Vareille, distributed under the zlib license.
+
+  Used to display message boxes cross-platform from the non-UI core code.
+
+* `AMD GPUPerfAPI <https://github.com/GPUOpen-Tools/GPA>`_ - Copyright (c) 2016 Advanced Micro Devices, Inc., distributed under the MIT license.
+
+  Provides hardware-specific counters over and above what individual hardware-agnostic graphics APIs are able to provide.
+
+* `Farm-Fresh Web Icons <http://www.fatcow.com/free-icons>`_ - Copyright (c) 2009-2014 FatCow Web Hosting, distributed under Creative Commons Attribution 3.0 License.
+
+  Providing higher-resolution icons than the famfamfam Silk set, these icons allow scaling to those using high-DPI displays.
+
+* `AMD Radeon GPU Analyzer <https://github.com/GPUOpen-Tools/RGA>`_ - Copyright (c) 2015 Advanced Micro Devices, Inc., distributed under the MIT license.
+
+  Provides the ability to disassemble shaders from any API representation into compiled GCN ISA for lower level analysis.
 
 Thanks
 ------
@@ -120,3 +136,15 @@ There have been many people who have helped in the creation of RenderDoc. Whethe
 * Ian Elliot
 * Callan McInally
 * Gordon Selley
+
+Contributors
+------------
+
+The following list highlights notable open source contributions. Many other people have contributed individual bug fixes and tweaks, which can be seen `on github <https://github.com/baldurk/renderdoc/graphs/contributors>`_ !
+
+* Michael Vance - Implemented a sophisticated frame statistics system for D3D11 around binding and draw API calls.
+* Matthäus G. Chajdas - Converted this documentation from sandcastle to sphinx.
+* Michael Rennie - Added support for Android platform capture.
+* Adrian Bucur - Added custom SPIR-V disassembler support.
+* James Fulop - Updated the vertex picking algorithm.
+* Balazs Torok - Implemented the RenderDoc in-application overlay for D3D9.

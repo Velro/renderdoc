@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -40,6 +40,8 @@ std::wstring strupper(const std::wstring &str);
 std::string trim(const std::string &str);
 
 uint32_t strhash(const char *str, uint32_t existingHash = 5381);
+
+bool endswith(const std::string &value, const std::string &ending);
 
 template <class strType>
 strType basename(const strType &path)

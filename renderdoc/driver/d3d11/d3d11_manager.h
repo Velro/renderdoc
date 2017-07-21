@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -200,7 +200,7 @@ private:
 template <typename Dest>
 typename Dest::InnerType *Unwrap(typename Dest::InnerType *obj)
 {
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
   if(obj && !Dest::IsAlloc(obj))
   {
     RDCERR("Trying to unwrap invalid type");

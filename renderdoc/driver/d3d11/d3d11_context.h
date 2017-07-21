@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -101,13 +101,13 @@ enum CaptureFailReason
 struct DrawcallTreeNode
 {
   DrawcallTreeNode() {}
-  explicit DrawcallTreeNode(const FetchDrawcall &d) : draw(d) {}
-  FetchDrawcall draw;
+  explicit DrawcallTreeNode(const DrawcallDescription &d) : draw(d) {}
+  DrawcallDescription draw;
   vector<DrawcallTreeNode> children;
 
-  vector<FetchDrawcall> Bake()
+  vector<DrawcallDescription> Bake()
   {
-    vector<FetchDrawcall> ret;
+    vector<DrawcallDescription> ret;
     if(children.empty())
       return ret;
 
@@ -122,32 +122,7 @@ struct DrawcallTreeNode
   }
 };
 
-template <typename T>
-size_t BucketForRecordLinear(size_t value)
-{
-  RDCCOMPILE_ASSERT(T::BUCKET_TYPE == BUCKET_RECORD_TYPE_LINEAR,
-                    "Incorrect bucket type for record query.");
-  const size_t size = T::BUCKET_SIZE;
-  const size_t count = T::BUCKET_COUNT;
-  const size_t maximum = size * count;
-  const size_t index = (value < maximum) ? (value / size) : (count - 1);
-  return index;
-}
-
-template <typename T>
-size_t BucketForRecordPow2(size_t value)
-{
-  RDCCOMPILE_ASSERT(T::BUCKET_TYPE == BUCKET_RECORD_TYPE_POW2,
-                    "Incorrect bucket type for record query.");
-  const size_t count = T::BUCKET_COUNT;
-  RDCCOMPILE_ASSERT(count <= (sizeof(size_t) * 8),
-                    "Unexpected correspondence between bucket size and sizeof(size_t)");
-  const size_t maximum = (size_t)1 << count;
-  const size_t index = (value < maximum) ? (size_t)(Log2Floor(value)) : (count - 1);
-  return index;
-}
-
-class WrappedID3D11DeviceContext : public RefCounter, public ID3D11DeviceContext2
+class WrappedID3D11DeviceContext : public RefCounter, public ID3D11DeviceContext3
 {
 private:
   friend class WrappedID3D11DeviceContext;
@@ -170,6 +145,7 @@ private:
   };
 
   set<ResourceId> m_DeferredDirty;
+  set<ResourceId> m_DeferredReferences;
 
   set<ResourceId> m_HighTrafficResources;
   map<MappedResource, MapIntercept> m_OpenMaps;
@@ -219,7 +195,7 @@ private:
 
   D3D11RenderState *m_DeferredSavedState;
 
-  vector<FetchAPIEvent> m_CurEvents, m_Events;
+  vector<APIEvent> m_CurEvents, m_Events;
   bool m_AddedDrawcall;
 
   WrappedID3DUserDefinedAnnotation m_UserAnnotation;
@@ -255,23 +231,22 @@ private:
 
   void DrainAnnotationQueue();
 
-  void AddUsage(const FetchDrawcall &d);
+  void AddUsage(const DrawcallDescription &d);
 
-  void AddEvent(D3D11ChunkType type, string description);
-  void AddDrawcall(const FetchDrawcall &d, bool hasEvents);
+  void AddEvent(string description);
+  void AddDrawcall(const DrawcallDescription &d, bool hasEvents);
 
   void RecordIndexBindStats(ID3D11Buffer *Buffer);
   void RecordVertexBindStats(UINT NumBuffers, ID3D11Buffer *Buffers[]);
   void RecordLayoutBindStats(ID3D11InputLayout *Layout);
-  void RecordConstantStats(ShaderStageType stage, UINT NumBuffers, ID3D11Buffer *Buffers[]);
-  void RecordResourceStats(ShaderStageType stage, UINT NumResources,
+  void RecordConstantStats(ShaderStage stage, UINT NumBuffers, ID3D11Buffer *Buffers[]);
+  void RecordResourceStats(ShaderStage stage, UINT NumResources,
                            ID3D11ShaderResourceView *Resources[]);
-  void RecordSamplerStats(ShaderStageType stage, UINT NumSamplers, ID3D11SamplerState *Samplers[]);
+  void RecordSamplerStats(ShaderStage stage, UINT NumSamplers, ID3D11SamplerState *Samplers[]);
   void RecordUpdateStats(ID3D11Resource *res, uint32_t Size, bool Server);
   void RecordDrawStats(bool instanced, bool indirect, UINT InstanceCount);
   void RecordDispatchStats(bool indirect);
-  void RecordShaderStats(ShaderStageType stage, ID3D11DeviceChild *Current,
-                         ID3D11DeviceChild *Shader);
+  void RecordShaderStats(ShaderStage stage, ID3D11DeviceChild *Current, ID3D11DeviceChild *Shader);
   void RecordBlendStats(ID3D11BlendState *Blend, FLOAT BlendFactor[4], UINT SampleMask);
   void RecordDepthStencilStats(ID3D11DepthStencilState *DepthStencil, UINT StencilRef);
   void RecordRasterizationStats(ID3D11RasterizerState *Rasterizer);
@@ -328,6 +303,7 @@ public:
   Serialiser *GetSerialiser() { return m_pSerialiser; }
   ResourceId GetResourceID() { return m_ResourceID; }
   ID3D11DeviceContext *GetReal() { return m_pRealContext; }
+  ID3D11DeviceContext1 *GetReal1() { return m_pRealContext1; }
   bool IsFL11_1();
 
   void ProcessChunk(uint64_t offset, D3D11ChunkType chunk, bool forceExecute);
@@ -340,7 +316,7 @@ public:
   void ClearMaps();
 
   uint32_t GetEventID() { return m_CurEventID; }
-  FetchAPIEvent GetEvent(uint32_t eventID);
+  APIEvent GetEvent(uint32_t eventID);
 
   const DrawcallTreeNode &GetRootDraw() { return m_ParentDrawcall; }
   void ThreadSafe_SetMarker(uint32_t col, const wchar_t *name);

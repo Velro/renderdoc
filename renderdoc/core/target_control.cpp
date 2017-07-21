@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,6 +25,7 @@
 
 #include "api/replay/renderdoc_replay.h"
 #include "core/core.h"
+#include "jpeg-compressor/jpgd.h"
 #include "os/os_specific.h"
 #include "replay/type_helpers.h"
 #include "serialise/serialiser.h"
@@ -127,15 +128,18 @@ void RenderDoc::TargetControlClientThread(void *s)
       ser.Serialise("", captures.back().timestamp);
       ser.Serialise("", path);
 
-      uint32_t len = 0;
-      RENDERDOC_GetThumbnail(captures.back().path.c_str(), NULL, len);
-      byte *thumb = new byte[len];
-      RENDERDOC_GetThumbnail(captures.back().path.c_str(), thumb, len);
+      rdctype::array<byte> buf;
 
-      size_t l = len;
-      ser.Serialise("", len);
-      ser.SerialiseBuffer("", thumb, l);
-      delete[] thumb;
+      ICaptureFile *file = RENDERDOC_OpenCaptureFile(captures.back().path.c_str());
+      if(file->OpenStatus() == ReplayStatus::Succeeded)
+      {
+        buf = file->GetThumbnail(FileType::JPG, 0);
+      }
+      file->Shutdown();
+
+      size_t sz = buf.size();
+      ser.Serialise("", buf.count);
+      ser.SerialiseBuffer("", buf.elems, sz);
     }
     else if(childprocs.size() != children.size())
     {
@@ -370,8 +374,7 @@ void RenderDoc::TargetControlServerThread(void *s)
 struct TargetControl : public ITargetControl
 {
 public:
-  TargetControl(Network::Socket *sock, string clientName, bool forceConnection, bool localhost)
-      : m_Socket(sock), m_Local(localhost)
+  TargetControl(Network::Socket *sock, string clientName, bool forceConnection) : m_Socket(sock)
   {
     PacketType type;
     vector<byte> payload;
@@ -487,12 +490,13 @@ public:
     }
   }
 
-  void ReceiveMessage(TargetControlMessage *msg)
+  TargetControlMessage ReceiveMessage()
   {
+    TargetControlMessage msg;
     if(m_Socket == NULL)
     {
-      msg->Type = eTargetControlMsg_Disconnected;
-      return;
+      msg.Type = TargetControlMessageType::Disconnected;
+      return msg;
     }
 
     if(!m_Socket->IsRecvDataWaiting())
@@ -500,15 +504,15 @@ public:
       if(!m_Socket->Connected())
       {
         SAFE_DELETE(m_Socket);
-        msg->Type = eTargetControlMsg_Disconnected;
+        msg.Type = TargetControlMessageType::Disconnected;
       }
       else
       {
         Threading::Sleep(2);
-        msg->Type = eTargetControlMsg_Noop;
+        msg.Type = TargetControlMessageType::Noop;
       }
 
-      return;
+      return msg;
     }
 
     PacketType type;
@@ -520,8 +524,8 @@ public:
     {
       SAFE_DELETE(ser);
 
-      msg->Type = eTargetControlMsg_Disconnected;
-      return;
+      msg.Type = TargetControlMessageType::Disconnected;
+      return msg;
     }
     else
     {
@@ -529,8 +533,8 @@ public:
       {
         SAFE_DELETE(ser);
 
-        msg->Type = eTargetControlMsg_Noop;
-        return;
+        msg.Type = TargetControlMessageType::Noop;
+        return msg;
       }
       else if(type == ePacket_Busy)
       {
@@ -542,99 +546,118 @@ public:
         SAFE_DELETE(m_Socket);
 
         RDCLOG("Got busy signal: '%s", existingClient.c_str());
-        msg->Type = eTargetControlMsg_Busy;
-        msg->Busy.ClientName = existingClient;
-        return;
+        msg.Type = TargetControlMessageType::Busy;
+        msg.Busy.ClientName = existingClient;
+        return msg;
       }
       else if(type == ePacket_CopyCapture)
       {
-        msg->Type = eTargetControlMsg_CaptureCopied;
+        msg.Type = TargetControlMessageType::CaptureCopied;
 
-        ser->Serialise("", msg->NewCapture.ID);
+        ser->Serialise("", msg.NewCapture.ID);
 
         SAFE_DELETE(ser);
 
-        msg->NewCapture.path = m_CaptureCopies[msg->NewCapture.ID];
+        msg.NewCapture.path = m_CaptureCopies[msg.NewCapture.ID];
 
-        if(!RecvChunkedFile(m_Socket, ePacket_CopyCapture, msg->NewCapture.path.elems, ser, NULL))
+        if(!RecvChunkedFile(m_Socket, ePacket_CopyCapture, msg.NewCapture.path.elems, ser, NULL))
         {
           SAFE_DELETE(ser);
           SAFE_DELETE(m_Socket);
 
-          msg->Type = eTargetControlMsg_Disconnected;
-          return;
+          msg.Type = TargetControlMessageType::Disconnected;
+          return msg;
         }
 
-        m_CaptureCopies.erase(msg->NewCapture.ID);
+        m_CaptureCopies.erase(msg.NewCapture.ID);
 
         SAFE_DELETE(ser);
 
-        return;
+        return msg;
       }
       else if(type == ePacket_NewChild)
       {
-        msg->Type = eTargetControlMsg_NewChild;
+        msg.Type = TargetControlMessageType::NewChild;
 
-        ser->Serialise("", msg->NewChild.PID);
-        ser->Serialise("", msg->NewChild.ident);
+        ser->Serialise("", msg.NewChild.PID);
+        ser->Serialise("", msg.NewChild.ident);
 
-        RDCLOG("Got a new child process: %u %u", msg->NewChild.PID, msg->NewChild.ident);
+        RDCLOG("Got a new child process: %u %u", msg.NewChild.PID, msg.NewChild.ident);
 
         SAFE_DELETE(ser);
 
-        return;
+        return msg;
       }
       else if(type == ePacket_NewCapture)
       {
-        msg->Type = eTargetControlMsg_NewCapture;
+        msg.Type = TargetControlMessageType::NewCapture;
 
-        ser->Serialise("", msg->NewCapture.ID);
-        ser->Serialise("", msg->NewCapture.timestamp);
+        ser->Serialise("", msg.NewCapture.ID);
+        ser->Serialise("", msg.NewCapture.timestamp);
 
         string path;
         ser->Serialise("", path);
-        msg->NewCapture.path = path;
-        msg->NewCapture.local = m_Local;
+        msg.NewCapture.path = path;
+        msg.NewCapture.local = FileIO::exists(path.c_str());
 
-        uint32_t thumblen = 0;
+        int32_t thumblen = 0;
         ser->Serialise("", thumblen);
 
-        create_array_uninit(msg->NewCapture.thumbnail, thumblen);
+        byte *buf = new byte[thumblen];
 
         size_t l = 0;
-        byte *buf = &msg->NewCapture.thumbnail[0];
         ser->SerialiseBuffer("", buf, l);
 
-        RDCLOG("Got a new capture: %d (time %llu) %d byte thumbnail", msg->NewCapture.ID,
-               msg->NewCapture.timestamp, thumblen);
+        RDCLOG("Got a new capture: %d (time %llu) %d byte thumbnail", msg.NewCapture.ID,
+               msg.NewCapture.timestamp, thumblen);
+
+        int w = 0;
+        int h = 0;
+        int comp = 3;
+        byte *thumbpixels =
+            jpgd::decompress_jpeg_image_from_memory(buf, (int)thumblen, &w, &h, &comp, 3);
+
+        if(w > 0 && h > 0 && thumbpixels)
+        {
+          msg.NewCapture.thumbWidth = w;
+          msg.NewCapture.thumbHeight = h;
+          create_array_init(msg.NewCapture.thumbnail, w * h * 3, thumbpixels);
+        }
+        else
+        {
+          msg.NewCapture.thumbWidth = 0;
+          msg.NewCapture.thumbHeight = 0;
+        }
+
+        free(thumbpixels);
 
         SAFE_DELETE(ser);
 
-        return;
+        return msg;
       }
       else if(type == ePacket_RegisterAPI)
       {
-        msg->Type = eTargetControlMsg_RegisterAPI;
+        msg.Type = TargetControlMessageType::RegisterAPI;
 
         ser->Serialise("", m_API);
-        msg->RegisterAPI.APIName = m_API;
+        msg.RegisterAPI.APIName = m_API;
 
         RDCLOG("Used API: %s", m_API.c_str());
 
         SAFE_DELETE(ser);
 
-        return;
+        return msg;
       }
     }
 
     SAFE_DELETE(ser);
 
-    msg->Type = eTargetControlMsg_Noop;
+    msg.Type = TargetControlMessageType::Noop;
+    return msg;
   }
 
 private:
   Network::Socket *m_Socket;
-  bool m_Local;
   string m_Target, m_API, m_BusyClient;
   uint32_t m_PID;
 
@@ -647,58 +670,58 @@ private:
   }
 };
 
-extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_Shutdown(TargetControl *control)
+extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_Shutdown(ITargetControl *control)
 {
   control->Shutdown();
 }
 
-extern "C" RENDERDOC_API const char *RENDERDOC_CC TargetControl_GetTarget(TargetControl *control)
+extern "C" RENDERDOC_API const char *RENDERDOC_CC TargetControl_GetTarget(ITargetControl *control)
 {
   return control->GetTarget();
 }
-extern "C" RENDERDOC_API const char *RENDERDOC_CC TargetControl_GetAPI(TargetControl *control)
+extern "C" RENDERDOC_API const char *RENDERDOC_CC TargetControl_GetAPI(ITargetControl *control)
 {
   return control->GetAPI();
 }
-extern "C" RENDERDOC_API uint32_t RENDERDOC_CC TargetControl_GetPID(TargetControl *control)
+extern "C" RENDERDOC_API uint32_t RENDERDOC_CC TargetControl_GetPID(ITargetControl *control)
 {
   return control->GetPID();
 }
-extern "C" RENDERDOC_API const char *RENDERDOC_CC TargetControl_GetBusyClient(TargetControl *control)
+extern "C" RENDERDOC_API const char *RENDERDOC_CC TargetControl_GetBusyClient(ITargetControl *control)
 {
   return control->GetBusyClient();
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_TriggerCapture(TargetControl *control,
+extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_TriggerCapture(ITargetControl *control,
                                                                         uint32_t numFrames)
 {
   control->TriggerCapture(numFrames);
 }
-extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_QueueCapture(TargetControl *control,
+extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_QueueCapture(ITargetControl *control,
                                                                       uint32_t frameNumber)
 {
   control->QueueCapture(frameNumber);
 }
-extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_CopyCapture(TargetControl *control,
+extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_CopyCapture(ITargetControl *control,
                                                                      uint32_t remoteID,
                                                                      const char *localpath)
 {
   control->CopyCapture(remoteID, localpath);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_DeleteCapture(TargetControl *control,
+extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_DeleteCapture(ITargetControl *control,
                                                                        uint32_t remoteID)
 {
   control->DeleteCapture(remoteID);
 }
 
-extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_ReceiveMessage(TargetControl *control,
+extern "C" RENDERDOC_API void RENDERDOC_CC TargetControl_ReceiveMessage(ITargetControl *control,
                                                                         TargetControlMessage *msg)
 {
-  control->ReceiveMessage(msg);
+  *msg = control->ReceiveMessage();
 }
 
-extern "C" RENDERDOC_API TargetControl *RENDERDOC_CC RENDERDOC_CreateTargetControl(
+extern "C" RENDERDOC_API ITargetControl *RENDERDOC_CC RENDERDOC_CreateTargetControl(
     const char *host, uint32_t ident, const char *clientName, bool32 forceConnection)
 {
   string s = "localhost";
@@ -707,12 +730,13 @@ extern "C" RENDERDOC_API TargetControl *RENDERDOC_CC RENDERDOC_CreateTargetContr
 
   bool android = false;
 
-  if(host != NULL && !strncmp(host, "adb:", 4))
+  if(host != NULL && Android::IsHostADB(host))
   {
     android = true;
     s = "127.0.0.1";
 
-    // could parse out an (optional) device name from host+4 here.
+    // we don't need the index or device ID here, because the port is already the right one
+    // forwarded to the right device.
   }
 
   Network::Socket *sock = Network::CreateClientSocket(s.c_str(), ident & 0xffff, 750);
@@ -720,9 +744,7 @@ extern "C" RENDERDOC_API TargetControl *RENDERDOC_CC RENDERDOC_CreateTargetContr
   if(sock == NULL)
     return NULL;
 
-  bool localhost = !android && (Network::GetIPOctet(sock->GetRemoteIP(), 0) == 127);
-
-  TargetControl *remote = new TargetControl(sock, clientName, forceConnection != 0, localhost);
+  TargetControl *remote = new TargetControl(sock, clientName, forceConnection != 0);
 
   if(remote->Connected())
     return remote;

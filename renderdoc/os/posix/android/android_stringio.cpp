@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -119,7 +119,7 @@ uint64_t GetMachineIdent()
   ret |= MachineIdent_Arch_x86;
 #endif
 
-#if defined(RDC64BIT)
+#if ENABLED(RDOC_X64)
   ret |= MachineIdent_64bit;
 #else
   ret |= MachineIdent_32bit;

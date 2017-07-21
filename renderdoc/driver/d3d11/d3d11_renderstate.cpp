@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -61,13 +61,14 @@ D3D11RenderState::D3D11RenderState(const D3D11RenderState &other)
   RDCEraseEl(OM);
   RDCEraseEl(CS);
   RDCEraseEl(CSUAVs);
-  *this = other;
 
   m_ImmediatePipeline = false;
   m_pDevice = NULL;
+
+  CopyState(other);
 }
 
-D3D11RenderState &D3D11RenderState::operator=(const D3D11RenderState &other)
+void D3D11RenderState::CopyState(const D3D11RenderState &other)
 {
   ReleaseRefs();
 
@@ -83,12 +84,7 @@ D3D11RenderState &D3D11RenderState::operator=(const D3D11RenderState &other)
   memcpy(&CS, &other.CS, sizeof(CS));
   memcpy(&CSUAVs, &other.CSUAVs, sizeof(CSUAVs));
 
-  m_ImmediatePipeline = false;
-  m_pDevice = NULL;
-
   AddRefs();
-
-  return *this;
 }
 
 D3D11RenderState::~D3D11RenderState()
@@ -850,6 +846,10 @@ void D3D11RenderState::Clear()
   ReleaseRefs();
   OM.BlendFactor[0] = OM.BlendFactor[1] = OM.BlendFactor[2] = OM.BlendFactor[3] = 1.0f;
   OM.SampleMask = 0xffffffff;
+
+  for(size_t i = 0; i < ARRAY_COUNT(VS.CBCounts); i++)
+    VS.CBCounts[i] = HS.CBCounts[i] = DS.CBCounts[i] = GS.CBCounts[i] = PS.CBCounts[i] =
+        CS.CBCounts[i] = 4096;
 }
 
 void D3D11RenderState::ApplyState(WrappedID3D11DeviceContext *context)
@@ -1175,9 +1175,21 @@ void D3D11RenderState::UnbindIUnknownForRead(const ResourceRange &range, bool al
         {
           readStencilOnly = true;
         }
-        if(fmt == DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS || fmt == DXGI_FORMAT_R24_UNORM_X8_TYPELESS)
+        else if(fmt == DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS ||
+                fmt == DXGI_FORMAT_R24_UNORM_X8_TYPELESS)
         {
           readDepthOnly = true;
+        }
+        else
+        {
+          fmt = GetTypelessFormat(fmt);
+
+          // any format that could be depth-only, treat it as reading depth only.
+          // this only applies for conflicts detected with the depth target.
+          if(fmt == DXGI_FORMAT_R32_TYPELESS || fmt == DXGI_FORMAT_R16_TYPELESS)
+          {
+            readDepthOnly = true;
+          }
         }
 
         SAFE_RELEASE(res);
@@ -1208,7 +1220,8 @@ void D3D11RenderState::UnbindIUnknownForRead(const ResourceRange &range, bool al
   }
 }
 
-bool D3D11RenderState::ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11DepthStencilView *depth)
+bool D3D11RenderState::ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11DepthStencilView *depth,
+                                         ID3D11UnorderedAccessView **uavs)
 {
   D3D11_RENDER_TARGET_VIEW_DESC RTDescs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
   D3D11_DEPTH_STENCIL_VIEW_DESC DepthDesc;
@@ -1242,6 +1255,132 @@ bool D3D11RenderState::ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11Dep
 
   bool valid = true;
 
+  // check for duplicates and mark as invalid
+  {
+    ResourceRange rtvRanges[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+    };
+    ResourceRange depthRange(depth);
+    ResourceRange uavRanges[D3D11_1_UAV_SLOT_COUNT] = {
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+        ResourceRange::Null, ResourceRange::Null, ResourceRange::Null, ResourceRange::Null,
+    };
+
+    for(int i = 0; RTs && i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++)
+    {
+      if(RTs[i])
+        rtvRanges[i] = ResourceRange(RTs[i]);
+      else
+        break;
+    }
+
+    if(depth)
+      depthRange = ResourceRange(depth);
+
+    int numUAVs = 0;
+
+    for(int i = 0; uavs && i < D3D11_1_UAV_SLOT_COUNT; i++)
+    {
+      if(uavs[i])
+      {
+        uavRanges[i] = ResourceRange(uavs[i]);
+        numUAVs = i + 1;
+      }
+    }
+
+    // since constants are low, just do naive check for any intersecting ranges
+
+    for(int i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++)
+    {
+      if(rtvRanges[i].IsNull())
+        continue;
+
+      // does it match any other RTV?
+      for(int j = i + 1; j < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; j++)
+      {
+        if(rtvRanges[i].Intersects(rtvRanges[j]))
+        {
+          valid = false;
+          m_pDevice->AddDebugMessage(
+              MessageCategory::State_Setting, MessageSeverity::High, MessageSource::IncorrectAPIUse,
+              StringFormat::Fmt("Invalid output merger - Render targets %d and %d overlap", i, j));
+          break;
+        }
+      }
+
+      // or depth?
+      if(rtvRanges[i].Intersects(depthRange))
+      {
+        valid = false;
+        m_pDevice->AddDebugMessage(
+            MessageCategory::State_Setting, MessageSeverity::High, MessageSource::IncorrectAPIUse,
+            StringFormat::Fmt("Invalid output merger - Render target %d and depth overlap", i));
+        break;
+      }
+
+      // or a UAV?
+      for(int j = 0; j < numUAVs; j++)
+      {
+        if(rtvRanges[i].Intersects(uavRanges[j]))
+        {
+          valid = false;
+          m_pDevice->AddDebugMessage(
+              MessageCategory::State_Setting, MessageSeverity::High, MessageSource::IncorrectAPIUse,
+              StringFormat::Fmt("Invalid output merger - Render target %d and UAV %d overlap", i, j));
+          break;
+        }
+      }
+    }
+
+    for(int i = 0; valid && i < numUAVs; i++)
+    {
+      if(uavRanges[i].IsNull())
+        continue;
+
+      // don't have to check RTVs, that's the reflection of the above check
+
+      // does it match depth?
+      if(uavRanges[i].Intersects(depthRange))
+      {
+        valid = false;
+        m_pDevice->AddDebugMessage(
+            MessageCategory::State_Setting, MessageSeverity::High, MessageSource::IncorrectAPIUse,
+            StringFormat::Fmt("Invalid output merger - UAV %d and depth overlap", i));
+        break;
+      }
+
+      // or another UAV?
+      for(int j = i + 1; j < numUAVs; j++)
+      {
+        if(uavRanges[i].Intersects(uavRanges[j]))
+        {
+          valid = false;
+          m_pDevice->AddDebugMessage(
+              MessageCategory::State_Setting, MessageSeverity::High, MessageSource::IncorrectAPIUse,
+              StringFormat::Fmt("Invalid output merger - UAVs %d and %d overlap", i, j));
+          break;
+        }
+      }
+    }
+
+    // don't have to check depth - it was checked against all RTs and UAVs above
+  }
+
   //////////////////////////////////////////////////////////////////////////
   // Resource dimensions of all views must be the same
 
@@ -1257,8 +1396,8 @@ bool D3D11RenderState::ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11Dep
     if(renderdim[i] != dim)
     {
       valid = false;
-      m_pDevice->AddDebugMessage(eDbgCategory_State_Setting, eDbgSeverity_High,
-                                 eDbgSource_IncorrectAPIUse,
+      m_pDevice->AddDebugMessage(MessageCategory::State_Setting, MessageSeverity::High,
+                                 MessageSource::IncorrectAPIUse,
                                  "Invalid output merger - Render targets of different type");
       break;
     }
@@ -1268,7 +1407,7 @@ bool D3D11RenderState::ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11Dep
      depthdim != dim)
   {
     m_pDevice->AddDebugMessage(
-        eDbgCategory_State_Setting, eDbgSeverity_High, eDbgSource_IncorrectAPIUse,
+        MessageCategory::State_Setting, MessageSeverity::High, MessageSource::IncorrectAPIUse,
         "Invalid output merger - Render target(s) and depth target of different type");
     valid = false;
   }
@@ -1358,7 +1497,7 @@ bool D3D11RenderState::ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11Dep
          desc2.SampleDesc.Quality != d2.SampleDesc.Quality)
       {
         m_pDevice->AddDebugMessage(
-            eDbgCategory_State_Setting, eDbgSeverity_High, eDbgSource_IncorrectAPIUse,
+            MessageCategory::State_Setting, MessageSeverity::High, MessageSource::IncorrectAPIUse,
             "Invalid output merger - Render targets are different dimensions");
         valid = false;
         break;
@@ -1412,8 +1551,8 @@ bool D3D11RenderState::ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11Dep
       }
       else if(dim == D3D11_RESOURCE_DIMENSION_TEXTURE3D || dim == D3D11_RESOURCE_DIMENSION_BUFFER)
       {
-        m_pDevice->AddDebugMessage(eDbgCategory_State_Setting, eDbgSeverity_High,
-                                   eDbgSource_IncorrectAPIUse,
+        m_pDevice->AddDebugMessage(MessageCategory::State_Setting, MessageSeverity::High,
+                                   MessageSource::IncorrectAPIUse,
                                    "Invalid output merger - Depth target is Texture3D or Buffer "
                                    "(shouldn't be possible! How did you create this view?!)");
         valid = false;
@@ -1434,13 +1573,13 @@ bool D3D11RenderState::ValidOutputMerger(ID3D11RenderTargetView **RTs, ID3D11Dep
           {
             valid = true;
             m_pDevice->AddDebugMessage(
-                eDbgCategory_State_Setting, eDbgSeverity_High, eDbgSource_IncorrectAPIUse,
+                MessageCategory::State_Setting, MessageSeverity::High, MessageSource::IncorrectAPIUse,
                 "Valid but unusual output merger - Depth target is larger than render target(s)");
           }
           else
           {
-            m_pDevice->AddDebugMessage(eDbgCategory_State_Setting, eDbgSeverity_High,
-                                       eDbgSource_IncorrectAPIUse,
+            m_pDevice->AddDebugMessage(MessageCategory::State_Setting, MessageSeverity::High,
+                                       MessageSource::IncorrectAPIUse,
                                        "Invalid output merger - Depth target is different size or "
                                        "MS count to render target(s)");
           }
@@ -1487,13 +1626,11 @@ bool D3D11RenderState::shader::Used_CB(uint32_t slot) const
   if(dxbc == NULL)
     return true;
 
-  if(slot >= dxbc->m_CBuffers.size())
-    return false;
+  for(size_t i = 0; i < dxbc->m_CBuffers.size(); i++)
+    if(dxbc->m_CBuffers[i].reg == slot)
+      return true;
 
-  if(dxbc->m_CBuffers[slot].variables.empty())
-    return false;
-
-  return true;
+  return false;
 }
 
 bool D3D11RenderState::shader::Used_SRV(uint32_t slot) const
@@ -1514,7 +1651,7 @@ bool D3D11RenderState::shader::Used_SRV(uint32_t slot) const
 
   for(size_t i = 0; i < dxbc->m_Resources.size(); i++)
   {
-    if(dxbc->m_Resources[i].bindPoint == slot &&
+    if(dxbc->m_Resources[i].reg == slot &&
        (dxbc->m_Resources[i].type == DXBC::ShaderInputBind::TYPE_TEXTURE ||
         dxbc->m_Resources[i].type == DXBC::ShaderInputBind::TYPE_STRUCTURED ||
         dxbc->m_Resources[i].type == DXBC::ShaderInputBind::TYPE_TBUFFER ||
@@ -1542,7 +1679,7 @@ bool D3D11RenderState::shader::Used_UAV(uint32_t slot) const
 
   for(size_t i = 0; i < dxbc->m_Resources.size(); i++)
   {
-    if(dxbc->m_Resources[i].bindPoint == slot &&
+    if(dxbc->m_Resources[i].reg == slot &&
        (dxbc->m_Resources[i].type == DXBC::ShaderInputBind::TYPE_UAV_APPEND_STRUCTURED ||
         dxbc->m_Resources[i].type == DXBC::ShaderInputBind::TYPE_UAV_CONSUME_STRUCTURED ||
         dxbc->m_Resources[i].type == DXBC::ShaderInputBind::TYPE_UAV_RWBYTEADDRESS ||
@@ -1567,6 +1704,9 @@ D3D11RenderStateTracker::~D3D11RenderStateTracker()
 {
   m_RS.ApplyState(m_pContext);
 }
+
+D3D11RenderState::ResourceRange D3D11RenderState::ResourceRange::Null =
+    D3D11RenderState::ResourceRange(NULL, 0, 0);
 
 D3D11RenderState::ResourceRange::ResourceRange(ID3D11ShaderResourceView *srv)
 {

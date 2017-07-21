@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -42,16 +42,10 @@ void LibraryHooks::CreateHooks()
   HOOKS_BEGIN();
   for(auto it = m_Hooks.begin(); it != m_Hooks.end(); ++it)
   {
-    RDCDEBUG("Attempting to hook %s", it->first);
+    RDCDEBUG("Hooking %s", it->first);
 
-    if(it->second->CreateHooks(it->first))
-    {
-      RDCLOG("Loaded and hooked into %s, PID %d", it->first, Process::GetCurrentPID());
-    }
-    else
-    {
+    if(!it->second->CreateHooks(it->first))
       RDCWARN("Couldn't hook into %s", it->first);
-    }
   }
   HOOKS_END();
 }

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -62,7 +62,7 @@ float ConvertSRGBToLinear(float srgb)
 	if (srgb <= 0.04045f)
 		return srgb / 12.92f;
 	else
-		return pow(saturate(srgb) + 0.055f / 1.055f, 2.4f);
+		return pow((saturate(srgb) + 0.055f) / 1.055f, 2.4f);
 }
 
 // main texture display shader, used for the texture viewer. It samples the right resource
@@ -241,7 +241,7 @@ MultipleOutput RENDERDOC_WireframePS(wireframeV2F IN)
 	return OUT;
 }
 
-cbuffer overlayconsts : register(b1)
+cbuffer overlayconsts : register(b0)
 {
 	float4 overlaycol;
 };

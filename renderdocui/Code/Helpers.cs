@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -114,7 +114,7 @@ namespace renderdocui.Code
 
         public static float GetLuminance(this System.Drawing.Color c)
         {
-            return (float)(0.2126 * Math.Pow(c.R * 255.0, 2.2) + 0.7152 * Math.Pow(c.G * 255.0, 2.2) + 0.0722 * Math.Pow(c.B * 255.0, 2.2));
+            return (float)(0.2126 * Math.Pow(c.R / 255.0, 2.2) + 0.7152 * Math.Pow(c.G / 255.0, 2.2) + 0.0722 * Math.Pow(c.B / 255.0, 2.2));
         }
 
         public static int CharCount(string s, char c)

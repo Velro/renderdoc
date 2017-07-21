@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -313,10 +313,8 @@ namespace renderdocui.Windows.PipelineState
             string addVal = "";
 
             string filter = "";
-            string filtPrefix = "";
-            string filtVal = "";
 
-            string[] addr = { descriptor.addrU, descriptor.addrV, descriptor.addrW };
+            string[] addr = { descriptor.addrU.ToString(), descriptor.addrV.ToString(), descriptor.addrW.ToString() };
 
             // arrange like either UVW: WRAP or UV: WRAP, W: CLAMP
             for (int a = 0; a < 3; a++)
@@ -338,40 +336,24 @@ namespace renderdocui.Windows.PipelineState
 
             addressing += addPrefix + ": " + addVal;
 
-            if (descriptor.borderEnable)
-                addressing += " " + descriptor.border;
+            if (descriptor.UseBorder())
+                addressing += " <" + descriptor.BorderColor[0].ToString() + ", " +
+                                            descriptor.BorderColor[1].ToString() + ", " +
+                                            descriptor.BorderColor[2].ToString() + ", " +
+                                            descriptor.BorderColor[3].ToString() + ">";
 
             if (descriptor.unnormalized)
                 addressing += " (Un-norm)";
 
-            string[] filters = { descriptor.min, descriptor.mag, descriptor.mip };
-            string[] filterPrefixes = { "Min", "Mag", "Mip" };
-
-            // arrange as addressing above
-            for (int a = 0; a < 3; a++)
-            {
-                if (a == 0 || filters[a] == filters[a - 1])
-                {
-                    if (filtPrefix != "")
-                        filtPrefix += "/";
-                    filtPrefix += filterPrefixes[a];
-                }
-                else
-                {
-                    filter += filtPrefix + ": " + filtVal + ", ";
-
-                    filtPrefix = filterPrefixes[a];
-                }
-                filtVal = filters[a];
-            }
-
-            filter += filtPrefix + ": " + filtVal;
+            filter += descriptor.Filter.ToString();
 
             if (descriptor.maxAniso > 1.0f)
                 filter += String.Format(" Aniso {0}x", descriptor.maxAniso);
 
-            if (descriptor.compareEnable)
+            if (descriptor.Filter.func == FilterFunc.Comparison)
                 filter += String.Format(" ({0})", descriptor.comparison);
+            else if (descriptor.Filter.func != FilterFunc.Normal)
+                filter += String.Format(" ({0})", descriptor.Filter.func);
 
             string lod = "LODs: " +
                          (descriptor.minlod == -float.MaxValue ? "0" : descriptor.minlod.ToString()) + " - " +
@@ -532,6 +514,11 @@ namespace renderdocui.Windows.PipelineState
                     object tag = null;
                     bool viewDetails = false;
 
+                    ulong descriptorLen = 0;
+
+                    if(descriptorBind != null)
+                        descriptorLen = descriptorBind.size;
+
                     if (filledSlot && descriptorBind != null)
                     {
                         name = "Object " + descriptorBind.res.ToString();
@@ -576,8 +563,6 @@ namespace renderdocui.Windows.PipelineState
                                 name = bufs[t].name;
                                 restype = ShaderResourceType.Buffer;
 
-                                ulong descriptorLen = descriptorBind.size;
-
                                 if(descriptorLen == ulong.MaxValue)
                                     descriptorLen = len - descriptorBind.offset;
 
@@ -619,7 +604,8 @@ namespace renderdocui.Windows.PipelineState
                         {
                             string range = "-";
                             if (descriptorBind != null)
-                                range = String.Format("{0} - {1}", descriptorBind.offset, descriptorBind.size);
+                                range = String.Format("{0} - {1}", descriptorBind.offset, descriptorLen);
+
                             node = parentNodes.Add(new object[] {
                                 "", bindset, slotname, bindType,
                                 name, 
@@ -967,23 +953,13 @@ namespace renderdocui.Windows.PipelineState
             else
                 shader.Text = stage.ShaderName;
 
-            if (shaderDetails != null && shaderDetails.DebugInfo.entryFunc.Length > 0)
+            if (shaderDetails != null)
             {
-                if (shaderDetails.DebugInfo.files.Length > 0 || shaderDetails.DebugInfo.entryFunc != "main")
-                    shader.Text = shaderDetails.DebugInfo.entryFunc + "()";
+                if (shaderDetails.DebugInfo.files.Length > 0 || shaderDetails.EntryPoint != "main")
+                    shader.Text = shaderDetails.EntryPoint + "()";
 
                 if (shaderDetails.DebugInfo.files.Length > 0)
-                {
-                    string shaderfn = "";
-
-                    int entryFile = shaderDetails.DebugInfo.entryFile;
-                    if (entryFile < 0 || entryFile >= shaderDetails.DebugInfo.files.Length)
-                        entryFile = 0;
-
-                    shaderfn = shaderDetails.DebugInfo.files[entryFile].BaseFilename;
-
-                    shader.Text += " - " + shaderfn;
-                }
+                    shader.Text += " - " + shaderDetails.DebugInfo.files[0].BaseFilename;
             }
 
             int vs = 0;
@@ -1217,15 +1193,15 @@ namespace renderdocui.Windows.PipelineState
 
                     string name = String.Format("Attribute {0}", i);
 
-                    if (state.VS.Shader != ResourceId.Null)
+                    if (state.m_VS.Shader != ResourceId.Null)
                     {
                         int attrib = -1;
-                        if(a.location < state.VS.BindpointMapping.InputAttributes.Length)
-                            attrib = state.VS.BindpointMapping.InputAttributes[a.location];
+                        if(a.location < state.m_VS.BindpointMapping.InputAttributes.Length)
+                            attrib = state.m_VS.BindpointMapping.InputAttributes[a.location];
 
-                        if (attrib >= 0 && attrib < state.VS.ShaderDetails.InputSig.Length)
+                        if (attrib >= 0 && attrib < state.m_VS.ShaderDetails.InputSig.Length)
                         {
-                            name = state.VS.ShaderDetails.InputSig[attrib].varName;
+                            name = state.m_VS.ShaderDetails.InputSig[attrib].varName;
                             usedSlot = true;
                         }
                     }
@@ -1460,12 +1436,12 @@ namespace renderdocui.Windows.PipelineState
             viBuffers.EndUpdate();
             viBuffers.SetVScrollValue(vs);
 
-            SetShaderState(texs, bufs, state.VS, state.graphics, vsShader, vsResources, vsCBuffers);
-            SetShaderState(texs, bufs, state.GS, state.graphics, gsShader, gsResources, gsCBuffers);
-            SetShaderState(texs, bufs, state.TCS, state.graphics, hsShader, hsResources, hsCBuffers);
-            SetShaderState(texs, bufs, state.TES, state.graphics, dsShader, dsResources, dsCBuffers);
-            SetShaderState(texs, bufs, state.FS, state.graphics, psShader, psResources, psCBuffers);
-            SetShaderState(texs, bufs, state.CS, state.compute, csShader, csResources, csCBuffers);
+            SetShaderState(texs, bufs, state.m_VS, state.graphics, vsShader, vsResources, vsCBuffers);
+            SetShaderState(texs, bufs, state.m_GS, state.graphics, gsShader, gsResources, gsCBuffers);
+            SetShaderState(texs, bufs, state.m_TCS, state.graphics, hsShader, hsResources, hsCBuffers);
+            SetShaderState(texs, bufs, state.m_TES, state.graphics, dsShader, dsResources, dsCBuffers);
+            SetShaderState(texs, bufs, state.m_FS, state.graphics, psShader, psResources, psCBuffers);
+            SetShaderState(texs, bufs, state.m_CS, state.compute, csShader, csResources, csCBuffers);
 
             ////////////////////////////////////////////////
             // Rasterizer
@@ -1489,7 +1465,12 @@ namespace renderdocui.Windows.PipelineState
                 int i = 0;
                 foreach (var v in state.VP.viewportScissors)
                 {
-                    var node = viewports.Nodes.Add(new object[] { i, v.vp.x, v.vp.y, v.vp.Width, v.vp.Height, v.vp.MinDepth, v.vp.MaxDepth });
+                    string misc = "";
+
+                    if (v.vp.Height < 0.0f)
+                        misc = "Inverted (negative height)";
+
+                    var node = viewports.Nodes.Add(new object[] { i, v.vp.x, v.vp.y, v.vp.Width, Math.Abs(v.vp.Height), v.vp.MinDepth, v.vp.MaxDepth, misc });
 
                     if (v.vp.Width == 0 || v.vp.Height == 0 || v.vp.MinDepth == v.vp.MaxDepth)
                         EmptyRow(node);
@@ -1545,9 +1526,10 @@ namespace renderdocui.Windows.PipelineState
                 foreach (var p in state.Pass.framebuffer.attachments)
                 {
                     int colIdx = Array.IndexOf(state.Pass.renderpass.colorAttachments, (uint)i);
+                    int resIdx = Array.IndexOf(state.Pass.renderpass.resolveAttachments, (uint)i);
 
                     bool filledSlot = (p.img != ResourceId.Null);
-                    bool usedSlot = (colIdx >= 0 || state.Pass.renderpass.depthstencilAttachment == i);
+                    bool usedSlot = (colIdx >= 0 || resIdx >= 0 || state.Pass.renderpass.depthstencilAttachment == i);
 
                     // show if
                     if (usedSlot || // it's referenced by the shader - regardless of empty or not
@@ -1582,15 +1564,15 @@ namespace renderdocui.Windows.PipelineState
                                 name = texs[t].name;
                                 typename = texs[t].resType.Str();
 
-                                if (!texs[t].customName && state.FS.ShaderDetails != null)
+                                if (!texs[t].customName && state.m_FS.ShaderDetails != null)
                                 {
-                                    for(int s=0; s < state.FS.ShaderDetails.OutputSig.Length; s++)
+                                    for(int s=0; s < state.m_FS.ShaderDetails.OutputSig.Length; s++)
                                     {
-                                        if(state.FS.ShaderDetails.OutputSig[s].regIndex == colIdx &&
-                                            (state.FS.ShaderDetails.OutputSig[s].systemValue == SystemAttribute.None ||
-                                            state.FS.ShaderDetails.OutputSig[s].systemValue == SystemAttribute.ColourOutput))
+                                        if(state.m_FS.ShaderDetails.OutputSig[s].regIndex == colIdx &&
+                                            (state.m_FS.ShaderDetails.OutputSig[s].systemValue == SystemAttribute.None ||
+                                            state.m_FS.ShaderDetails.OutputSig[s].systemValue == SystemAttribute.ColourOutput))
                                         {
-                                            name = String.Format("<{0}>", state.FS.ShaderDetails.OutputSig[s].varName);
+                                            name = String.Format("<{0}>", state.m_FS.ShaderDetails.OutputSig[s].varName);
                                         }
                                     }
                                 }
@@ -1614,7 +1596,13 @@ namespace renderdocui.Windows.PipelineState
                                 p.swizzle[3].Str());
                         }
 
-                        var node = targetOutputs.Nodes.Add(new object[] { i, name, typename, w, h, d, a, format });
+                        string slotname = String.Format("Color {0}", i);
+                        if (resIdx >= 0)
+                            slotname = String.Format("Resolve {0}", i);
+                        else if (colIdx < 0)
+                            slotname = "Depth";
+
+                        var node = targetOutputs.Nodes.Add(new object[] { slotname, name, typename, w, h, d, a, format });
 
                         node.Image = global::renderdocui.Properties.Resources.action;
                         node.HoverImage = global::renderdocui.Properties.Resources.action_hover;
@@ -1696,11 +1684,11 @@ namespace renderdocui.Windows.PipelineState
                                 state.CB.blendConst[1].ToString("F2") + ", " +
                                 state.CB.blendConst[2].ToString("F2") + ", " +
                                 state.CB.blendConst[3].ToString("F2");
-            logicOp.Text = state.CB.logicOpEnable ? state.CB.LogicOp : "-";
+            logicOp.Text = state.CB.logicOpEnable ? state.CB.Logic.ToString() : "-";
             alphaToOne.Image = state.CB.alphaToOneEnable ? tick : cross;
 
             depthEnable.Image = state.DS.depthTestEnable ? tick : cross;
-            depthFunc.Text = state.DS.depthCompareOp;
+            depthFunc.Text = state.DS.depthCompareOp.ToString();
             depthWrite.Image = state.DS.depthWriteEnable ? tick : cross;
 
             if (state.DS.depthBoundsEnable)
@@ -1718,13 +1706,13 @@ namespace renderdocui.Windows.PipelineState
             stencilFuncs.Nodes.Clear();
             if (state.DS.stencilTestEnable)
             {
-                stencilFuncs.Nodes.Add(new object[] { "Front", state.DS.front.func, state.DS.front.failOp, 
-                                                 state.DS.front.depthFailOp, state.DS.front.passOp,
+                stencilFuncs.Nodes.Add(new object[] { "Front", state.DS.front.Func, state.DS.front.FailOp, 
+                                                 state.DS.front.DepthFailOp, state.DS.front.PassOp,
                                                  state.DS.front.writeMask.ToString("X2"),
                                                  state.DS.front.compareMask.ToString("X2"),
                                                  state.DS.front.stencilref.ToString("X2")});
-                stencilFuncs.Nodes.Add(new object[] { "Back", state.DS.back.func, state.DS.back.failOp, 
-                                                 state.DS.back.depthFailOp, state.DS.back.passOp,
+                stencilFuncs.Nodes.Add(new object[] { "Back", state.DS.back.Func, state.DS.back.FailOp, 
+                                                 state.DS.back.DepthFailOp, state.DS.back.PassOp,
                                                  state.DS.back.writeMask.ToString("X2"),
                                                  state.DS.back.compareMask.ToString("X2"),
                                                  state.DS.back.stencilref.ToString("X2")});
@@ -1751,11 +1739,11 @@ namespace renderdocui.Windows.PipelineState
                 pipeFlow.SetStagesEnabled(new bool[] {
                     true,
                     true,
-                    state.TCS.Shader != ResourceId.Null,
-                    state.TES.Shader != ResourceId.Null,
-                    state.GS.Shader != ResourceId.Null,
+                    state.m_TCS.Shader != ResourceId.Null,
+                    state.m_TES.Shader != ResourceId.Null,
+                    state.m_GS.Shader != ResourceId.Null,
                     true,
-                    state.FS.Shader != ResourceId.Null,
+                    state.m_FS.Shader != ResourceId.Null,
                     true,
                     false
                 });
@@ -2011,7 +1999,9 @@ namespace renderdocui.Windows.PipelineState
                 }
                 else if (sender is TreelistView.TreeListView)
                 {
-                    TreelistView.NodesSelection sel = ((TreelistView.TreeListView)sender).NodesSelection;
+                    TreelistView.TreeListView view = (TreelistView.TreeListView)sender;
+                    view.SortNodesSelection();
+                    TreelistView.NodesSelection sel = view.NodesSelection;
 
                     if (sel.Count > 0)
                     {
@@ -2105,19 +2095,19 @@ namespace renderdocui.Windows.PipelineState
             while (cur is Control)
             {
                 if (cur == tabVS)
-                    stage = m_Core.CurVulkanPipelineState.VS;
+                    stage = m_Core.CurVulkanPipelineState.m_VS;
                 else if (cur == tabGS)
-                    stage = m_Core.CurVulkanPipelineState.GS;
+                    stage = m_Core.CurVulkanPipelineState.m_GS;
                 else if (cur == tabHS)
-                    stage = m_Core.CurVulkanPipelineState.TCS;
+                    stage = m_Core.CurVulkanPipelineState.m_TCS;
                 else if (cur == tabDS)
-                    stage = m_Core.CurVulkanPipelineState.TES;
+                    stage = m_Core.CurVulkanPipelineState.m_TES;
                 else if (cur == tabPS)
-                    stage = m_Core.CurVulkanPipelineState.FS;
+                    stage = m_Core.CurVulkanPipelineState.m_FS;
                 else if (cur == tabCS)
-                    stage = m_Core.CurVulkanPipelineState.CS;
+                    stage = m_Core.CurVulkanPipelineState.m_CS;
                 else if (cur == tabOM)
-                    stage = m_Core.CurVulkanPipelineState.FS;
+                    stage = m_Core.CurVulkanPipelineState.m_FS;
 
                 if (stage != null)
                     return stage;
@@ -2234,14 +2224,16 @@ namespace renderdocui.Windows.PipelineState
             if (m_Core.Config.ExternalDisassemblerEnabled)
             {
                 BackgroundWorker bgWorker = new BackgroundWorker();
-                extDisassemblerProgBar.Visible = true;
+
+                ProgressPopup modal = new ProgressPopup(delegate { return !bgWorker.IsBusy; }, false);
+                modal.SetModalText("Please wait - running external disassembler.");
+
                 bgWorker.RunWorkerCompleted += (obj, eventArgs) =>
                 {
                     if((bool)eventArgs.Result == true)
                     {
                         ShowShaderViewer(stage, files);
                     }
-                    extDisassemblerProgBar.Visible = false;
                 };
                 bgWorker.DoWork += (obj, eventArgs) =>
                 {
@@ -2371,13 +2363,22 @@ namespace renderdocui.Windows.PipelineState
                     }
                 };
                 bgWorker.RunWorkerAsync();
+
+                modal.ShowDialog();
             }
             else
             {
                 // use disassembly for now. It's not compilable GLSL but it's better than
                 // starting with a blank canvas
-                files.Add("Disassembly", shaderDetails.Disassembly);
-                ShowShaderViewer(stage, files);
+                m_Core.Renderer.BeginInvoke((ReplayRenderer r) =>
+                {
+                    var disasm = r.DisassembleShader(shaderDetails, "");
+                    files.Add("Disassembly", disasm);
+                    this.BeginInvoke((MethodInvoker)delegate
+                    {
+                        ShowShaderViewer(stage, files);
+                    });
+                });
             }
         }
 
@@ -2840,8 +2841,8 @@ namespace renderdocui.Windows.PipelineState
                 else
                     shadername = sh.ShaderName;
 
-                if (shaderDetails != null && shaderDetails.DebugInfo.entryFunc.Length > 0 && shaderDetails.DebugInfo.files.Length > 0)
-                    shadername = shaderDetails.DebugInfo.entryFunc + "()" + " - " +
+                if (shaderDetails != null && shaderDetails.DebugInfo.files.Length > 0)
+                    shadername = shaderDetails.EntryPoint + "()" + " - " +
                                     shaderDetails.DebugInfo.files[0].BaseFilename;
 
                 writer.WriteStartElement("p");
@@ -3254,7 +3255,7 @@ namespace renderdocui.Windows.PipelineState
             ExportHTMLTable(writer,
                 new string[] { "Alpha to Coverage", "Alpha to One", "Logic Op", "Blend Constant" },
                 new object[] { cb.alphaToCoverageEnable ? "Yes" : "No", cb.alphaToOneEnable ? "Yes" : "No",
-                                cb.logicOpEnable ? cb.LogicOp : "Disabled", blendConst, });
+                                cb.logicOpEnable ? cb.Logic.ToString() : "Disabled", blendConst, });
 
 
             writer.WriteStartElement("h3");
@@ -3318,13 +3319,13 @@ namespace renderdocui.Windows.PipelineState
                     rows.Add(new object[] {
                         "Front",
                         ds.front.stencilref.ToString("X2"), ds.front.compareMask.ToString("X2"), ds.front.writeMask.ToString("X2"),
-                        ds.front.func, ds.front.passOp, ds.front.failOp, ds.front.depthFailOp
+                        ds.front.Func, ds.front.PassOp, ds.front.FailOp, ds.front.DepthFailOp
                     });
 
                     rows.Add(new object[] {
                         "Back",
                         ds.back.stencilref.ToString("X2"), ds.back.compareMask.ToString("X2"), ds.back.writeMask.ToString("X2"),
-                        ds.back.func, ds.back.passOp, ds.back.failOp, ds.back.depthFailOp
+                        ds.back.Func, ds.back.PassOp, ds.back.FailOp, ds.back.DepthFailOp
                     });
 
                     ExportHTMLTable(writer,
@@ -3573,16 +3574,16 @@ div.stage table tr td { border-right: 1px solid #AAAAAA; background-color: #EEEE
                             {
                                 case 0:  ExportHTML(writer, m_Core.CurVulkanPipelineState.IA); break;
                                 case 1:  ExportHTML(writer, m_Core.CurVulkanPipelineState.VI); break;
-                                case 2:  ExportHTML(writer, m_Core.CurVulkanPipelineState.VS); break;
-                                case 3:  ExportHTML(writer, m_Core.CurVulkanPipelineState.TCS); break;
-                                case 4:  ExportHTML(writer, m_Core.CurVulkanPipelineState.TES); break;
-                                case 5:  ExportHTML(writer, m_Core.CurVulkanPipelineState.GS); break;
+                                case 2:  ExportHTML(writer, m_Core.CurVulkanPipelineState.m_VS); break;
+                                case 3:  ExportHTML(writer, m_Core.CurVulkanPipelineState.m_TCS); break;
+                                case 4:  ExportHTML(writer, m_Core.CurVulkanPipelineState.m_TES); break;
+                                case 5:  ExportHTML(writer, m_Core.CurVulkanPipelineState.m_GS); break;
                                 case 6:  ExportHTML(writer, m_Core.CurVulkanPipelineState.RS); break;
-                                case 7:  ExportHTML(writer, m_Core.CurVulkanPipelineState.FS); break;
+                                case 7:  ExportHTML(writer, m_Core.CurVulkanPipelineState.m_FS); break;
                                 case 8:  ExportHTML(writer, m_Core.CurVulkanPipelineState.CB); break;
                                 case 9:  ExportHTML(writer, m_Core.CurVulkanPipelineState.DS); break;
                                 case 10: ExportHTML(writer, m_Core.CurVulkanPipelineState.Pass); break;
-                                case 11: ExportHTML(writer, m_Core.CurVulkanPipelineState.CS); break;
+                                case 11: ExportHTML(writer, m_Core.CurVulkanPipelineState.m_CS); break;
                             }
 
                             writer.WriteEndElement();

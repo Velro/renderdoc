@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,7 +25,7 @@
 
 #pragma once
 
-#include "api/replay/shader_types.h"
+#include "api/replay/renderdoc_replay.h"
 #include "common/common.h"
 #include "dxbc_disassemble.h"
 
@@ -62,13 +62,13 @@ public:
       byteWidth = 0;
       numComps = 0;
       reversed = false;
-      fmt = eCompType_None;
+      fmt = CompType::Typeless;
     }
 
     int byteWidth;
     int numComps;
     bool reversed;
-    FormatComponentType fmt;
+    CompType fmt;
 
     int Stride()
     {
@@ -121,6 +121,7 @@ public:
   {
     quadIndex = 0;
     nextInstruction = 0;
+    flags = ShaderEvents::NoEvent;
     done = false;
     trace = NULL;
     dxbc = NULL;
@@ -131,6 +132,7 @@ public:
   {
     quadIndex = quadIdx;
     nextInstruction = 0;
+    flags = ShaderEvents::NoEvent;
     done = false;
     trace = t;
     dxbc = f;
@@ -165,6 +167,9 @@ private:
 
   bool done;
 
+  // validates assignment for generation of non-normal values
+  void AssignValue(ShaderVariable &dst, uint32_t dstIndex, const ShaderVariable &src,
+                   uint32_t srcIndex);
   // sets the destination operand by looking up in the register
   // file and applying any masking or swizzling
   void SetDst(const DXBC::ASMOperand &dstoper, const DXBC::ASMOperation &op,

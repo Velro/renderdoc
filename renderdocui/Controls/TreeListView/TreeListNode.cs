@@ -22,6 +22,7 @@ namespace TreelistView
         int                 m_treeColumn = -1;
 		int					m_id = -1;
 		object				m_tag = null;
+        bool                m_clippedText = false;
         bool                m_bold = false;
         bool                m_italic = false;
         float               m_treeLineWidth = 0.0f;
@@ -32,7 +33,25 @@ namespace TreelistView
 
         Color[]             m_backCols = null;
 
-        public TreeListView OwnerView = null;
+        private TreeListView m_ownerview = null;
+        public TreeListView OwnerView
+        {
+            get
+            {
+                if (m_ownerview != null)
+                    return m_ownerview;
+
+                if (m_owner != null)
+                    m_ownerview = m_owner.OwnerView;
+
+                return m_ownerview;
+            }
+
+            set
+            {
+                m_ownerview = value;
+            }
+        }
 
 		public Node Parent
 		{
@@ -63,6 +82,11 @@ namespace TreelistView
 			{
 				m_hasChildren = value;
 			}
+		}
+		public bool ClippedText
+		{
+			get { return m_clippedText; }
+			set { m_clippedText = value; }
 		}
 		public Image Image
 		{
@@ -304,21 +328,6 @@ namespace TreelistView
 		{
 			return GetRoot().Owner;
 		}
-		public string GetId()
-		{
-			StringBuilder sb = new StringBuilder(32);
-			Node node = this;
-			while (node != null)
-			{
-				node.Owner.UpdateChildIds(false);
-				if (node.Parent != null)
-					sb.Insert(0, "." + node.Id.ToString());
-				else
-					sb.Insert(0, node.Id.ToString());
-				node = node.Parent;
-			}
-			return sb.ToString();
-		}
 		internal void InsertBefore(Node insertBefore, NodeCollection owner)
 		{
 			this.m_owner = owner;
@@ -414,7 +423,25 @@ namespace TreelistView
 		int		m_nextId = 0;
 		int		m_IdDirty = 0;
 
-        public TreeListView OwnerView = null;
+        private TreeListView m_ownerview = null;
+        public TreeListView OwnerView
+        {
+            get
+            {
+                if(m_ownerview != null)
+                    return m_ownerview;
+
+                if(m_owner != null)
+                    m_ownerview = m_owner.OwnerView;
+
+                return m_ownerview;
+            }
+
+            set
+            {
+                m_ownerview = value;
+            }
+        }
 
 		Node[]	m_nodesInternal = null;
 		Node	m_owner = null;
@@ -1058,12 +1085,54 @@ namespace TreelistView
 			return m_nodesMap.ContainsKey(node);
 		}
 
-		public IList<Node> GetSortedNodes()
+        private class NodeSorter : IComparer<Node>
+        {
+            private Stack<int> BuildIds(Node node)
+            {
+                Stack<int> ids = new Stack<int>();
+                while (node != null)
+                {
+                    node.Owner.UpdateChildIds(false);
+                    ids.Push(node.Id);
+                    node = node.Parent;
+                }
+                return ids;
+            }
+            private int NextId(Stack<int> ids)
+            {
+                if (ids.Count > 0)
+                    return ids.Pop();
+                else
+                    return -1;
+            }
+            public int Compare(Node left, Node right)
+            {
+                Stack<int> leftIds = BuildIds(left);
+                Stack<int> rightIds = BuildIds(right);
+                int deepest = Math.Max(leftIds.Count, rightIds.Count);
+                while(deepest > 0)
+                {
+                    int lid = NextId(leftIds);
+                    int rid = NextId(rightIds);
+
+                    if (lid < rid)
+                        return -1;
+                    else if (lid > rid)
+                        return 1;
+
+                    deepest -= 1;
+                }
+                return 0;
+            }
+        }
+
+		public void Sort()
 		{
-			SortedList<string, Node> list = new SortedList<string,Node>();
+            NodeSorter Sorter = new NodeSorter();
+			SortedList<Node, Node> list = new SortedList<Node, Node>(m_nodes.Count, Sorter);
 			foreach (Node node in m_nodes)
-				list.Add(node.GetId(), node);
-			return list.Values;
+				list.Add(node, node);
+			m_nodes = new List<Node>(list.Values);
 		}
 
 	}

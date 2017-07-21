@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,9 +22,9 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#include "api/replay/capture_options.h"
 #include <float.h>
 #include "api/app/renderdoc_app.h"
+#include "api/replay/renderdoc_replay.h"
 #include "common/common.h"
 #include "core/core.h"
 

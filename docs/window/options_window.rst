@@ -1,6 +1,8 @@
 Options Window
 ==============
 
+.. _settings-window:
+
 The options window contains various advanced or niche settings that configure the analysis UI.
 
 Options
@@ -182,6 +184,17 @@ Seconds through to nanoseconds are supported.
   | ``Hide empty marker sections`` Default: ``Disabled``
 
 Marker sections that contain no API calls or drawcalls will be completely removed. This also applies to the Timeline Bar.
+
+This option only applies itself the next time you load a log.
+
+
+---------------
+
+  | ``Hide marker sections with only non-draw API calls`` Default: ``Disabled``
+
+Marker sections that contain only miscellaneous non-draw API calls like queries or state setting will be completely removed. This also applies to the Timeline Bar.
+
+This can be useful if you have markers around occlusion queries or where you have a minor state change, and you don't want them cluttering up the capture.
 
 This option only applies itself the next time you load a log.
 

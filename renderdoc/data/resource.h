@@ -37,14 +37,9 @@
 #define RESOURCE_glsl_ms2array_comp     423
 #define RESOURCE_glsl_trisize_geom      424
 #define RESOURCE_glsl_trisize_frag      425
-
-#if !defined(STRINGIZE)
-#define STRINGIZE2(a) #a
-#define STRINGIZE(a) STRINGIZE2(a)
-#endif
-
-#define GIT_COMMIT_HASH							"NO_GIT_COMMIT_HASH_DEFINED"
-//#define RENDERDOC_OFFICIAL_BUILD // used to determine whether to submit auto crash reports
+#define RESOURCE_glsl_deptharr2ms_frag  426
+#define RESOURCE_glsl_depthms2arr_frag  427
+#define RESOURCE_glsl_gles_texsample_h  428
 
 // Next default values for new objects
 // 
@@ -57,4 +52,4 @@
 #endif
 #endif
 
-#include "version.h"
+#include "api/replay/version.h"

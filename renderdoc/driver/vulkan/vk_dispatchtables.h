@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,13 +26,12 @@
 
 // layer includes
 
-#if defined(RENDERDOC_PLATFORM_WIN32)
+#if ENABLED(RDOC_WIN32)
 // undefined clashing windows #defines
 #undef CreateEvent
 #undef CreateSemaphore
 #endif
 
-#include "official/vk_layer.h"
 #include "vk_hookset_defs.h"
 
 void InitReplayTables(void *vulkanModule);

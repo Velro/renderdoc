@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -46,7 +46,7 @@ namespace renderdoc
         public ReplayCreateStatus Status;
     }
 
-    class StaticExports
+    public class StaticExports
     {
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern ReplaySupport RENDERDOC_SupportLocalReplay(IntPtr logfile, IntPtr outdriver, IntPtr outident);
@@ -55,7 +55,13 @@ namespace renderdoc
         private static extern ReplayCreateStatus RENDERDOC_CreateReplayRenderer(IntPtr logfile, ref float progress, ref IntPtr rendPtr);
 
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void RENDERDOC_StartGlobalHook(IntPtr pathmatch, IntPtr logfile, CaptureOptions opts);
+        private static extern bool RENDERDOC_StartGlobalHook(IntPtr pathmatch, IntPtr logfile, CaptureOptions opts);
+
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern bool RENDERDOC_IsGlobalHookActive();
+
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void RENDERDOC_StopGlobalHook();
 
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern UInt32 RENDERDOC_ExecuteAndInject(IntPtr app, IntPtr workingDir, IntPtr cmdLine, IntPtr env,
@@ -98,7 +104,7 @@ namespace renderdoc
         private static extern void RENDERDOC_SetConfigSetting(IntPtr name, IntPtr value);
 
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
-        private static extern bool RENDERDOC_GetThumbnail(IntPtr filename, byte[] outmem, ref UInt32 len);
+        private static extern bool RENDERDOC_GetThumbnail(IntPtr filename, FileType type, UInt32 maxsize, IntPtr outmem);
 
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr RENDERDOC_MakeEnvironmentModificationList(int numElems);
@@ -109,6 +115,36 @@ namespace renderdoc
 
         [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
         private static extern void RENDERDOC_FreeEnvironmentModificationList(IntPtr mem);
+
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern ReplaySupport RENDERDOC_EnumerateAndroidDevices(IntPtr driverName);
+
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern ReplaySupport RENDERDOC_StartAndroidRemoteServer(IntPtr device);
+
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void RENDERDOC_StartSelfHostCapture(IntPtr dllname);
+
+        [DllImport("renderdoc.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void RENDERDOC_EndSelfHostCapture(IntPtr dllname);
+
+        public static void StartSelfHostCapture(string dllname)
+        {
+            IntPtr mem = CustomMarshal.MakeUTF8String(dllname);
+
+            RENDERDOC_StartSelfHostCapture(mem);
+
+            CustomMarshal.Free(mem);
+        }
+
+        public static void EndSelfHostCapture(string dllname)
+        {
+            IntPtr mem = CustomMarshal.MakeUTF8String(dllname);
+
+            RENDERDOC_EndSelfHostCapture(mem);
+
+            CustomMarshal.Free(mem);
+        }
 
         public static ReplaySupport SupportLocalReplay(string logfile, out string driverName, out string recordMachineIdent)
         {
@@ -148,15 +184,27 @@ namespace renderdoc
             return new ReplayRenderer(rendPtr);
         }
 
-        public static void StartGlobalHook(string pathmatch, string logfile, CaptureOptions opts)
+        public static bool StartGlobalHook(string pathmatch, string logfile, CaptureOptions opts)
         {
             IntPtr pathmatch_mem = CustomMarshal.MakeUTF8String(pathmatch);
             IntPtr logfile_mem = CustomMarshal.MakeUTF8String(logfile);
 
-            RENDERDOC_StartGlobalHook(pathmatch_mem, logfile_mem, opts);
+            bool ret = RENDERDOC_StartGlobalHook(pathmatch_mem, logfile_mem, opts);
 
             CustomMarshal.Free(logfile_mem);
             CustomMarshal.Free(pathmatch_mem);
+
+            return ret;
+        }
+
+        public static bool IsGlobalHookActive()
+        {
+            return RENDERDOC_IsGlobalHookActive();
+        }
+
+        public static void StopGlobalHook()
+        {
+            RENDERDOC_StopGlobalHook();
         }
 
         public static UInt32 ExecuteAndInject(string app, string workingDir, string cmdLine, EnvironmentModification[] env, string logfile, CaptureOptions opts)
@@ -250,7 +298,7 @@ namespace renderdoc
 
                 nextIdent = RENDERDOC_EnumerateRemoteTargets(host_mem, nextIdent);
 
-                if (nextIdent == UInt32.MaxValue || prevIdent >= nextIdent)
+                if (nextIdent == 0 || prevIdent >= nextIdent)
                     break;
 
                 callback(nextIdent);
@@ -332,13 +380,15 @@ namespace renderdoc
             CustomMarshal.Free(value_mem);
         }
 
-        public static byte[] GetThumbnail(string filename)
+        public static byte[] GetThumbnail(string filename, FileType type, UInt32 maxsize)
         {
             UInt32 len = 0;
 
             IntPtr filename_mem = CustomMarshal.MakeUTF8String(filename);
 
-            bool success = RENDERDOC_GetThumbnail(filename_mem, null, ref len);
+            IntPtr mem = CustomMarshal.Alloc(typeof(templated_array));
+
+            bool success = RENDERDOC_GetThumbnail(filename_mem, type, maxsize, mem);
 
             if (!success || len == 0)
             {
@@ -346,14 +396,9 @@ namespace renderdoc
                 return null;
             }
 
-            byte[] ret = new byte[len];
+            byte[] ret = (byte[])CustomMarshal.GetTemplatedArray(mem, typeof(byte), true);
 
-            success = RENDERDOC_GetThumbnail(filename_mem, ret, ref len);
-
-            CustomMarshal.Free(filename_mem);
-
-            if (!success || len == 0)
-                return null;
+            CustomMarshal.Free(mem);
 
             return ret;
         }
@@ -369,6 +414,27 @@ namespace renderdoc
             CustomMarshal.Free(mem);
 
             return ret;
+        }
+
+        public static string[] EnumerateAndroidDevices()
+        {
+          IntPtr driverListInt = CustomMarshal.Alloc(typeof(templated_array));
+
+          RENDERDOC_EnumerateAndroidDevices(driverListInt);
+
+          string driverList = CustomMarshal.TemplatedArrayToString(driverListInt, true);
+          CustomMarshal.Free(driverListInt);
+
+          return driverList.Split(new char[]{','}, StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        public static void StartAndroidRemoteServer(string device)
+        {
+            IntPtr device_mem = CustomMarshal.MakeUTF8String(device);
+
+            RENDERDOC_StartAndroidRemoteServer(device_mem);
+
+            CustomMarshal.Free(device_mem);
         }
     }
 }

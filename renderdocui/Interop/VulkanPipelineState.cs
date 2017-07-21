@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -76,30 +76,26 @@ namespace renderdoc
                         public UInt64 offset;
                         public UInt64 size;
 
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string mag;
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string min;
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string mip;
+                        public TextureFilter Filter;
 
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string addrU;
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string addrV;
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string addrW;
+                        public AddressMode addrU;
+                        public AddressMode addrV;
+                        public AddressMode addrW;
 
                         public float mipBias;
                         public float maxAniso;
-                        public bool compareEnable;
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string comparison;
+                        public CompareFunc comparison;
                         public float minlod, maxlod;
-                        public bool borderEnable;
-                        [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                        public string border;
+                        [CustomMarshalAs(CustomUnmanagedType.FixedArray, FixedLength = 4)]
+                        public float[] BorderColor;
                         public bool unnormalized;
+
+                        public bool UseBorder()
+                        {
+                            return addrU == AddressMode.ClampBorder ||
+                                   addrV == AddressMode.ClampBorder ||
+                                   addrW == AddressMode.ClampBorder;
+                        }
                     };
                     [CustomMarshalAs(CustomUnmanagedType.TemplatedArray)]
                     public BindingElement[] binds;
@@ -175,9 +171,14 @@ namespace renderdoc
             private void PostMarshal()
             {
                 if (_ptr_ShaderDetails != IntPtr.Zero)
+                {
                     ShaderDetails = (ShaderReflection)CustomMarshal.PtrToStructure(_ptr_ShaderDetails, typeof(ShaderReflection), false);
+                    ShaderDetails.origPtr = _ptr_ShaderDetails;
+                }
                 else
+                {
                     ShaderDetails = null;
+                }
 
                 _ptr_ShaderDetails = IntPtr.Zero;
             }
@@ -208,7 +209,7 @@ namespace renderdoc
             SpecInfo[] specialization;
         };
         [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
-        public ShaderStage VS, TCS, TES, GS, FS, CS;
+        public ShaderStage m_VS, m_TCS, m_TES, m_GS, m_FS, m_CS;
 
         [StructLayout(LayoutKind.Sequential)]
         public class Tessellation
@@ -285,8 +286,7 @@ namespace renderdoc
             public bool alphaToOneEnable;
             public bool logicOpEnable;
 
-            [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-            public string LogicOp;
+            public LogicOp Logic;
 
             [StructLayout(LayoutKind.Sequential)]
             public class Attachment
@@ -294,17 +294,14 @@ namespace renderdoc
                 public bool blendEnable;
 
                 [StructLayout(LayoutKind.Sequential)]
-                public class BlendOp
+                public class BlendEquation
                 {
-                    [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                    public string Source;
-                    [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                    public string Destination;
-                    [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                    public string Operation;
+                    public BlendMultiplier Source;
+                    public BlendMultiplier Destination;
+                    public BlendOp Operation;
                 };
                 [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
-                public BlendOp m_Blend, m_AlphaBlend;
+                public BlendEquation m_Blend, m_AlphaBlend;
 
                 public byte WriteMask;
             };
@@ -324,26 +321,21 @@ namespace renderdoc
             public bool depthTestEnable;
             public bool depthWriteEnable;
             public bool depthBoundsEnable;
-            [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-            public string depthCompareOp;
+            public CompareFunc depthCompareOp;
 
             public bool stencilTestEnable;
             [StructLayout(LayoutKind.Sequential)]
-            public class StencilOp
+            public class StencilFace
             {
-                [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                public string failOp;
-                [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                public string depthFailOp;
-                [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                public string passOp;
-                [CustomMarshalAs(CustomUnmanagedType.UTF8TemplatedString)]
-                public string func;
+                public StencilOp FailOp;
+                public StencilOp DepthFailOp;
+                public StencilOp PassOp;
+                public CompareFunc Func;
 
                 public UInt32 stencilref, compareMask, writeMask;
             };
             [CustomMarshalAs(CustomUnmanagedType.CustomClass)]
-            public StencilOp front, back;
+            public StencilFace front, back;
 
             public float minDepthBounds;
             public float maxDepthBounds;
@@ -363,6 +355,8 @@ namespace renderdoc
                 public UInt32[] inputAttachments;
                 [CustomMarshalAs(CustomUnmanagedType.TemplatedArray)]
                 public UInt32[] colorAttachments;
+                [CustomMarshalAs(CustomUnmanagedType.TemplatedArray)]
+                public UInt32[] resolveAttachments;
                 public Int32 depthstencilAttachment;
             };
             [CustomMarshalAs(CustomUnmanagedType.CustomClass)]

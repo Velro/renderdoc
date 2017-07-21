@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -41,6 +41,7 @@ using System.Drawing.Imaging;
 using System.Drawing.Drawing2D;
 
 using Process = System.Diagnostics.Process;
+using System.Runtime.InteropServices;
 
 namespace renderdocui.Windows
 {
@@ -75,6 +76,8 @@ namespace renderdocui.Windows
             public string exe;
             public string api;
             public DateTime timestamp;
+
+            public Image thumb;
 
             public bool saved;
             public bool opened;
@@ -161,20 +164,20 @@ namespace renderdocui.Windows
 
                 if (m_Connection.Connected)
                 {
-                    string api = "...";
+                    string api = "No API detected";
                     if (m_Connection.API.Length > 0) api = m_Connection.API;
                     this.BeginInvoke((MethodInvoker)delegate
                     {
                         if (m_Connection.PID == 0)
                         {
                             connectionStatus.Text = String.Format("Connection established to {0} ({1})", m_Connection.Target, api);
-                            SetText(String.Format("{0} ({1})", m_Connection.Target, api));
+                            SetText(String.Format("{0}", m_Connection.Target));
                         }
                         else
                         {
                             connectionStatus.Text = String.Format("Connection established to {0} [PID {1}] ({2})",
                                      m_Connection.Target, m_Connection.PID, api);
-                            SetText(String.Format("{0} [PID {1}] ({2})", m_Connection.Target, m_Connection.PID, api));
+                            SetText(String.Format("{0} [PID {1}]", m_Connection.Target, m_Connection.PID));
                         }
                         connectionIcon.Image = global::renderdocui.Properties.Resources.connect;
                     });
@@ -229,8 +232,17 @@ namespace renderdocui.Windows
                     {
                         this.BeginInvoke((MethodInvoker)delegate
                         {
-                            connectionStatus.Text = String.Format("Connection established to {0} ({1})", m_Connection.Target, m_Connection.API);
-                            SetText(String.Format("{0} ({1})", m_Connection.Target, m_Connection.API));
+                            if (m_Connection.PID == 0)
+                            {
+                                connectionStatus.Text = String.Format("Connection established to {0} ({1})", m_Connection.Target, m_Connection.API);
+                                SetText(String.Format("{0}", m_Connection.Target));
+                            }
+                            else
+                            {
+                                connectionStatus.Text = String.Format("Connection established to {0} [PID {1}] ({2})",
+                                         m_Connection.Target, m_Connection.PID, m_Connection.API);
+                                SetText(String.Format("{0} [PID {1}]", m_Connection.Target, m_Connection.PID));
+                            }
                             connectionIcon.Image = global::renderdocui.Properties.Resources.connect;
                         });
 
@@ -243,12 +255,14 @@ namespace renderdocui.Windows
                         DateTime timestamp = new DateTime(1970, 1, 1, 0, 0, 0);
                         timestamp = timestamp.AddSeconds(m_Connection.CaptureFile.timestamp).ToLocalTime();
                         byte[] thumb = m_Connection.CaptureFile.thumbnail;
+                        int thumbWidth = m_Connection.CaptureFile.thumbWidth;
+                        int thumbHeight = m_Connection.CaptureFile.thumbHeight;
                         string path = m_Connection.CaptureFile.path;
                         bool local = m_Connection.CaptureFile.local;
 
                         this.BeginInvoke((MethodInvoker)delegate
                         {
-                            CaptureAdded(capID, m_Connection.Target, m_Connection.API, thumb, timestamp, path, local);
+                            CaptureAdded(capID, m_Connection.Target, m_Connection.API, thumb, thumbWidth, thumbHeight, timestamp, path, local);
                         });
                         m_Connection.CaptureExists = false;
                     }
@@ -316,7 +330,7 @@ namespace renderdocui.Windows
             }
         }
 
-        Image MakeThumb(Size s, Stream st)
+        Image MakeThumb(Size s, byte[] data, int thumbWidth, int thumbHeight)
         {
             Bitmap thumb = new Bitmap(s.Width, s.Height, PixelFormat.Format32bppArgb);
 
@@ -325,12 +339,30 @@ namespace renderdocui.Windows
             g.Clear(Color.Transparent);
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
 
-            if (st != null)
+            if (data != null && thumbWidth > 0 && thumbHeight > 0)
             {
                 try
                 {
-                    using (var im = Image.FromStream(st))
+                    using (var im = new Bitmap(thumbWidth, thumbHeight, PixelFormat.Format24bppRgb))
                     {
+                        BitmapData bits = im.LockBits(new Rectangle(0, 0, thumbWidth, thumbHeight), ImageLockMode.WriteOnly, im.PixelFormat);
+
+                        // need to endian-swap for .NET
+                        for (int dy = 0; dy < bits.Height; dy++)
+                        {
+                            for (int dx = 0; dx < bits.Width; dx++)
+                            {
+                                int offs = dy * bits.Width * 3 + dx * 3;
+                                byte r = data[offs + 0];
+                                data[offs + 0] = data[offs + 2];
+                                data[offs + 2] = r;
+                            }
+                        }
+
+                        Marshal.Copy(data, 0, bits.Scan0, data.Length);
+
+                        im.UnlockBits(bits);
+
                         float x = 0, y = 0;
                         float width = 0, height = 0;
 
@@ -374,7 +406,21 @@ namespace renderdocui.Windows
                 (captures.SelectedItems.Count == 1);
 
             if(captures.SelectedItems.Count == 1)
-                newInstanceToolStripMenuItem.Enabled = (captures.SelectedItems[0].Tag as CaptureLog).local;
+            {
+                CaptureLog cap = captures.SelectedItems[0].Tag as CaptureLog;
+
+                newInstanceToolStripMenuItem.Enabled = cap.local;
+
+                if (cap.thumb != null)
+                {
+                    preview.Image = cap.thumb;
+                }
+                else
+                {
+                    preview.Image = null;
+                    preview.Size = new Size(16, 16);
+                }
+            }
         }
 
         private void captures_MouseDoubleClick(object sender, MouseEventArgs e)
@@ -724,11 +770,28 @@ namespace renderdocui.Windows
                 DeleteCaptureUnprompted(i);
         }
 
-        private void captures_KeyUp(object sender, KeyEventArgs e)
+        DateTime lastEdit = DateTime.MinValue;
+
+        private void captures_AfterLabelEdit(object sender, LabelEditEventArgs e)
+        {
+            lastEdit = DateTime.Now;
+        }
+
+        private void captures_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Delete)
             {
                 deleteCapture_Click(sender, null);
+            }
+            if (e.KeyCode == Keys.F2 && captures.SelectedItems.Count == 1)
+            {
+                captures.SelectedItems[0].BeginEdit();
+            }
+            if (e.KeyCode == Keys.Return || e.KeyCode == Keys.Enter)
+            {
+                // don't interpret the enter from ending an edit as an enter to open
+                if(DateTime.Now.Subtract(lastEdit).TotalMilliseconds >= 500)
+                    openCapture_Click(sender, null);
             }
         }
 
@@ -748,19 +811,18 @@ namespace renderdocui.Windows
             }
         }
 
-        private void CaptureAdded(uint ID, string executable, string api, byte[] thumbnail, DateTime timestamp, string path, bool local)
+        private void CaptureAdded(uint ID, string executable, string api, byte[] thumbnail, int thumbWidth, int thumbHeight, DateTime timestamp, string path, bool local)
         {
             if (thumbnail == null || thumbnail.Length == 0)
             {
-                using (Image t = MakeThumb(thumbs.ImageSize, null))
+                using (Image t = MakeThumb(thumbs.ImageSize, null, 0, 0))
                 {
                     thumbs.Images.Add(t);
                 }
             }
             else
             {
-                using (var ms = new MemoryStream(thumbnail))
-                using (Image t = MakeThumb(thumbs.ImageSize, ms))
+                using (Image t = MakeThumb(thumbs.ImageSize, thumbnail, thumbWidth, thumbHeight))
                 {
                     thumbs.Images.Add(t);
                 }
@@ -771,6 +833,18 @@ namespace renderdocui.Windows
             log.exe = executable;
             log.api = api;
             log.timestamp = timestamp;
+            log.thumb = null;
+            try
+            {
+                if (thumbnail != null && thumbnail.Length != 0)
+                {
+                    using (var ms = new MemoryStream(thumbnail))
+                        log.thumb = Image.FromStream(ms);
+                }
+            }
+            catch (ArgumentException)
+            {
+            }
             log.saved = false;
             log.path = path;
             log.local = local;
@@ -878,35 +952,46 @@ namespace renderdocui.Windows
 
         private void childUpdateTimer_Tick(object sender, EventArgs e)
         {
-            // remove any stale processes
-            for (int i = 0; i < m_Children.Count; i++)
+            if (m_Children.Count > 0)
             {
-                try
+                Process[] processes = Process.GetProcesses();
+
+                // remove any stale processes
+                for (int i = 0; i < m_Children.Count; i++)
                 {
-                    // if this throws an exception the process no longer exists so we'll remove it
-                    Process.GetProcessById(m_Children[i].PID);
+                    bool found = false;
+
+                    foreach (var p in processes)
+                    {
+                        if (p.Id == m_Children[i].PID)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found)
+                    {
+                        if (m_Children[i].added)
+                            childProcesses.Items.RemoveByKey(m_Children[i].PID.ToString());
+
+                        // process expired/doesn't exist anymore
+                        m_Children.RemoveAt(i);
+
+                        // don't increment i, check the next element at i (if we weren't at the end
+                        i--;
+                    }
                 }
-                catch (Exception)
+
+                for (int i = 0; i < m_Children.Count; i++)
                 {
-                    if (m_Children[i].added)
-                        childProcesses.Items.RemoveByKey(m_Children[i].PID.ToString());
+                    if (!m_Children[i].added)
+                    {
+                        string text = String.Format("{0} [PID {1}]", m_Children[i].name, m_Children[i].PID);
 
-                    // process expired/doesn't exist anymore
-                    m_Children.RemoveAt(i);
-
-                    // don't increment i, check the next element at i (if we weren't at the end
-                    i--;
-                }
-            }
-
-            for (int i = 0; i < m_Children.Count; i++)
-            {
-                if (!m_Children[i].added)
-                {
-                    string text = String.Format("{0} [PID {1}]", m_Children[i].name, m_Children[i].PID);
-
-                    m_Children[i].added = true;
-                    childProcesses.Items.Add(m_Children[i].PID.ToString(), text, 0).Tag = m_Children[i].ident;
+                        m_Children[i].added = true;
+                        childProcesses.Items.Add(m_Children[i].PID.ToString(), text, 0).Tag = m_Children[i].ident;
+                    }
                 }
             }
 
@@ -935,5 +1020,39 @@ namespace renderdocui.Windows
             Text = (m_Host.Length > 0 ? (m_Host + " - ") : "") + title;
         }
 
+        private void previewToggle_CheckedChanged(object sender, EventArgs e)
+        {
+            previewSplit.Panel2Collapsed = !previewToggle.Checked;
+        }
+
+        private Point previewDragStart = Point.Empty;
+
+        private void preview_MouseDown(object sender, MouseEventArgs e)
+        {
+            Point mouse = preview.PointToScreen(e.Location);
+            if (e.Button == MouseButtons.Left)
+            {
+                previewDragStart = mouse;
+                preview.Cursor = Cursors.NoMove2D;
+            }
+        }
+
+        private void preview_MouseMove(object sender, MouseEventArgs e)
+        {
+            Point mouse = preview.PointToScreen(e.Location);
+            if (e.Button == MouseButtons.Left)
+            {
+                SuspendLayout();
+                Point p = previewSplit.Panel2.AutoScrollPosition;
+                previewSplit.Panel2.AutoScrollPosition = new Point(-(p.X + mouse.X - previewDragStart.X),
+                                                                   -(p.Y + mouse.Y - previewDragStart.Y));
+                previewDragStart = mouse;
+                ResumeLayout();
+            }
+            else
+            {
+                preview.Cursor = Cursors.Default;
+            }
+        }
     }
 }

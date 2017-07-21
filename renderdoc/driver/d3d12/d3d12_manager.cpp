@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "d3d12_manager.h"
+#include "driver/dxgi/dxgi_common.h"
 #include "d3d12_command_list.h"
 #include "d3d12_command_queue.h"
 #include "d3d12_device.h"
@@ -147,16 +148,66 @@ void D3D12Descriptor::Create(D3D12_DESCRIPTOR_HEAP_TYPE heapType, WrappedID3D12D
       {
         desc = nonsamp.resource ? NULL : defaultSRV();
 
+        const map<ResourceId, DXGI_FORMAT> &bbs = dev->GetBackbufferFormats();
+
+        auto it = bbs.find(GetResID(nonsamp.resource));
+
         // fixup for backbuffers
-        if(dev->GetBackbufferFormat().first == GetResID(nonsamp.resource))
+        if(it != bbs.end())
         {
           D3D12_SHADER_RESOURCE_VIEW_DESC bbDesc = {};
-          bbDesc.Format = dev->GetBackbufferFormat().second;
+          bbDesc.Format = it->second;
           bbDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
           bbDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
           bbDesc.Texture2D.MipLevels = 1;
           dev->CreateShaderResourceView(nonsamp.resource, &bbDesc, handle);
           return;
+        }
+      }
+
+      // it's possible to end up with invalid resource and descriptor combinations:
+      // 1. descriptor is created for ResID_1234 BC1_TYPELESS and a view BC1_UNORM
+      // 2. resource is freed.
+      // 3. some time later, new resource is created ResID_5678 BC3_UNORM
+      // 4. Key point is - descriptor has a pointer to the resource, and the slot is
+      //    re-allocated in 3.
+      // 5. We now have a descriptor that is BC3_UNORM resource and BC1_UNORM view.
+      //
+      // This is unavoidable without recording back-references from resources to the
+      // descriptors that use them. Instead, we just detect the invalid case here
+      // and since we know the descriptor is unused (since it's invalid to use it
+      // after the resource is freed, and it would have to be recreated with a valid
+      // format combination) we can just force a null resource.
+      //
+      // so need to check if
+      // a) we have a non-NULL resource (otherwise any descriptor is fine)
+      // b) descriptor and resource have a non-UNKNOWN format (buffers have UNKNOWN
+      //    type which can be cast arbitrarily by the view).
+      // c) when the resource is typed, the view must be identical, when it's typeless
+      //    the view format must be castable
+      if(nonsamp.resource && desc)
+      {
+        DXGI_FORMAT resFormat = nonsamp.resource->GetDesc().Format;
+        DXGI_FORMAT viewFormat = desc->Format;
+
+        if(resFormat != DXGI_FORMAT_UNKNOWN && viewFormat != DXGI_FORMAT_UNKNOWN)
+        {
+          if(!IsTypelessFormat(resFormat))
+          {
+            if(resFormat != viewFormat)
+            {
+              nonsamp.resource = NULL;
+              desc = defaultSRV();
+            }
+          }
+          else
+          {
+            if(resFormat != GetTypelessFormat(viewFormat))
+            {
+              nonsamp.resource = NULL;
+              desc = defaultSRV();
+            }
+          }
         }
       }
 
@@ -170,14 +221,45 @@ void D3D12Descriptor::Create(D3D12_DESCRIPTOR_HEAP_TYPE heapType, WrappedID3D12D
       {
         desc = nonsamp.resource ? NULL : defaultRTV();
 
+        const map<ResourceId, DXGI_FORMAT> &bbs = dev->GetBackbufferFormats();
+
+        auto it = bbs.find(GetResID(nonsamp.resource));
+
         // fixup for backbuffers
-        if(dev->GetBackbufferFormat().first == GetResID(nonsamp.resource))
+        if(it != bbs.end())
         {
           D3D12_RENDER_TARGET_VIEW_DESC bbDesc = {};
-          bbDesc.Format = dev->GetBackbufferFormat().second;
+          bbDesc.Format = it->second;
           bbDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
           dev->CreateRenderTargetView(nonsamp.resource, &bbDesc, handle);
           return;
+        }
+      }
+
+      // see comment above in SRV case for what this code is doing
+      if(nonsamp.resource && desc)
+      {
+        DXGI_FORMAT resFormat = nonsamp.resource->GetDesc().Format;
+        DXGI_FORMAT viewFormat = desc->Format;
+
+        if(resFormat != DXGI_FORMAT_UNKNOWN && viewFormat != DXGI_FORMAT_UNKNOWN)
+        {
+          if(!IsTypelessFormat(resFormat))
+          {
+            if(resFormat != viewFormat)
+            {
+              nonsamp.resource = NULL;
+              desc = defaultRTV();
+            }
+          }
+          else
+          {
+            if(resFormat != GetTypelessFormat(viewFormat))
+            {
+              nonsamp.resource = NULL;
+              desc = defaultRTV();
+            }
+          }
         }
       }
 
@@ -189,6 +271,33 @@ void D3D12Descriptor::Create(D3D12_DESCRIPTOR_HEAP_TYPE heapType, WrappedID3D12D
       D3D12_DEPTH_STENCIL_VIEW_DESC *desc = &nonsamp.dsv;
       if(desc->ViewDimension == D3D12_DSV_DIMENSION_UNKNOWN)
         desc = nonsamp.resource ? NULL : defaultDSV();
+
+      // see comment above in SRV case for what this code is doing
+      if(nonsamp.resource && desc)
+      {
+        DXGI_FORMAT resFormat = nonsamp.resource->GetDesc().Format;
+        DXGI_FORMAT viewFormat = desc->Format;
+
+        if(resFormat != DXGI_FORMAT_UNKNOWN && viewFormat != DXGI_FORMAT_UNKNOWN)
+        {
+          if(!IsTypelessFormat(resFormat))
+          {
+            if(resFormat != viewFormat)
+            {
+              nonsamp.resource = NULL;
+              desc = defaultDSV();
+            }
+          }
+          else
+          {
+            if(resFormat != GetTypelessFormat(viewFormat))
+            {
+              nonsamp.resource = NULL;
+              desc = defaultDSV();
+            }
+          }
+        }
+      }
 
       dev->CreateDepthStencilView(nonsamp.resource, desc, handle);
       break;
@@ -202,11 +311,15 @@ void D3D12Descriptor::Create(D3D12_DESCRIPTOR_HEAP_TYPE heapType, WrappedID3D12D
       {
         desc = nonsamp.resource ? NULL : defaultUAV();
 
+        const map<ResourceId, DXGI_FORMAT> &bbs = dev->GetBackbufferFormats();
+
+        auto it = bbs.find(GetResID(nonsamp.resource));
+
         // fixup for backbuffers
-        if(dev->GetBackbufferFormat().first == GetResID(nonsamp.resource))
+        if(it != bbs.end())
         {
           D3D12_UNORDERED_ACCESS_VIEW_DESC bbDesc = {};
-          bbDesc.Format = dev->GetBackbufferFormat().second;
+          bbDesc.Format = it->second;
           bbDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
           dev->CreateUnorderedAccessView(nonsamp.resource, NULL, &bbDesc, handle);
           return;
@@ -219,6 +332,36 @@ void D3D12Descriptor::Create(D3D12_DESCRIPTOR_HEAP_TYPE heapType, WrappedID3D12D
       ID3D12Resource *counter = nonsamp.uav.counterResource;
       if(nonsamp.resource == NULL)
         counter = NULL;
+
+      if(counter == NULL && desc && desc->ViewDimension == D3D12_UAV_DIMENSION_BUFFER)
+        desc->Buffer.CounterOffsetInBytes = 0;
+
+      // see comment above in SRV case for what this code is doing
+      if(nonsamp.resource && desc)
+      {
+        DXGI_FORMAT resFormat = nonsamp.resource->GetDesc().Format;
+        DXGI_FORMAT viewFormat = desc->Format;
+
+        if(resFormat != DXGI_FORMAT_UNKNOWN && viewFormat != DXGI_FORMAT_UNKNOWN)
+        {
+          if(!IsTypelessFormat(resFormat))
+          {
+            if(resFormat != viewFormat)
+            {
+              nonsamp.resource = NULL;
+              desc = defaultUAV();
+            }
+          }
+          else
+          {
+            if(resFormat != GetTypelessFormat(viewFormat))
+            {
+              nonsamp.resource = NULL;
+              desc = defaultUAV();
+            }
+          }
+        }
+      }
 
       dev->CreateUnorderedAccessView(nonsamp.resource, counter, desc, handle);
       break;
@@ -253,13 +396,57 @@ void D3D12Descriptor::CopyFrom(const D3D12Descriptor &src)
   samp.idx = index;
 }
 
+void D3D12Descriptor::GetRefIDs(ResourceId &id, ResourceId &id2, FrameRefType &ref)
+{
+  id = ResourceId();
+  id2 = ResourceId();
+  ref = eFrameRef_Read;
+
+  switch(GetType())
+  {
+    case D3D12Descriptor::TypeUndefined:
+    case D3D12Descriptor::TypeSampler:
+      // nothing to do - no resource here
+      break;
+    case D3D12Descriptor::TypeCBV:
+      id = WrappedID3D12Resource::GetResIDFromAddr(nonsamp.cbv.BufferLocation);
+      break;
+    case D3D12Descriptor::TypeSRV: id = GetResID(nonsamp.resource); break;
+    case D3D12Descriptor::TypeUAV:
+      id2 = GetResID(nonsamp.uav.counterResource);
+    // deliberate fall-through
+    case D3D12Descriptor::TypeRTV:
+    case D3D12Descriptor::TypeDSV:
+      ref = eFrameRef_Write;
+      id = GetResID(nonsamp.resource);
+      break;
+  }
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE UnwrapCPU(D3D12Descriptor *handle)
+{
+  D3D12_CPU_DESCRIPTOR_HANDLE ret = {};
+  if(handle == NULL)
+    return ret;
+
+  return handle->samp.heap->GetCPU(handle->samp.idx);
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE UnwrapGPU(D3D12Descriptor *handle)
+{
+  D3D12_GPU_DESCRIPTOR_HANDLE ret = {};
+  if(handle == NULL)
+    return ret;
+
+  return handle->samp.heap->GetGPU(handle->samp.idx);
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE Unwrap(D3D12_CPU_DESCRIPTOR_HANDLE handle)
 {
   if(handle.ptr == 0)
     return handle;
 
-  D3D12Descriptor *desc = GetWrapped(handle);
-  return desc->samp.heap->GetCPU(desc->samp.idx);
+  return UnwrapCPU(GetWrapped(handle));
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE Unwrap(D3D12_GPU_DESCRIPTOR_HANDLE handle)
@@ -267,8 +454,15 @@ D3D12_GPU_DESCRIPTOR_HANDLE Unwrap(D3D12_GPU_DESCRIPTOR_HANDLE handle)
   if(handle.ptr == 0)
     return handle;
 
-  D3D12Descriptor *desc = GetWrapped(handle);
-  return desc->samp.heap->GetGPU(desc->samp.idx);
+  return UnwrapGPU(GetWrapped(handle));
+}
+
+PortableHandle ToPortableHandle(D3D12Descriptor *desc)
+{
+  if(desc == NULL)
+    return PortableHandle(0);
+
+  return PortableHandle(GetResID(desc->samp.heap), desc->samp.idx);
 }
 
 PortableHandle ToPortableHandle(D3D12_CPU_DESCRIPTOR_HANDLE handle)
@@ -276,9 +470,7 @@ PortableHandle ToPortableHandle(D3D12_CPU_DESCRIPTOR_HANDLE handle)
   if(handle.ptr == 0)
     return PortableHandle(0);
 
-  D3D12Descriptor *desc = GetWrapped(handle);
-
-  return PortableHandle(GetResID(desc->samp.heap), desc->samp.idx);
+  return ToPortableHandle(GetWrapped(handle));
 }
 
 PortableHandle ToPortableHandle(D3D12_GPU_DESCRIPTOR_HANDLE handle)
@@ -286,9 +478,7 @@ PortableHandle ToPortableHandle(D3D12_GPU_DESCRIPTOR_HANDLE handle)
   if(handle.ptr == 0)
     return PortableHandle(0);
 
-  D3D12Descriptor *desc = GetWrapped(handle);
-
-  return PortableHandle(GetResID(desc->samp.heap), desc->samp.idx);
+  return ToPortableHandle(GetWrapped(handle));
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE CPUHandleFromPortableHandle(D3D12ResourceManager *manager,
@@ -319,8 +509,24 @@ D3D12_GPU_DESCRIPTOR_HANDLE GPUHandleFromPortableHandle(D3D12ResourceManager *ma
   return D3D12_GPU_DESCRIPTOR_HANDLE();
 }
 
+D3D12Descriptor *DescriptorFromPortableHandle(D3D12ResourceManager *manager, PortableHandle handle)
+{
+  if(handle.heap == ResourceId())
+    return NULL;
+
+  if(!manager->HasLiveResource(handle.heap))
+    return NULL;
+
+  WrappedID3D12DescriptorHeap *heap = manager->GetLiveAs<WrappedID3D12DescriptorHeap>(handle.heap);
+
+  if(heap)
+    return heap->GetDescriptors() + handle.index;
+
+  return NULL;
+}
+
 // debugging logging for barriers
-#if 1
+#if 0
 #define BARRIER_DBG RDCLOG
 #define BARRIER_ASSERT RDCASSERTMSG
 #else
@@ -412,7 +618,10 @@ void D3D12ResourceManager::SerialiseResourceStates(vector<D3D12_RESOURCE_BARRIER
 
 bool D3D12ResourceManager::SerialisableResource(ResourceId id, D3D12ResourceRecord *record)
 {
-  if(record->SpecialResource)
+  if(record->type == Resource_GraphicsCommandList || record->type == Resource_CommandQueue)
+    return false;
+
+  if(m_Device->GetFrameCaptureResourceId() == id)
     return false;
 
   return true;
@@ -463,13 +672,19 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
   }
   else if(type == Resource_Resource)
   {
-    ID3D12Resource *r = (ID3D12Resource *)res;
+    WrappedID3D12Resource *r = (WrappedID3D12Resource *)res;
+    ID3D12Pageable *pageable = r;
+
+    bool nonresident = false;
+    if(!r->Resident())
+      nonresident = true;
 
     D3D12_RESOURCE_DESC desc = r->GetDesc();
 
     if(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.SampleDesc.Count > 1)
     {
       D3D12NOTIMP("Multisampled initial contents");
+
       SetInitialContents(GetResID(r), D3D12ResourceManager::InitialContentData(NULL, 2, NULL));
       return true;
     }
@@ -498,17 +713,28 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
           &heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, NULL,
           __uuidof(ID3D12Resource), (void **)&copyDst);
 
+      if(nonresident)
+        m_Device->MakeResident(1, &pageable);
+
       if(SUCCEEDED(hr))
       {
-        ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetNewList());
+        ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetInitialStateList());
 
-        list->CopyResource(copyDst, Unwrap(r));
-
-        list->Close();
+        list->CopyResource(copyDst, r->GetReal());
       }
       else
       {
         RDCERR("Couldn't create readback buffer: 0x%08x", hr);
+      }
+
+      if(nonresident)
+      {
+        m_Device->CloseInitialStateList();
+
+        m_Device->ExecuteLists();
+        m_Device->FlushLists();
+
+        m_Device->Evict(1, &pageable);
       }
 
       SetInitialContents(GetResID(r), D3D12ResourceManager::InitialContentData(copyDst, 0, NULL));
@@ -552,9 +778,12 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
           &heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc, D3D12_RESOURCE_STATE_COPY_DEST, NULL,
           __uuidof(ID3D12Resource), (void **)&copyDst);
 
+      if(nonresident)
+        m_Device->MakeResident(1, &pageable);
+
       if(SUCCEEDED(hr))
       {
-        ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetNewList());
+        ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetInitialStateList());
 
         vector<D3D12_RESOURCE_BARRIER> barriers;
 
@@ -570,7 +799,7 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
           D3D12_RESOURCE_BARRIER barrier;
           barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
           barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-          barrier.Transition.pResource = Unwrap(r);
+          barrier.Transition.pResource = r->GetReal();
           barrier.Transition.Subresource = (UINT)i;
           barrier.Transition.StateBefore = states[i];
           barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
@@ -587,7 +816,7 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
           D3D12_TEXTURE_COPY_LOCATION dst, src;
 
           src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-          src.pResource = Unwrap(r);
+          src.pResource = r->GetReal();
           src.SubresourceIndex = i;
 
           dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -603,12 +832,20 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
 
         if(!barriers.empty())
           list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
-
-        list->Close();
       }
       else
       {
         RDCERR("Couldn't create readback buffer: 0x%08x", hr);
+      }
+
+      if(nonresident)
+      {
+        m_Device->CloseInitialStateList();
+
+        m_Device->ExecuteLists();
+        m_Device->FlushLists();
+
+        m_Device->Evict(1, &pageable);
       }
 
       SAFE_DELETE_ARRAY(layouts);
@@ -617,8 +854,11 @@ bool D3D12ResourceManager::Prepare_InitialState(ID3D12DeviceChild *res)
       return true;
     }
   }
+  else
+  {
+    RDCERR("Unexpected type needing an initial state prepared: %d", type);
+  }
 
-  RDCUNIMPLEMENTED("init states");
   return false;
 }
 
@@ -662,14 +902,14 @@ bool D3D12ResourceManager::Serialise_InitialState(ResourceId resid, ID3D12Device
 
       byte dummy[4] = {};
       byte *ptr = NULL;
-      size_t size = 0;
+      uint64_t size = 0;
 
       HRESULT hr = E_NOINTERFACE;
 
       if(copiedBuffer)
       {
         hr = copiedBuffer->Map(0, NULL, (void **)&ptr);
-        size = (size_t)copiedBuffer->GetDesc().Width;
+        size = (uint64_t)copiedBuffer->GetDesc().Width;
       }
 
       if(FAILED(hr) || ptr == NULL)
@@ -681,7 +921,8 @@ bool D3D12ResourceManager::Serialise_InitialState(ResourceId resid, ID3D12Device
       }
 
       m_pSerialiser->Serialise("NumBytes", size);
-      m_pSerialiser->SerialiseBuffer("BufferData", ptr, size);
+      size_t sz = (size_t)size;
+      m_pSerialiser->SerialiseBuffer("BufferData", ptr, sz);
 
       if(SUCCEEDED(hr) && ptr)
         copiedBuffer->Unmap(0, NULL);
@@ -690,7 +931,7 @@ bool D3D12ResourceManager::Serialise_InitialState(ResourceId resid, ID3D12Device
     }
     else
     {
-      RDCUNIMPLEMENTED("init states");
+      RDCERR("Unexpected type needing an initial state serialised out: %d", type);
       return false;
     }
   }
@@ -720,13 +961,13 @@ bool D3D12ResourceManager::Serialise_InitialState(ResourceId resid, ID3D12Device
       HRESULT hr = m_Device->GetReal()->CreateDescriptorHeap(&desc, __uuidof(ID3D12DescriptorHeap),
                                                              (void **)&copyheap);
 
-      copyheap = new WrappedID3D12DescriptorHeap(copyheap, m_Device, desc);
-
       if(FAILED(hr))
       {
         RDCERR("Failed to create CPU descriptor heap for initial state: 0x%08x", hr);
         return false;
       }
+
+      copyheap = new WrappedID3D12DescriptorHeap(copyheap, m_Device, desc);
 
       D3D12_CPU_DESCRIPTOR_HANDLE handle = copyheap->GetCPUDescriptorHandleForHeapStart();
 
@@ -812,7 +1053,7 @@ bool D3D12ResourceManager::Serialise_InitialState(ResourceId resid, ID3D12Device
     }
     else
     {
-      RDCUNIMPLEMENTED("init states");
+      RDCERR("Unexpected type needing an initial state serialised in: %d", type);
       return false;
     }
   }
@@ -832,13 +1073,13 @@ void D3D12ResourceManager::Create_InitialState(ResourceId id, ID3D12DeviceChild 
   }
   else if(type == Resource_Resource)
   {
-    D3D12NOTIMP("resource init states");
+    D3D12NOTIMP("Creating init states for resources");
 
     // not handling any missing states at the moment
   }
   else
   {
-    RDCUNIMPLEMENTED("init states");
+    RDCERR("Unexpected type needing an initial state created: %d", type);
   }
 }
 
@@ -960,7 +1201,7 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live, InitialCo
       }
       else
       {
-        ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetNewList());
+        ID3D12GraphicsCommandList *list = Unwrap(m_Device->GetInitialStateList());
 
         vector<D3D12_RESOURCE_BARRIER> barriers;
 
@@ -1030,9 +1271,8 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live, InitialCo
         if(!barriers.empty())
           list->ResourceBarrier((UINT)barriers.size(), &barriers[0]);
 
-        list->Close();
-
-#if defined(SINGLE_FLUSH_VALIDATE)
+#if ENABLED(SINGLE_FLUSH_VALIDATE)
+        m_Device->CloseInitialStateList();
         m_Device->ExecuteLists();
         m_Device->FlushLists(true);
 #endif
@@ -1040,11 +1280,11 @@ void D3D12ResourceManager::Apply_InitialState(ID3D12DeviceChild *live, InitialCo
     }
     else
     {
-      D3D12NOTIMP("resource init states");
+      RDCERR("Unexpected num or NULL resource: %d, %p", data.num, data.resource);
     }
   }
   else
   {
-    RDCUNIMPLEMENTED("init states");
+    RDCERR("Unexpected type needing an initial state created: %d", type);
   }
 }

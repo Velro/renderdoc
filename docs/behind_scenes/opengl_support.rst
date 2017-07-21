@@ -10,7 +10,16 @@ OpenGL requirements, and limitations
 
 RenderDoc only supports the core profile of OpenGL - from 3.2 up to 4.5 inclusive. This means any compatibility profile functionality will generally not be supported. There are a couple of concessions where it was easy to do so - like allowing the use of VAO 0, or luminance/intensity formats, but this in general will not happen. Note that to be more compatible with applications, RenderDoc will still attempt to capture on an older context, or on a compatibility context, but it will not replay successfully unless the given subset of functionality is used.
 
-RenderDoc assumes your hardware/software configuration is able to create a core 4.3 context for replay, and also that ``EXT_direct_state_access`` and ``ARB_buffer_storage`` are available, both on replay and in capture.
+RenderDoc assumes a certain minimum feature set on replay. You must be able to create a 3.2 context with the following extensions available:
+
+* GL_ARB_vertex_attrib_binding
+* GL_ARB_program_interface_query
+* GL_ARB_shading_language_420pack
+* GL_ARB_separate_shader_objects
+* GL_ARB_explicit_attrib_location
+* GL_ARB_sampler_objects
+
+These extensions should not require newer hardware than the base 3.2 context, but they might need an updated driver to be listed as available. Also note that this is the *minimum* required extension set to replay, various features will be disabled unless you have more capable hardware features such as GL_ARB_shader_image_load_store, GL_ARB_compute_shader and GL_ARB_gpu_shader5.
 
 Regarding multiple contexts and multithreading, RenderDoc assumes that all GL commands (with the exception of perhaps a SwapBuffers call) for frames will come from a single thread, and that all contexts are set up to share objects with each other. This means that e.g. if commands come from a second thread during loading, or some time during initialisation, this will be supported only if the second context shares with the primary context. During frame capture all commands are serialised as if they come from a single thread.
 
@@ -29,7 +38,7 @@ There are several places where OpenGL is not yet at feature parity with D3D11.
 Linux and OS X
 --------------
 
-Linux and OS X support follows naturally when thinking about OpenGL support. Currently there is full support for capturing and replaying on linux, however the Qt UI is still heavily work in progress. The recommended method is to capture on linux, and then replay on windows. For more information on this see :doc:`../how/how_network_capture_replay`.
+Linux and OS X support follows naturally when thinking about OpenGL support. There is full support for capturing and replaying on linux, with the UI based on Qt. It is also possible to capture on linux, and then replay on windows. For more information on this see :doc:`../how/how_network_capture_replay`.
 
 See Also
 --------

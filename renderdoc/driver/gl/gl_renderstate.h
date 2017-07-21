@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -30,9 +30,10 @@
 #include "gl_hookset.h"
 #include "gl_manager.h"
 
-struct PixelUnpackState
+struct PixelStorageState
 {
   int32_t swapBytes;
+  int32_t lsbFirst;    // deprecated since OpenGL 4.3 core profile
   int32_t rowlength, imageheight;
   int32_t skipPixels, skipRows, skipImages;
   int32_t alignment;
@@ -40,6 +41,18 @@ struct PixelUnpackState
   int32_t compressedBlockWidth, compressedBlockHeight, compressedBlockDepth;
   int32_t compressedBlockSize;
 
+protected:
+  PixelStorageState();
+};
+
+struct PixelPackState : public PixelStorageState
+{
+  void Fetch(const GLHookSet *funcs, bool compressed);
+  void Apply(const GLHookSet *funcs, bool compressed);
+};
+
+struct PixelUnpackState : public PixelStorageState
+{
   void Fetch(const GLHookSet *funcs, bool compressed);
   void Apply(const GLHookSet *funcs, bool compressed);
 
@@ -51,6 +64,9 @@ struct PixelUnpackState
   byte *UnpackCompressed(byte *pixels, GLsizei width, GLsizei height, GLsizei depth,
                          GLsizei &imageSize);
 };
+
+void ResetPixelPackState(const GLHookSet &gl, bool compressed, GLint alignment);
+void ResetPixelUnpackState(const GLHookSet &gl, bool compressed, GLint alignment);
 
 struct GLRenderState
 {
@@ -169,6 +185,13 @@ struct GLRenderState
   float PointSize;
 
   uint32_t PrimitiveRestartIndex;
+
+  struct BoundingBox
+  {
+    float minX, minY, minZ, minW;
+    float maxX, maxY, maxZ, maxW;
+  } PrimitiveBoundingBox;
+
   GLenum ClipOrigin, ClipDepth;
   GLenum ProvokingVertex;
 
@@ -200,6 +223,11 @@ struct GLRenderState
     bool enabled;
   } Scissors[16];
 
+  struct
+  {
+    double nearZ, farZ;
+  } DepthRanges[16];
+
   GLuint ReadFBO, DrawFBO;
 
   // these refer to the states on the default framebuffer.
@@ -220,10 +248,6 @@ struct GLRenderState
   uint8_t DepthWriteMask;
   float DepthClearValue;
   GLenum DepthFunc;
-  struct
-  {
-    double nearZ, farZ;
-  } DepthRanges[16];
 
   struct
   {
@@ -281,4 +305,5 @@ private:
   const GLHookSet *m_Real;
 
   Serialiser *GetSerialiser() { return m_pSerialiser; }
+  bool CheckEnableDisableParam(GLenum pname);
 };

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -29,7 +29,7 @@
 #include "driver/shaders/spirv/spirv_common.h"
 #include "serialise/string_utils.h"
 
-void WrappedOpenGL::ShaderData::Compile(WrappedOpenGL &gl)
+void WrappedOpenGL::ShaderData::Compile(WrappedOpenGL &gl, ResourceId id)
 {
   bool pointSizeUsed = false, clipDistanceUsed = false;
   if(type == eGL_VERTEX_SHADER)
@@ -73,13 +73,17 @@ void WrappedOpenGL::ShaderData::Compile(WrappedOpenGL &gl)
 
     vector<uint32_t> spirvwords;
 
-    string s = CompileSPIRV(SPIRVShaderStage(ShaderIdx(type)), sources, spirvwords);
+    SPIRVCompilationSettings settings(SPIRVSourceLanguage::OpenGLGLSL,
+                                      SPIRVShaderStage(ShaderIdx(type)));
+
+    string s = CompileSPIRV(settings, sources, spirvwords);
     if(!spirvwords.empty())
       ParseSPIRV(&spirvwords.front(), spirvwords.size(), spirv);
 
-    // for classic GL, entry point is always main
-    reflection.Disassembly = spirv.Disassemble("main");
+    reflection.ID = id;
+    reflection.EntryPoint = "main";
 
+    // TODO sort these so that the first file contains the entry point
     create_array_uninit(reflection.DebugInfo.files, sources.size());
     for(size_t i = 0; i < sources.size(); i++)
     {
@@ -183,6 +187,21 @@ bool WrappedOpenGL::Serialise_glShaderSource(GLuint shader, GLsizei count,
 
     m_Real.glShaderSource(GetResourceManager()->GetLiveResource(id).name, Count, strings, NULL);
 
+    // if we've already disassembled this shader, undo all that.
+    // Note this means we don't support compiling the same shader multiple times
+    // attached to different programs, but that is *utterly crazy* and anyone
+    // who tries to actually do that should be ashamed.
+    // Doing this means we support the case of recompiling a shader different ways
+    // and relinking a program before use, which is still moderately crazy and
+    // so people who do that should be moderately ashamed.
+    if(m_Shaders[liveId].prog)
+    {
+      m_Real.glDeleteProgram(m_Shaders[liveId].prog);
+      m_Shaders[liveId].prog = 0;
+      m_Shaders[liveId].spirv = SPVModule();
+      m_Shaders[liveId].reflection = ShaderReflection();
+    }
+
     delete[] strings;
   }
 
@@ -226,7 +245,7 @@ bool WrappedOpenGL::Serialise_glCompileShader(GLuint shader)
   {
     ResourceId liveId = GetResourceManager()->GetLiveID(id);
 
-    m_Shaders[liveId].Compile(*this);
+    m_Shaders[liveId].Compile(*this, id);
 
     m_Real.glCompileShader(GetResourceManager()->GetLiveResource(id).name);
   }
@@ -253,7 +272,8 @@ void WrappedOpenGL::glCompileShader(GLuint shader)
   }
   else
   {
-    m_Shaders[GetResourceManager()->GetID(ShaderRes(GetCtx(), shader))].Compile(*this);
+    ResourceId id = GetResourceManager()->GetID(ShaderRes(GetCtx(), shader));
+    m_Shaders[id].Compile(*this, id);
   }
 }
 
@@ -332,6 +352,10 @@ bool WrappedOpenGL::Serialise_glDetachShader(GLuint program, GLuint shader)
     ResourceId liveProgId = GetResourceManager()->GetLiveID(progid);
     ResourceId liveShadId = GetResourceManager()->GetLiveID(shadid);
 
+    // in order to be able to relink programs, we don't replay detaches. This should be valid as
+    // it's legal to have a shader attached to multiple programs, so even if it's attached again
+    // that doesn't affect the attach here.
+    /*
     if(!m_Programs[liveProgId].linked)
     {
       for(auto it = m_Programs[liveProgId].shaders.begin();
@@ -347,6 +371,7 @@ bool WrappedOpenGL::Serialise_glDetachShader(GLuint program, GLuint shader)
 
     m_Real.glDetachShader(GetResourceManager()->GetLiveResource(progid).name,
                           GetResourceManager()->GetLiveResource(shadid).name);
+    */
   }
 
   return true;
@@ -436,6 +461,7 @@ bool WrappedOpenGL::Serialise_glCreateShaderProgramv(GLuint program, GLenum type
     progDetails.linked = true;
     progDetails.shaders.push_back(liveId);
     progDetails.stageShaders[ShaderIdx(Type)] = liveId;
+    progDetails.shaderProgramUnlinkable = true;
 
     auto &shadDetails = m_Shaders[liveId];
 
@@ -443,7 +469,7 @@ bool WrappedOpenGL::Serialise_glCreateShaderProgramv(GLuint program, GLenum type
     shadDetails.sources.swap(src);
     shadDetails.prog = sepprog;
 
-    shadDetails.Compile(*this);
+    shadDetails.Compile(*this, id);
 
     GetResourceManager()->AddLiveResource(id, res);
   }
@@ -454,6 +480,9 @@ bool WrappedOpenGL::Serialise_glCreateShaderProgramv(GLuint program, GLenum type
 GLuint WrappedOpenGL::glCreateShaderProgramv(GLenum type, GLsizei count, const GLchar *const *strings)
 {
   GLuint real = m_Real.glCreateShaderProgramv(type, count, strings);
+
+  if(real == 0)
+    return real;
 
   GLResource res = ProgramRes(GetCtx(), real);
   ResourceId id = GetResourceManager()->RegisterResource(res);
@@ -500,7 +529,7 @@ GLuint WrappedOpenGL::glCreateShaderProgramv(GLenum type, GLsizei count, const G
     shadDetails.sources.swap(src);
     shadDetails.prog = sepprog;
 
-    shadDetails.Compile(*this);
+    shadDetails.Compile(*this, id);
   }
 
   return real;
@@ -1443,7 +1472,7 @@ bool WrappedOpenGL::Serialise_glCompileShaderIncludeARB(GLuint shader, GLsizei c
     for(int32_t i = 0; i < Count; i++)
       shadDetails.includepaths.push_back(pathstrings[i]);
 
-    shadDetails.Compile(*this);
+    shadDetails.Compile(*this, id);
 
     m_Real.glCompileShaderIncludeARB(GetResourceManager()->GetLiveResource(id).name, Count,
                                      pathstrings, NULL);
@@ -1484,7 +1513,7 @@ void WrappedOpenGL::glCompileShaderIncludeARB(GLuint shader, GLsizei count,
     for(int32_t i = 0; i < count; i++)
       shadDetails.includepaths.push_back(path[i]);
 
-    shadDetails.Compile(*this);
+    shadDetails.Compile(*this, id);
   }
 }
 

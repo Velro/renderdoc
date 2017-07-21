@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <tuple>
 #include <vector>
 
 // we provide a basic templated type that is a fixed array that just contains a pointer to the
@@ -46,7 +47,18 @@ struct pair
 {
   A first;
   B second;
+
+  operator std::tuple<A &, B &>() { return std::tie(first, second); }
 };
+
+template <typename A, typename B>
+pair<A, B> make_pair(const A &a, const B &b)
+{
+  pair<A, B> ret;
+  ret.first = a;
+  ret.second = b;
+  return ret;
+}
 
 template <typename T>
 struct array
@@ -75,14 +87,6 @@ struct array
 
   T &operator[](size_t i) { return elems[i]; }
   const T &operator[](size_t i) const { return elems[i]; }
-  array(const T *const in)
-  {
-    elems = 0;
-    count = 0;
-    *this = in;
-  }
-  array &operator=(const T *const in);
-
   array(const std::vector<T> &in)
   {
     elems = 0;
@@ -102,6 +106,33 @@ struct array
       elems = (T *)allocate(sizeof(T) * count);
       for(int32_t i = 0; i < count; i++)
         new(elems + i) T(in[i]);
+    }
+    return *this;
+  }
+
+  array(const std::initializer_list<T> &in)
+  {
+    elems = 0;
+    count = 0;
+    *this = in;
+  }
+  array &operator=(const std::initializer_list<T> &in)
+  {
+    Delete();
+    count = (int32_t)in.size();
+    if(count == 0)
+    {
+      elems = 0;
+    }
+    else
+    {
+      elems = (T *)allocate(sizeof(T) * count);
+      int i = 0;
+      for(const T &t : in)
+      {
+        new(elems + i) T(t);
+        i++;
+      }
     }
     return *this;
   }
@@ -134,13 +165,33 @@ struct array
     return *this;
   }
 
+  void create(int sz)
+  {
+    Delete();
+    count = sz;
+    if(sz == 0)
+    {
+      elems = 0;
+    }
+    else
+    {
+      elems = (T *)allocate(sizeof(T) * count);
+      memset(elems, 0, sizeof(T) * count);
+    }
+  }
+
   // provide some of the familiar stl interface
   size_t size() const { return (size_t)count; }
+  void clear() { Delete(); }
   bool empty() const { return count == 0; }
   T *begin() { return elems ? elems : end(); }
   T *end() { return elems ? elems + count : NULL; }
+  T &front() { return *elems; }
+  T &back() { return *(elems + count - 1); }
   const T *begin() const { return elems ? elems : end(); }
   const T *end() const { return elems ? elems + count : NULL; }
+  const T &front() const { return *elems; }
+  const T &back() const { return *(elems + count - 1); }
 };
 
 struct str : public rdctype::array<char>
@@ -178,5 +229,41 @@ struct str : public rdctype::array<char>
   operator const char *() const { return elems ? elems : ""; }
   const char *c_str() const { return elems ? elems : ""; }
 };
+
+inline str &str::operator=(const std::string &in)
+{
+  Delete();
+  count = (int32_t)in.size();
+  if(count == 0)
+  {
+    elems = (char *)allocate(sizeof(char));
+    elems[0] = 0;
+  }
+  else
+  {
+    elems = (char *)allocate(sizeof(char) * (count + 1));
+    memcpy(elems, &in[0], sizeof(char) * in.size());
+    elems[count] = 0;
+  }
+  return *this;
+}
+
+inline str &str::operator=(const char *const in)
+{
+  Delete();
+  count = (int32_t)strlen(in);
+  if(count == 0)
+  {
+    elems = (char *)allocate(sizeof(char));
+    elems[0] = 0;
+  }
+  else
+  {
+    elems = (char *)allocate(sizeof(char) * (count + 1));
+    memcpy(elems, &in[0], sizeof(char) * count);
+    elems[count] = 0;
+  }
+  return *this;
+}
 
 };    // namespace rdctype

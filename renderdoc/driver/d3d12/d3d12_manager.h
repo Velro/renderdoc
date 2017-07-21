@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include "api/replay/renderdoc_replay.h"
 #include "common/wrapped_pool.h"
 #include "core/core.h"
@@ -46,6 +47,7 @@ enum D3D12ResourceType
   Resource_Resource,
   Resource_GraphicsCommandList,
   Resource_RootSignature,
+  Resource_PipelineLibrary,
 };
 
 class WrappedID3D12DescriptorHeap;
@@ -140,6 +142,20 @@ struct D3D12Descriptor
     return nonsamp.type;
   }
 
+  operator D3D12_CPU_DESCRIPTOR_HANDLE() const
+  {
+    D3D12_CPU_DESCRIPTOR_HANDLE handle;
+    handle.ptr = (SIZE_T) this;
+    return handle;
+  }
+
+  operator D3D12_GPU_DESCRIPTOR_HANDLE() const
+  {
+    D3D12_GPU_DESCRIPTOR_HANDLE handle;
+    handle.ptr = (SIZE_T) this;
+    return handle;
+  }
+
   void Init(const D3D12_SAMPLER_DESC *pDesc);
   void Init(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc);
   void Init(ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc);
@@ -151,6 +167,7 @@ struct D3D12Descriptor
   void Create(D3D12_DESCRIPTOR_HEAP_TYPE heapType, WrappedID3D12Device *dev,
               D3D12_CPU_DESCRIPTOR_HANDLE handle);
   void CopyFrom(const D3D12Descriptor &src);
+  void GetRefIDs(ResourceId &id, ResourceId &id2, FrameRefType &ref);
 
   union
   {
@@ -204,6 +221,8 @@ inline D3D12Descriptor *GetWrapped(D3D12_GPU_DESCRIPTOR_HANDLE handle)
 
 D3D12_CPU_DESCRIPTOR_HANDLE Unwrap(D3D12_CPU_DESCRIPTOR_HANDLE handle);
 D3D12_GPU_DESCRIPTOR_HANDLE Unwrap(D3D12_GPU_DESCRIPTOR_HANDLE handle);
+D3D12_CPU_DESCRIPTOR_HANDLE UnwrapCPU(D3D12Descriptor *handle);
+D3D12_GPU_DESCRIPTOR_HANDLE UnwrapGPU(D3D12Descriptor *handle);
 
 struct PortableHandle
 {
@@ -216,12 +235,34 @@ struct PortableHandle
 
 class D3D12ResourceManager;
 
+PortableHandle ToPortableHandle(D3D12Descriptor *handle);
 PortableHandle ToPortableHandle(D3D12_CPU_DESCRIPTOR_HANDLE handle);
 PortableHandle ToPortableHandle(D3D12_GPU_DESCRIPTOR_HANDLE handle);
 D3D12_CPU_DESCRIPTOR_HANDLE CPUHandleFromPortableHandle(D3D12ResourceManager *manager,
                                                         PortableHandle handle);
 D3D12_GPU_DESCRIPTOR_HANDLE GPUHandleFromPortableHandle(D3D12ResourceManager *manager,
                                                         PortableHandle handle);
+D3D12Descriptor *DescriptorFromPortableHandle(D3D12ResourceManager *manager, PortableHandle handle);
+
+struct DynamicDescriptorWrite
+{
+  D3D12Descriptor desc;
+
+  D3D12Descriptor *dest;
+};
+
+struct DynamicDescriptorCopy
+{
+  DynamicDescriptorCopy() : dst(NULL), src(NULL), type(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {}
+  DynamicDescriptorCopy(D3D12Descriptor *d, D3D12Descriptor *s, D3D12_DESCRIPTOR_HEAP_TYPE t)
+      : dst(d), src(s), type(t)
+  {
+  }
+
+  D3D12Descriptor *dst;
+  D3D12Descriptor *src;
+  D3D12_DESCRIPTOR_HEAP_TYPE type;
+};
 
 struct D3D12ResourceRecord;
 
@@ -235,10 +276,95 @@ struct CmdListRecordingInfo
   // a list of descriptors that are bound at any point in this command list
   // used to look up all the frame refs per-descriptor and apply them on queue
   // submit with latest binding refs.
-  set<D3D12Descriptor *> boundDescs;
+  // We allow duplicates in here since it's a better tradeoff to let the vector
+  // expand a bit more to contain duplicates and then deal with it during frame
+  // capture, than to constantly be deduplicating during record (e.g. with a
+  // set or sorted vector).
+  vector<D3D12Descriptor *> boundDescs;
 
   // bundles executed
   vector<D3D12ResourceRecord *> bundles;
+};
+
+class WrappedID3D12Resource;
+
+struct GPUAddressRange
+{
+  D3D12_GPU_VIRTUAL_ADDRESS start, end;
+  ResourceId id;
+
+  bool operator<(const D3D12_GPU_VIRTUAL_ADDRESS &o) const
+  {
+    if(o < start)
+      return true;
+
+    return false;
+  }
+};
+
+struct GPUAddressRangeTracker
+{
+  GPUAddressRangeTracker() {}
+  // no copying
+  GPUAddressRangeTracker(const GPUAddressRangeTracker &);
+  GPUAddressRangeTracker &operator=(const GPUAddressRangeTracker &);
+
+  std::vector<GPUAddressRange> addresses;
+  Threading::CriticalSection addressLock;
+
+  void AddTo(GPUAddressRange range)
+  {
+    SCOPED_LOCK(addressLock);
+    auto it = std::lower_bound(addresses.begin(), addresses.end(), range.start);
+    RDCASSERT(it == addresses.begin() || it == addresses.end() || range.start < it->start ||
+              range.start >= it->end);
+
+    addresses.insert(it, range);
+  }
+
+  void RemoveFrom(D3D12_GPU_VIRTUAL_ADDRESS baseAddr)
+  {
+    SCOPED_LOCK(addressLock);
+    auto it = std::lower_bound(addresses.begin(), addresses.end(), baseAddr);
+    RDCASSERT(it != addresses.end() && baseAddr >= it->start && baseAddr < it->end);
+
+    addresses.erase(it);
+  }
+
+  void GetResIDFromAddr(D3D12_GPU_VIRTUAL_ADDRESS addr, ResourceId &id, UINT64 &offs)
+  {
+    id = ResourceId();
+    offs = 0;
+
+    if(addr == 0)
+      return;
+
+    GPUAddressRange range;
+
+    // this should really be a read-write lock
+    {
+      SCOPED_LOCK(addressLock);
+
+      auto it = std::lower_bound(addresses.begin(), addresses.end(), addr);
+      if(it == addresses.end())
+        return;
+
+      range = *it;
+    }
+
+    if(addr < range.start || addr >= range.end)
+      return;
+
+    id = range.id;
+    offs = addr - range.start;
+  }
+};
+
+struct MapState
+{
+  WrappedID3D12Resource *res;
+  UINT subres;
+  UINT64 totalSize;
 };
 
 struct D3D12ResourceRecord : public ResourceRecord
@@ -249,10 +375,14 @@ struct D3D12ResourceRecord : public ResourceRecord
   };
 
   D3D12ResourceRecord(ResourceId id)
-      : ResourceRecord(id, true), type(Resource_Unknown), cmdInfo(NULL), bakedCommands(NULL)
+      : ResourceRecord(id, true),
+        type(Resource_Unknown),
+        ContainsExecuteIndirect(false),
+        cmdInfo(NULL),
+        bakedCommands(NULL)
   {
   }
-  ~D3D12ResourceRecord() {}
+  ~D3D12ResourceRecord() { SAFE_DELETE(cmdInfo); }
   void Bake()
   {
     RDCASSERT(cmdInfo);
@@ -282,8 +412,19 @@ struct D3D12ResourceRecord : public ResourceRecord
   }
 
   D3D12ResourceType type;
+  bool ContainsExecuteIndirect;
   D3D12ResourceRecord *bakedCommands;
   CmdListRecordingInfo *cmdInfo;
+
+  struct MapData
+  {
+    MapData() : refcount(0), realPtr(NULL), shadowPtr(NULL) {}
+    volatile int32_t refcount;
+    byte *realPtr;
+    byte *shadowPtr;
+  };
+
+  vector<MapData> m_Map;
 };
 
 typedef vector<D3D12_RESOURCE_STATES> SubresourceStateVector;

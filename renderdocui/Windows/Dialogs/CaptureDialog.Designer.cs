@@ -64,7 +64,7 @@
             this.load = new System.Windows.Forms.Button();
             this.save = new System.Windows.Forms.Button();
             this.close = new System.Windows.Forms.Button();
-            this.capture = new System.Windows.Forms.Button();
+            this.launch = new System.Windows.Forms.Button();
             this.exeBrowser = new System.Windows.Forms.OpenFileDialog();
             this.workDirBrowser = new System.Windows.Forms.FolderBrowserDialog();
             this.saveDialog = new System.Windows.Forms.SaveFileDialog();
@@ -141,9 +141,11 @@
             label5.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
             label5.AutoEllipsis = true;
+            label5.Font = new System.Drawing.Font("Microsoft Sans Serif", 14.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            label5.ForeColor = System.Drawing.Color.Red;
             label5.Location = new System.Drawing.Point(9, 16);
             label5.Name = "label5";
-            label5.Size = new System.Drawing.Size(179, 23);
+            label5.Size = new System.Drawing.Size(179, 35);
             label5.TabIndex = 3;
             label5.Text = "NOTE: Injecting only works when the process has not used the target API";
             // 
@@ -186,7 +188,7 @@
             this.actionsGroup.AutoSize = true;
             this.actionsGroup.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
             this.actionsGroup.Controls.Add(this.actionsFlow);
-            this.actionsGroup.Location = new System.Drawing.Point(10, 511);
+            this.actionsGroup.Location = new System.Drawing.Point(10, 531);
             this.actionsGroup.Margin = new System.Windows.Forms.Padding(10);
             this.actionsGroup.Name = "actionsGroup";
             this.actionsGroup.Size = new System.Drawing.Size(195, 65);
@@ -246,7 +248,7 @@
             this.globalGroup.AutoSize = true;
             this.globalGroup.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
             this.globalGroup.Controls.Add(this.globalFlow);
-            this.globalGroup.Location = new System.Drawing.Point(10, 596);
+            this.globalGroup.Location = new System.Drawing.Point(10, 616);
             this.globalGroup.Margin = new System.Windows.Forms.Padding(10);
             this.globalGroup.Name = "globalGroup";
             this.globalGroup.Size = new System.Drawing.Size(195, 80);
@@ -285,7 +287,7 @@
             this.capOptsGroup.AutoSize = true;
             this.capOptsGroup.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
             this.capOptsGroup.Controls.Add(this.capOptsFlow);
-            this.capOptsGroup.Location = new System.Drawing.Point(10, 378);
+            this.capOptsGroup.Location = new System.Drawing.Point(10, 398);
             this.capOptsGroup.Margin = new System.Windows.Forms.Padding(10);
             this.capOptsGroup.Name = "capOptsGroup";
             this.capOptsGroup.Size = new System.Drawing.Size(195, 113);
@@ -470,8 +472,8 @@
             this.panel2.Controls.Add(this.load);
             this.panel2.Controls.Add(this.save);
             this.panel2.Controls.Add(this.close);
-            this.panel2.Controls.Add(this.capture);
-            this.panel2.Location = new System.Drawing.Point(3, 689);
+            this.panel2.Controls.Add(this.launch);
+            this.panel2.Location = new System.Drawing.Point(3, 709);
             this.panel2.Name = "panel2";
             this.panel2.Size = new System.Drawing.Size(209, 26);
             this.panel2.TabIndex = 8;
@@ -514,16 +516,16 @@
             // 
             // capture
             // 
-            this.capture.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
-            this.capture.Location = new System.Drawing.Point(104, 3);
-            this.capture.Margin = new System.Windows.Forms.Padding(0);
-            this.capture.Name = "capture";
-            this.capture.Size = new System.Drawing.Size(52, 23);
-            this.capture.TabIndex = 21;
-            this.capture.Text = "Capture";
-            this.toolTip.SetToolTip(this.capture, "Trigger a capture of the selected program");
-            this.capture.UseVisualStyleBackColor = true;
-            this.capture.Click += new System.EventHandler(this.capture_Click);
+            this.launch.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
+            this.launch.Location = new System.Drawing.Point(104, 3);
+            this.launch.Margin = new System.Windows.Forms.Padding(0);
+            this.launch.Name = "capture";
+            this.launch.Size = new System.Drawing.Size(52, 23);
+            this.launch.TabIndex = 21;
+            this.launch.Text = "Launch";
+            this.toolTip.SetToolTip(this.launch, "Trigger a capture of the selected program");
+            this.launch.UseVisualStyleBackColor = true;
+            this.launch.Click += new System.EventHandler(this.launch_Click);
             // 
             // exeBrowser
             // 
@@ -614,7 +616,7 @@
             // pidRefresh
             // 
             this.pidRefresh.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
-            this.pidRefresh.Location = new System.Drawing.Point(113, 118);
+            this.pidRefresh.Location = new System.Drawing.Point(113, 128);
             this.pidRefresh.Name = "pidRefresh";
             this.pidRefresh.Size = new System.Drawing.Size(75, 23);
             this.pidRefresh.TabIndex = 6;
@@ -636,15 +638,16 @@
             this.pidList.GridLines = true;
             this.pidList.HideSelection = false;
             this.pidList.LabelWrap = false;
-            this.pidList.Location = new System.Drawing.Point(6, 42);
+            this.pidList.Location = new System.Drawing.Point(6, 54);
             this.pidList.MultiSelect = false;
             this.pidList.Name = "pidList";
-            this.pidList.Size = new System.Drawing.Size(182, 70);
+            this.pidList.Size = new System.Drawing.Size(182, 68);
             this.pidList.TabIndex = 5;
             this.toolTip.SetToolTip(this.pidList, "Select the process to inject into - must not yet have utilised the target API");
             this.pidList.UseCompatibleStateImageBehavior = false;
             this.pidList.View = System.Windows.Forms.View.Details;
             this.pidList.ColumnClick += new System.Windows.Forms.ColumnClickEventHandler(this.pidList_ColumnClick);
+            this.pidList.MouseDoubleClick += new System.Windows.Forms.MouseEventHandler(this.pidList_MouseDoubleClick);
             this.pidList.Resize += new System.EventHandler(this.pidList_Resize);
             // 
             // winTitle
@@ -681,7 +684,7 @@
             // 
             this.processFilter.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
-            this.processFilter.Location = new System.Drawing.Point(6, 120);
+            this.processFilter.Location = new System.Drawing.Point(6, 130);
             this.processFilter.Name = "processFilter";
             this.processFilter.Size = new System.Drawing.Size(103, 20);
             this.processFilter.TabIndex = 7;
@@ -713,7 +716,7 @@
             this.mainTableLayout.RowStyles.Add(new System.Windows.Forms.RowStyle());
             this.mainTableLayout.RowStyles.Add(new System.Windows.Forms.RowStyle());
             this.mainTableLayout.RowStyles.Add(new System.Windows.Forms.RowStyle());
-            this.mainTableLayout.Size = new System.Drawing.Size(215, 718);
+            this.mainTableLayout.Size = new System.Drawing.Size(215, 738);
             this.mainTableLayout.TabIndex = 8;
             this.mainTableLayout.Layout += new System.Windows.Forms.LayoutEventHandler(this.mainTableLayout_Layout);
             // 
@@ -749,9 +752,9 @@
             this.processGroup.Dock = System.Windows.Forms.DockStyle.Fill;
             this.processGroup.Location = new System.Drawing.Point(10, 164);
             this.processGroup.Margin = new System.Windows.Forms.Padding(10);
-            this.processGroup.MinimumSize = new System.Drawing.Size(0, 150);
+            this.processGroup.MinimumSize = new System.Drawing.Size(0, 160);
             this.processGroup.Name = "processGroup";
-            this.processGroup.Size = new System.Drawing.Size(195, 150);
+            this.processGroup.Size = new System.Drawing.Size(195, 160);
             this.processGroup.TabIndex = 9;
             this.processGroup.TabStop = false;
             this.processGroup.Text = "Process";
@@ -765,7 +768,7 @@
             this.vulkanLayerWarn.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.vulkanLayerWarn.Image = global::renderdocui.Properties.Resources.information;
             this.vulkanLayerWarn.ImageAlign = System.Drawing.ContentAlignment.MiddleLeft;
-            this.vulkanLayerWarn.Location = new System.Drawing.Point(3, 320);
+            this.vulkanLayerWarn.Location = new System.Drawing.Point(3, 340);
             this.vulkanLayerWarn.Margin = new System.Windows.Forms.Padding(3, 10, 3, 10);
             this.vulkanLayerWarn.Name = "vulkanLayerWarn";
             this.vulkanLayerWarn.Size = new System.Drawing.Size(209, 38);
@@ -782,7 +785,7 @@
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.AutoScroll = true;
             this.AutoScrollMinSize = new System.Drawing.Size(215, 0);
-            this.ClientSize = new System.Drawing.Size(196, 734);
+            this.ClientSize = new System.Drawing.Size(196, 754);
             this.Controls.Add(this.mainTableLayout);
             this.Font = new System.Drawing.Font("Microsoft Sans Serif", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.Name = "CaptureDialog";
@@ -816,7 +819,7 @@
 
         #endregion
 
-        private System.Windows.Forms.Button capture;
+        private System.Windows.Forms.Button launch;
         private System.Windows.Forms.Button close;
         private System.Windows.Forms.CheckBox AllowVSync;
         private System.Windows.Forms.CheckBox APIValidation;

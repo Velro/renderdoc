@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -55,7 +55,7 @@ void DescSetLayout::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo 
 
     if(pCreateInfo->pBindings[i].pImmutableSamplers)
     {
-      bindings[b].immutableSampler = new ResourceId[bindings[i].descriptorCount];
+      bindings[b].immutableSampler = new ResourceId[bindings[b].descriptorCount];
 
       for(uint32_t s = 0; s < bindings[b].descriptorCount; s++)
       {
@@ -79,6 +79,45 @@ void DescSetLayout::CreateBindingsArray(vector<DescriptorSetSlot *> &descBinding
     descBindings[i] = new DescriptorSetSlot[bindings[i].descriptorCount];
     memset(descBindings[i], 0, sizeof(DescriptorSetSlot) * bindings[i].descriptorCount);
   }
+}
+
+bool DescSetLayout::operator==(const DescSetLayout &other) const
+{
+  // shortcut for equality to ourselves
+  if(this == &other)
+    return true;
+
+  // descriptor set layouts are different if they have different set of bindings.
+  if(bindings.size() != other.bindings.size())
+    return false;
+
+  // iterate over each binding (we know this loop indexes validly in both arrays
+  for(size_t i = 0; i < bindings.size(); i++)
+  {
+    const Binding &a = bindings[i];
+    const Binding &b = other.bindings[i];
+
+    // if the type/stages/count are different, the layout is different
+    if(a.descriptorCount != b.descriptorCount || a.descriptorType != b.descriptorType ||
+       a.stageFlags != b.stageFlags)
+      return false;
+
+    // if one has immutable samplers but the other doesn't, they're different
+    if((a.immutableSampler && !b.immutableSampler) || (!a.immutableSampler && b.immutableSampler))
+      return false;
+
+    // if we DO have immutable samplers, they must all point to the same sampler objects.
+    if(a.immutableSampler)
+    {
+      for(uint32_t s = 0; s < a.descriptorCount; s++)
+      {
+        if(a.immutableSampler[s] != b.immutableSampler[s])
+          return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,
@@ -109,10 +148,21 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, Vulk
 
     if(reflData.entryPoint.empty())
     {
+      SPVModule &spv = info.m_ShaderModule[id].spirv;
+      spv.MakeReflection(ShaderStage(reflData.stage), reflData.entryPoint, reflData.refl,
+                         reflData.mapping, reflData.patchData);
+
       reflData.entryPoint = shad.entryPoint;
       reflData.stage = stageIndex;
-      info.m_ShaderModule[id].spirv.MakeReflection(reflData.entryPoint, &reflData.refl,
-                                                   &reflData.mapping);
+      reflData.refl.ID = resourceMan->GetOriginalID(id);
+      reflData.refl.EntryPoint = shad.entryPoint;
+
+      if(!spv.spirv.empty())
+      {
+        rdctype::array<byte> &bytes = reflData.refl.RawBytes;
+        const vector<uint32_t> &spirv = spv.spirv;
+        create_array_init(bytes, spirv.size() * sizeof(uint32_t), (byte *)&spirv[0]);
+      }
     }
 
     if(pCreateInfo->pStages[i].pSpecializationInfo)
@@ -135,6 +185,7 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, Vulk
 
     shad.refl = &reflData.refl;
     shad.mapping = &reflData.mapping;
+    shad.patchData = &reflData.patchData;
   }
 
   if(pCreateInfo->pVertexInputState)
@@ -325,8 +376,11 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, Vulk
     if(reflData.entryPoint.empty())
     {
       reflData.entryPoint = shad.entryPoint;
-      info.m_ShaderModule[id].spirv.MakeReflection(reflData.entryPoint, &reflData.refl,
-                                                   &reflData.mapping);
+      info.m_ShaderModule[id].spirv.MakeReflection(ShaderStage::Compute, reflData.entryPoint,
+                                                   reflData.refl, reflData.mapping,
+                                                   reflData.patchData);
+      reflData.refl.ID = resourceMan->GetOriginalID(id);
+      reflData.refl.EntryPoint = shad.entryPoint;
     }
 
     if(pCreateInfo->stage.pSpecializationInfo)
@@ -347,6 +401,7 @@ void VulkanCreationInfo::Pipeline::Init(VulkanResourceManager *resourceMan, Vulk
 
     shad.refl = &reflData.refl;
     shad.mapping = &reflData.mapping;
+    shad.patchData = &reflData.patchData;
   }
 
   topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -420,9 +475,12 @@ void VulkanCreationInfo::RenderPass::Init(VulkanResourceManager *resourceMan,
     }
 
     dst.colorAttachments.resize(src.colorAttachmentCount);
+    dst.resolveAttachments.resize(src.colorAttachmentCount);
     dst.colorLayouts.resize(src.colorAttachmentCount);
     for(uint32_t i = 0; i < src.colorAttachmentCount; i++)
     {
+      dst.resolveAttachments[i] =
+          src.pResolveAttachments ? src.pResolveAttachments[i].attachment : ~0U;
       dst.colorAttachments[i] = src.pColorAttachments[i].attachment;
       dst.colorLayouts[i] = src.pColorAttachments[i].layout;
     }
@@ -490,17 +548,17 @@ void VulkanCreationInfo::Image::Init(VulkanResourceManager *resourceMan, VulkanC
   mipLevels = pCreateInfo->mipLevels;
   samples = RDCMAX(VK_SAMPLE_COUNT_1_BIT, pCreateInfo->samples);
 
-  creationFlags = 0;
+  creationFlags = TextureCategory::NoFlags;
 
   if(pCreateInfo->usage & VK_IMAGE_USAGE_SAMPLED_BIT)
-    creationFlags |= eTextureCreate_SRV;
+    creationFlags |= TextureCategory::ShaderRead;
   if(pCreateInfo->usage &
      (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))
-    creationFlags |= eTextureCreate_RTV;
+    creationFlags |= TextureCategory::ColorTarget;
   if(pCreateInfo->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
-    creationFlags |= eTextureCreate_DSV;
+    creationFlags |= TextureCategory::DepthTarget;
   if(pCreateInfo->usage & VK_IMAGE_USAGE_STORAGE_BIT)
-    creationFlags |= eTextureCreate_UAV;
+    creationFlags |= TextureCategory::ShaderReadWrite;
 
   cube = (pCreateInfo->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) ? true : false;
 }
@@ -515,7 +573,7 @@ void VulkanCreationInfo::Sampler::Init(VulkanResourceManager *resourceMan, Vulka
   address[1] = pCreateInfo->addressModeV;
   address[2] = pCreateInfo->addressModeW;
   mipLodBias = pCreateInfo->mipLodBias;
-  maxAnisotropy = pCreateInfo->maxAnisotropy;
+  maxAnisotropy = pCreateInfo->anisotropyEnable ? pCreateInfo->maxAnisotropy : 1.0f;
   compareEnable = pCreateInfo->compareEnable != 0;
   compareOp = pCreateInfo->compareOp;
   minLod = pCreateInfo->minLod;
@@ -530,15 +588,15 @@ static TextureSwizzle Convert(VkComponentSwizzle s, int i)
   {
     default: RDCWARN("Unexpected component swizzle value %d", (int)s);
     case VK_COMPONENT_SWIZZLE_IDENTITY: break;
-    case VK_COMPONENT_SWIZZLE_ZERO: return eSwizzle_Zero;
-    case VK_COMPONENT_SWIZZLE_ONE: return eSwizzle_One;
-    case VK_COMPONENT_SWIZZLE_R: return eSwizzle_Red;
-    case VK_COMPONENT_SWIZZLE_G: return eSwizzle_Green;
-    case VK_COMPONENT_SWIZZLE_B: return eSwizzle_Blue;
-    case VK_COMPONENT_SWIZZLE_A: return eSwizzle_Alpha;
+    case VK_COMPONENT_SWIZZLE_ZERO: return TextureSwizzle::Zero;
+    case VK_COMPONENT_SWIZZLE_ONE: return TextureSwizzle::One;
+    case VK_COMPONENT_SWIZZLE_R: return TextureSwizzle::Red;
+    case VK_COMPONENT_SWIZZLE_G: return TextureSwizzle::Green;
+    case VK_COMPONENT_SWIZZLE_B: return TextureSwizzle::Blue;
+    case VK_COMPONENT_SWIZZLE_A: return TextureSwizzle::Alpha;
   }
 
-  return TextureSwizzle(eSwizzle_Red + i);
+  return TextureSwizzle(uint32_t(TextureSwizzle::Red) + i);
 }
 
 void VulkanCreationInfo::ImageView::Init(VulkanResourceManager *resourceMan, VulkanCreationInfo &info,

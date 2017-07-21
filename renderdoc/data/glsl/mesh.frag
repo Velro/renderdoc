@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,7 +29,7 @@ layout (location = 0) out vec4 color_out;
 
 void main(void)
 {
-	uint type = Mesh.displayFormat;
+	int type = Mesh.displayFormat;
 	
 	if(type == MESHDISPLAY_SECONDARY)
 	{

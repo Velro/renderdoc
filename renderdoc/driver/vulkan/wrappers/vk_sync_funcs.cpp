@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -668,6 +668,9 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents(
   SERIALISE_ELEMENT(VkPipelineStageFlagBits, srcStages, (VkPipelineStageFlagBits)srcStageMask);
   SERIALISE_ELEMENT(VkPipelineStageFlagBits, destStages, (VkPipelineStageFlagBits)dstStageMask);
 
+  if(m_State < WRITING)
+    m_LastCmdBufferID = cmdid;
+
   // we don't serialise the original events as we are going to replace this
   // with our own
 
@@ -700,6 +703,9 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents(
         imgBarriers.push_back(imgMemBarriers[i]);
         ReplacePresentableImageLayout(imgBarriers.back().oldLayout);
         ReplacePresentableImageLayout(imgBarriers.back().newLayout);
+
+        ReplaceExternalQueueFamily(imgBarriers.back().srcQueueFamilyIndex,
+                                   imgBarriers.back().dstQueueFamilyIndex);
       }
     }
   }
@@ -759,8 +765,9 @@ bool WrappedVulkan::Serialise_vkCmdWaitEvents(
                                       (uint32_t)bufBarriers.size(), &bufBarriers[0],
                                       (uint32_t)imgBarriers.size(), &imgBarriers[0]);
 
-    // register to clean this event up once we're done replaying this section of the log
-    m_CleanupEvents.push_back(ev);
+    // since we cache and replay this command buffer we can't clean up this event just when we're
+    // done replaying this section. We have to keep this event until shutdown
+    m_PersistentEvents.push_back(ev);
 
     ResourceId cmd = GetResID(cmdBuffer);
     GetResourceManager()->RecordBarriers(m_BakedCmdBufferInfo[cmd].imgbarriers, m_ImageLayouts,
@@ -834,3 +841,40 @@ void WrappedVulkan::vkCmdWaitEvents(VkCommandBuffer cmdBuffer, uint32_t eventCou
       record->MarkResourceFrameReferenced(GetResID(pEvents[i]), eFrameRef_Read);
   }
 }
+
+VkResult WrappedVulkan::vkImportSemaphoreFdKHX(VkDevice device,
+                                               const VkImportSemaphoreFdInfoKHX *pImportSemaphoreFdInfo)
+{
+  VkImportSemaphoreFdInfoKHX unwrappedInfo = *pImportSemaphoreFdInfo;
+  unwrappedInfo.semaphore = Unwrap(unwrappedInfo.semaphore);
+
+  return ObjDisp(device)->ImportSemaphoreFdKHX(Unwrap(device), &unwrappedInfo);
+}
+
+VkResult WrappedVulkan::vkGetSemaphoreFdKHX(VkDevice device, VkSemaphore semaphore,
+                                            VkExternalSemaphoreHandleTypeFlagBitsKHX handleType,
+                                            int *pFd)
+{
+  return ObjDisp(device)->GetSemaphoreFdKHX(Unwrap(device), Unwrap(semaphore), handleType, pFd);
+}
+
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+
+VkResult WrappedVulkan::vkImportSemaphoreWin32HandleKHX(
+    VkDevice device, const VkImportSemaphoreWin32HandleInfoKHX *pImportSemaphoreWin32HandleInfo)
+{
+  VkImportSemaphoreWin32HandleInfoKHX unwrappedInfo = *pImportSemaphoreWin32HandleInfo;
+  unwrappedInfo.semaphore = Unwrap(unwrappedInfo.semaphore);
+
+  return ObjDisp(device)->ImportSemaphoreWin32HandleKHX(Unwrap(device), &unwrappedInfo);
+}
+
+VkResult WrappedVulkan::vkGetSemaphoreWin32HandleKHX(VkDevice device, VkSemaphore semaphore,
+                                                     VkExternalSemaphoreHandleTypeFlagBitsKHX handleType,
+                                                     HANDLE *pHandle)
+{
+  return ObjDisp(device)->GetSemaphoreWin32HandleKHX(Unwrap(device), Unwrap(semaphore), handleType,
+                                                     pHandle);
+}
+
+#endif

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,6 @@
 
 #include "renderdoccmd.h"
 #include <locale.h>
-#include <replay/renderdoc_replay.h>
 #include <string.h>
 #include <unistd.h>
 #include <string>
@@ -48,25 +47,22 @@ void Daemonise()
 {
 }
 
-void DisplayRendererPreview(ReplayRenderer *renderer, TextureDisplay &displayCfg, uint32_t width,
+void DisplayRendererPreview(IReplayController *renderer, TextureDisplay &displayCfg, uint32_t width,
                             uint32_t height)
 {
   ANativeWindow *connectionScreenWindow = android_state->window;
 
-  ReplayOutput *out = ReplayRenderer_CreateOutput(renderer, eWindowingSystem_Android,
-                                                  connectionScreenWindow, eOutputType_TexDisplay);
+  IReplayOutput *out = renderer->CreateOutput(WindowingSystem::Android, connectionScreenWindow,
+                                              ReplayOutputType::Texture);
 
-  OutputConfig c = {eOutputType_TexDisplay};
-
-  ReplayOutput_SetOutputConfig(out, c);
-  ReplayOutput_SetTextureDisplay(out, displayCfg);
+  out->SetTextureDisplay(displayCfg);
 
   for(int i = 0; i < 100; i++)
   {
-    ReplayRenderer_SetFrameEvent(renderer, 10000000, true);
+    renderer->SetFrameEvent(10000000, true);
 
     __android_log_print(ANDROID_LOG_INFO, LOGCAT_TAG, "Frame %i", i);
-    ReplayOutput_Display(out);
+    out->Display();
 
     usleep(100000);
   }
@@ -107,6 +103,8 @@ vector<string> getRenderdoccmdArgs()
     iss >> sub;
     ret.push_back(sub);
   }
+  android_state->activity->vm->DetachCurrentThread();
+
   return ret;
 }
 
@@ -119,11 +117,11 @@ void handle_cmd(android_app *app, int32_t cmd)
       vector<string> args = getRenderdoccmdArgs();
       if(!args.size())
         break;    // Nothing for APK to do.
-      renderdoccmd(args);
+      renderdoccmd(GlobalEnvironment(), args);
+      // activity is done and should be closed
+      ANativeActivity_finish(android_state->activity);
       break;
     }
-    case APP_CMD_TERM_WINDOW: break;
-    default: __android_log_print(ANDROID_LOG_INFO, LOGCAT_TAG, "event not handled: %d", cmd);
   }
 }
 

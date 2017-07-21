@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,7 +25,7 @@
 
 #include "renderdoccmd.h"
 #include <app/renderdoc_app.h>
-#include <replay/renderdoc_replay.h>
+#include <replay/version.h>
 #include <string>
 
 using std::string;
@@ -33,6 +33,15 @@ using std::wstring;
 
 bool usingKillSignal = false;
 volatile uint32_t killSignal = false;
+
+rdctype::array<rdctype::str> convertArgs(const std::vector<std::string> &args)
+{
+  rdctype::array<rdctype::str> ret;
+  ret.create((int)args.size());
+  for(size_t i = 0; i < args.size(); i++)
+    ret[i] = args[i];
+  return ret;
+}
 
 void readCapOpts(const std::string &str, CaptureOptions *opts)
 {
@@ -45,19 +54,18 @@ void readCapOpts(const std::string &str, CaptureOptions *opts)
     *(b++) = (byte(str[i * 2 + 0] - 'a') << 4) | byte(str[i * 2 + 1] - 'a');
 }
 
-void DisplayRendererPreview(ReplayRenderer *renderer, uint32_t width, uint32_t height)
+void DisplayRendererPreview(IReplayController *renderer, uint32_t width, uint32_t height)
 {
   if(renderer == NULL)
     return;
 
-  rdctype::array<FetchTexture> texs;
-  ReplayRenderer_GetTextures(renderer, &texs);
+  rdctype::array<TextureDescription> texs = renderer->GetTextures();
 
   TextureDisplay d;
   d.mip = 0;
   d.sampleIdx = ~0U;
-  d.overlay = eTexOverlay_None;
-  d.typeHint = eCompType_None;
+  d.overlay = DebugOverlay::NoOverlay;
+  d.typeHint = CompType::Typeless;
   d.CustomShader = ResourceId();
   d.HDRMul = -1.0f;
   d.linearDisplayAsGamma = true;
@@ -69,24 +77,23 @@ void DisplayRendererPreview(ReplayRenderer *renderer, uint32_t width, uint32_t h
   d.offy = 0.0f;
   d.sliceFace = 0;
   d.rawoutput = false;
-  d.lightBackgroundColour = FloatVector(0.81f, 0.81f, 0.81f, 1.0f);
-  d.darkBackgroundColour = FloatVector(0.57f, 0.57f, 0.57f, 1.0f);
+  d.lightBackgroundColor = FloatVector(0.81f, 0.81f, 0.81f, 1.0f);
+  d.darkBackgroundColor = FloatVector(0.57f, 0.57f, 0.57f, 1.0f);
   d.Red = d.Green = d.Blue = true;
   d.Alpha = false;
 
   for(int32_t i = 0; i < texs.count; i++)
   {
-    if(texs[i].creationFlags & eTextureCreate_SwapBuffer)
+    if(texs[i].creationFlags & TextureCategory::SwapBuffer)
     {
       d.texid = texs[i].ID;
       break;
     }
   }
 
-  rdctype::array<FetchDrawcall> draws;
-  renderer->GetDrawcalls(&draws);
+  rdctype::array<DrawcallDescription> draws = renderer->GetDrawcalls();
 
-  if(draws.count > 0 && draws[draws.count - 1].flags & eDraw_Present)
+  if(draws.count > 0 && draws[draws.count - 1].flags & DrawFlags::Present)
   {
     ResourceId id = draws[draws.count - 1].copyDestination;
     if(id != ResourceId())
@@ -158,17 +165,25 @@ static std::vector<std::string> version_lines;
 
 struct VersionCommand : public Command
 {
+  VersionCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser) {}
   virtual const char *Description() { return "Print version information"; }
   virtual bool IsInternalOnly() { return false; }
   virtual bool IsCaptureCommand() { return false; }
   virtual int Execute(cmdline::parser &parser, const CaptureOptions &)
   {
-    std::cout << "renderdoccmd " << (sizeof(uintptr_t) == sizeof(uint64_t) ? "x64 " : "x86 ")
-              << RENDERDOC_GetVersionString() << "-" << RENDERDOC_GetCommitHash() << std::endl;
+    std::cout << "renderdoccmd " << (sizeof(uintptr_t) == sizeof(uint64_t) ? "x64" : "x86")
+              << " v" MAJOR_MINOR_VERSION_STRING << " built from " << GIT_COMMIT_HASH << std::endl;
+
+#if defined(DISTRIBUTION_VERSION)
+    std::cout << "Packaged for " << DISTRIBUTION_NAME << " (" << DISTRIBUTION_VERSION << ") - "
+              << DISTRIBUTION_CONTACT << std::endl;
+#endif
 
     for(size_t i = 0; i < version_lines.size(); i++)
       std::cout << version_lines[i] << std::endl;
+
+    std::cout << std::endl;
 
     return 0;
   }
@@ -181,6 +196,7 @@ void add_version_line(const std::string &str)
 
 struct HelpCommand : public Command
 {
+  HelpCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser) {}
   virtual const char *Description() { return "Print this help message"; }
   virtual bool IsInternalOnly() { return false; }
@@ -194,17 +210,25 @@ struct HelpCommand : public Command
 
 struct ThumbCommand : public Command
 {
+  ThumbCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser)
   {
     parser.set_footer("<filename.rdc>");
-    parser.add<string>("out", 'o', "The output filename to save the jpg to", false, "filename.jpg");
+    parser.add<string>("out", 'o', "The output filename to save the file to", true, "filename.jpg");
+    parser.add<string>("format", 'f',
+                       "The format of the output file. If empty, detected from filename", false, "",
+                       cmdline::oneof<string>("jpg", "png", "bmp", "tga"));
+    parser.add<uint32_t>(
+        "max-size", 's',
+        "The maximum dimension of the thumbnail. Default is 0, which is unlimited.", false, 0);
   }
   virtual const char *Description() { return "Saves a capture's embedded thumbnail to disk."; }
   virtual bool IsInternalOnly() { return false; }
   virtual bool IsCaptureCommand() { return false; }
   virtual int Execute(cmdline::parser &parser, const CaptureOptions &)
   {
-    if(parser.rest().empty())
+    std::vector<std::string> rest = parser.rest();
+    if(rest.empty())
     {
       std::cerr << "Error: thumb command requires a capture filename." << std::endl
                 << std::endl
@@ -212,60 +236,77 @@ struct ThumbCommand : public Command
       return 0;
     }
 
-    string filename = parser.rest()[0];
+    string filename = rest[0];
 
-    string jpgname;
+    rest.erase(rest.begin());
 
-    if(parser.exist("out"))
+    RENDERDOC_InitGlobalEnv(m_Env, convertArgs(rest));
+
+    string outfile = parser.get<string>("out");
+
+    string format = parser.get<string>("format");
+
+    FileType type = FileType::JPG;
+
+    if(format == "png")
     {
-      jpgname = parser.get<string>("out");
+      type = FileType::PNG;
+    }
+    else if(format == "tga")
+    {
+      type = FileType::TGA;
+    }
+    else if(format == "bmp")
+    {
+      type = FileType::BMP;
     }
     else
     {
-      jpgname = filename;
+      const char *dot = strrchr(outfile.c_str(), '.');
 
-      if(jpgname[jpgname.length() - 4] == '.' && jpgname[jpgname.length() - 3] == 'r' &&
-         jpgname[jpgname.length() - 2] == 'd' && jpgname[jpgname.length() - 1] == 'c')
-      {
-        jpgname.pop_back();
-        jpgname.pop_back();
-        jpgname.pop_back();
-
-        jpgname += "jpg";
-      }
+      if(dot != NULL && strstr(dot, "png"))
+        type = FileType::PNG;
+      else if(dot != NULL && strstr(dot, "tga"))
+        type = FileType::TGA;
+      else if(dot != NULL && strstr(dot, "bmp"))
+        type = FileType::BMP;
       else
-      {
-        jpgname += ".jpg";
-      }
+        std::cerr << "Couldn't guess format from '" << outfile << "', defaulting to jpg."
+                  << std::endl;
     }
 
-    uint32_t len = 0;
-    bool32 ret = RENDERDOC_GetThumbnail(filename.c_str(), NULL, len);
+    rdctype::array<byte> buf;
 
-    if(!ret)
+    ICaptureFile *file = RENDERDOC_OpenCaptureFile(filename.c_str());
+    if(file->OpenStatus() == ReplayStatus::Succeeded)
+    {
+      buf = file->GetThumbnail(FileType::JPG, 0);
+    }
+    else
+    {
+      std::cerr << "Couldn't open '" << filename << "'" << std::endl;
+    }
+    file->Shutdown();
+
+    if(buf.empty())
     {
       std::cerr << "Couldn't fetch the thumbnail in '" << filename << "'" << std::endl;
     }
     else
     {
-      byte *jpgbuf = new byte[len];
-      RENDERDOC_GetThumbnail(filename.c_str(), jpgbuf, len);
-
-      FILE *f = fopen(jpgname.c_str(), "wb");
+      FILE *f = fopen(outfile.c_str(), "wb");
 
       if(!f)
       {
-        std::cerr << "Couldn't open destination file '" << jpgname << "'" << std::endl;
+        std::cerr << "Couldn't open destination file '" << outfile << "'" << std::endl;
       }
       else
       {
-        fwrite(jpgbuf, 1, len, f);
+        fwrite(buf.elems, 1, buf.count, f);
         fclose(f);
 
-        std::cout << "Wrote thumbnail from '" << filename << "' to '" << jpgname << "'." << std::endl;
+        std::cout << "Wrote thumbnail from '" << filename << "' to '" << outfile << "'." << std::endl;
       }
-
-      delete[] jpgbuf;
     }
 
     return 0;
@@ -274,6 +315,7 @@ struct ThumbCommand : public Command
 
 struct CaptureCommand : public Command
 {
+  CaptureCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser)
   {
     parser.set_footer("<executable> [program arguments]");
@@ -305,6 +347,8 @@ struct CaptureCommand : public Command
       cmdLine += EscapeArgument(parser.rest()[i]);
     }
 
+    RENDERDOC_InitGlobalEnv(m_Env, rdctype::array<rdctype::str>());
+
     std::cout << "Launching '" << executable << "'";
 
     if(!cmdLine.empty())
@@ -312,9 +356,11 @@ struct CaptureCommand : public Command
 
     std::cout << std::endl;
 
+    rdctype::array<EnvironmentModification> env;
+
     uint32_t ident = RENDERDOC_ExecuteAndInject(
         executable.c_str(), workingDir.empty() ? "" : workingDir.c_str(),
-        cmdLine.empty() ? "" : cmdLine.c_str(), NULL, logFile.empty() ? "" : logFile.c_str(), &opts,
+        cmdLine.empty() ? "" : cmdLine.c_str(), env, logFile.empty() ? "" : logFile.c_str(), opts,
         parser.exist("wait-for-exit"));
 
     if(ident == 0)
@@ -359,6 +405,7 @@ struct CaptureCommand : public Command
 
 struct InjectCommand : public Command
 {
+  InjectCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser)
   {
     parser.add<uint32_t>("PID", 0, "The process ID of the process to inject.", true);
@@ -374,8 +421,12 @@ struct InjectCommand : public Command
 
     std::cout << "Injecting into PID " << PID << std::endl;
 
-    uint32_t ident = RENDERDOC_InjectIntoProcess(PID, NULL, logFile.empty() ? "" : logFile.c_str(),
-                                                 &opts, parser.exist("wait-for-exit"));
+    rdctype::array<EnvironmentModification> env;
+
+    RENDERDOC_InitGlobalEnv(m_Env, convertArgs(parser.rest()));
+
+    uint32_t ident = RENDERDOC_InjectIntoProcess(PID, env, logFile.empty() ? "" : logFile.c_str(),
+                                                 opts, parser.exist("wait-for-exit"));
 
     if(ident == 0)
     {
@@ -399,6 +450,7 @@ struct InjectCommand : public Command
 
 struct RemoteServerCommand : public Command
 {
+  RemoteServerCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser)
   {
     parser.add("daemon", 'd', "Go into the background.");
@@ -417,6 +469,8 @@ struct RemoteServerCommand : public Command
   {
     string host = parser.get<string>("host");
     uint32_t port = parser.get<uint32_t>("port");
+
+    RENDERDOC_InitGlobalEnv(m_Env, convertArgs(parser.rest()));
 
     std::cerr << "Spawning a replay host listening on " << (host.empty() ? "*" : host) << ":"
               << port << "..." << std::endl;
@@ -439,6 +493,7 @@ struct RemoteServerCommand : public Command
 
 struct ReplayCommand : public Command
 {
+  ReplayCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser)
   {
     parser.set_footer("<capture.rdc>");
@@ -457,7 +512,8 @@ struct ReplayCommand : public Command
   virtual bool IsCaptureCommand() { return false; }
   virtual int Execute(cmdline::parser &parser, const CaptureOptions &)
   {
-    if(parser.rest().empty())
+    std::vector<std::string> rest = parser.rest();
+    if(rest.empty())
     {
       std::cerr << "Error: capture command requires a filename to load." << std::endl
                 << std::endl
@@ -465,18 +521,22 @@ struct ReplayCommand : public Command
       return 0;
     }
 
-    string filename = parser.rest()[0];
+    string filename = rest[0];
+
+    rest.erase(rest.begin());
+
+    RENDERDOC_InitGlobalEnv(m_Env, convertArgs(rest));
 
     if(parser.exist("remote-host"))
     {
       std::cout << "Replaying '" << filename << "' on " << parser.get<string>("remote-host") << ":"
                 << parser.get<uint32_t>("remote-port") << "." << std::endl;
 
-      RemoteServer *remote = NULL;
-      ReplayCreateStatus status = RENDERDOC_CreateRemoteServerConnection(
+      IRemoteServer *remote = NULL;
+      ReplayStatus status = RENDERDOC_CreateRemoteServerConnection(
           parser.get<string>("remote-host").c_str(), parser.get<uint32_t>("remote-port"), &remote);
 
-      if(remote == NULL || status != eReplayCreate_Success)
+      if(remote == NULL || status != ReplayStatus::Succeeded)
       {
         std::cerr << "Error: Couldn't connect to " << parser.get<string>("remote-host") << ":"
                   << parser.get<uint32_t>("remote-port") << "." << std::endl;
@@ -487,13 +547,12 @@ struct ReplayCommand : public Command
 
       std::cerr << "Copying capture file to remote server" << std::endl;
 
-      float progress = 0.0f;
-      rdctype::str remotePath = remote->CopyCaptureToRemote(filename.c_str(), &progress);
+      rdctype::str remotePath = remote->CopyCaptureToRemote(filename.c_str(), NULL);
 
-      ReplayRenderer *renderer = NULL;
-      status = remote->OpenCapture(~0U, remotePath.elems, &progress, &renderer);
+      IReplayController *renderer = NULL;
+      std::tie(status, renderer) = remote->OpenCapture(~0U, remotePath.elems, NULL);
 
-      if(status == eReplayCreate_Success)
+      if(status == ReplayStatus::Succeeded)
       {
         DisplayRendererPreview(renderer, parser.get<uint32_t>("width"),
                                parser.get<uint32_t>("height"));
@@ -511,12 +570,21 @@ struct ReplayCommand : public Command
     {
       std::cout << "Replaying '" << filename << "' locally.." << std::endl;
 
-      float progress = 0.0f;
-      ReplayRenderer *renderer = NULL;
-      ReplayCreateStatus status =
-          RENDERDOC_CreateReplayRenderer(filename.c_str(), &progress, &renderer);
+      ICaptureFile *file = RENDERDOC_OpenCaptureFile(filename.c_str());
 
-      if(status == eReplayCreate_Success)
+      if(file->OpenStatus() != ReplayStatus::Succeeded)
+      {
+        std::cerr << "Couldn't load '" << filename << "'." << std::endl;
+        return 1;
+      }
+
+      IReplayController *renderer = NULL;
+      ReplayStatus status = ReplayStatus::InternalError;
+      std::tie(status, renderer) = file->OpenCapture(NULL);
+
+      file->Shutdown();
+
+      if(status == ReplayStatus::Succeeded)
       {
         DisplayRendererPreview(renderer, parser.get<uint32_t>("width"),
                                parser.get<uint32_t>("height"));
@@ -526,18 +594,21 @@ struct ReplayCommand : public Command
       else
       {
         std::cerr << "Couldn't load and replay '" << filename << "'." << std::endl;
+        return 1;
       }
     }
     return 0;
   }
 };
 
-struct Cap32For64Command : public Command
+struct CapAltBitCommand : public Command
 {
+  CapAltBitCommand(const GlobalEnvironment &env) : Command(env) {}
   virtual void AddOptions(cmdline::parser &parser)
   {
     parser.add<uint32_t>("pid", 0, "");
     parser.add<string>("log", 0, "");
+    parser.add<string>("debuglog", 0, "");
     parser.add<string>("capopts", 0, "");
     parser.stop_at_rest(true);
   }
@@ -549,96 +620,99 @@ struct Cap32For64Command : public Command
     CaptureOptions cmdopts;
     readCapOpts(parser.get<string>("capopts").c_str(), &cmdopts);
 
+    RENDERDOC_InitGlobalEnv(m_Env, rdctype::array<rdctype::str>());
+
     std::vector<std::string> rest = parser.rest();
 
     if(rest.size() % 3 != 0)
     {
-      std::cerr << "Invalid generated cap32for64 command rest.size() == " << rest.size() << std::endl;
+      std::cerr << "Invalid generated capaltbit command rest.size() == " << rest.size() << std::endl;
       return 0;
     }
 
     int numEnvs = int(rest.size() / 3);
 
-    void *env = RENDERDOC_MakeEnvironmentModificationList(numEnvs);
+    rdctype::array<EnvironmentModification> env;
+    env.create(numEnvs);
 
     for(int i = 0; i < numEnvs; i++)
     {
       string typeString = rest[i * 3 + 0];
 
-      EnvironmentModificationType type = eEnvMod_Set;
-      EnvironmentSeparator sep = eEnvSep_None;
+      EnvMod type = EnvMod::Set;
+      EnvSep sep = EnvSep::NoSep;
 
       if(typeString == "+env-replace")
       {
-        type = eEnvMod_Set;
-        sep = eEnvSep_None;
+        type = EnvMod::Set;
+        sep = EnvSep::NoSep;
       }
       else if(typeString == "+env-append-platform")
       {
-        type = eEnvMod_Append;
-        sep = eEnvSep_Platform;
+        type = EnvMod::Append;
+        sep = EnvSep::Platform;
       }
       else if(typeString == "+env-append-semicolon")
       {
-        type = eEnvMod_Append;
-        sep = eEnvSep_SemiColon;
+        type = EnvMod::Append;
+        sep = EnvSep::SemiColon;
       }
       else if(typeString == "+env-append-colon")
       {
-        type = eEnvMod_Append;
-        sep = eEnvSep_Colon;
+        type = EnvMod::Append;
+        sep = EnvSep::Colon;
       }
       else if(typeString == "+env-append")
       {
-        type = eEnvMod_Append;
-        sep = eEnvSep_None;
+        type = EnvMod::Append;
+        sep = EnvSep::NoSep;
       }
       else if(typeString == "+env-prepend-platform")
       {
-        type = eEnvMod_Prepend;
-        sep = eEnvSep_Platform;
+        type = EnvMod::Prepend;
+        sep = EnvSep::Platform;
       }
       else if(typeString == "+env-prepend-semicolon")
       {
-        type = eEnvMod_Prepend;
-        sep = eEnvSep_SemiColon;
+        type = EnvMod::Prepend;
+        sep = EnvSep::SemiColon;
       }
       else if(typeString == "+env-prepend-colon")
       {
-        type = eEnvMod_Prepend;
-        sep = eEnvSep_Colon;
+        type = EnvMod::Prepend;
+        sep = EnvSep::Colon;
       }
       else if(typeString == "+env-prepend")
       {
-        type = eEnvMod_Prepend;
-        sep = eEnvSep_None;
+        type = EnvMod::Prepend;
+        sep = EnvSep::NoSep;
       }
       else
       {
-        std::cerr << "Invalid generated cap32for64 env '" << rest[i * 3 + 0] << std::endl;
-        RENDERDOC_FreeEnvironmentModificationList(env);
+        std::cerr << "Invalid generated capaltbit env '" << rest[i * 3 + 0] << std::endl;
         return 0;
       }
 
-      RENDERDOC_SetEnvironmentModification(env, i, rest[i * 3 + 1].c_str(), rest[i * 3 + 2].c_str(),
-                                           type, sep);
+      env[i] = EnvironmentModification(type, sep, rest[i * 3 + 1].c_str(), rest[i * 3 + 2].c_str());
     }
 
-    int ret = RENDERDOC_InjectIntoProcess(parser.get<uint32_t>("pid"), env,
-                                          parser.get<string>("log").c_str(), &cmdopts, false);
+    string debuglog = parser.get<string>("debuglog");
 
-    RENDERDOC_FreeEnvironmentModificationList(env);
+    RENDERDOC_SetDebugLogFile(debuglog.c_str());
+
+    int ret = RENDERDOC_InjectIntoProcess(parser.get<uint32_t>("pid"), env,
+                                          parser.get<string>("log").c_str(), cmdopts, false);
 
     return ret;
   }
 };
 
-int renderdoccmd(std::vector<std::string> &argv)
+int renderdoccmd(const GlobalEnvironment &env, std::vector<std::string> &argv)
 {
   try
   {
     // add basic commands, and common aliases
-    add_command("version", new VersionCommand());
+    add_command("version", new VersionCommand(env));
 
     add_alias("--version", "version");
     add_alias("-v", "version");
@@ -646,7 +720,7 @@ int renderdoccmd(std::vector<std::string> &argv)
     add_alias("/version", "version");
     add_alias("/v", "version");
 
-    add_command("help", new HelpCommand());
+    add_command("help", new HelpCommand(env));
 
     add_alias("--help", "help");
     add_alias("-h", "help");
@@ -658,12 +732,12 @@ int renderdoccmd(std::vector<std::string> &argv)
     add_alias("/?", "help");
 
     // add platform agnostic commands
-    add_command("thumb", new ThumbCommand());
-    add_command("capture", new CaptureCommand());
-    add_command("inject", new InjectCommand());
-    add_command("remoteserver", new RemoteServerCommand());
-    add_command("replay", new ReplayCommand());
-    add_command("cap32for64", new Cap32For64Command());
+    add_command("thumb", new ThumbCommand(env));
+    add_command("capture", new CaptureCommand(env));
+    add_command("inject", new InjectCommand(env));
+    add_command("remoteserver", new RemoteServerCommand(env));
+    add_command("replay", new ReplayCommand(env));
+    add_command("capaltbit", new CapAltBitCommand(env));
 
     if(argv.size() <= 1)
     {
@@ -793,12 +867,12 @@ int renderdoccmd(std::vector<std::string> &argv)
   }
 }
 
-int renderdoccmd(int argc, char **c_argv)
+int renderdoccmd(const GlobalEnvironment &env, int argc, char **c_argv)
 {
   std::vector<std::string> argv;
   argv.resize(argc);
   for(int i = 0; i < argc; i++)
     argv[i] = c_argv[i];
 
-  return renderdoccmd(argv);
+  return renderdoccmd(env, argv);
 }

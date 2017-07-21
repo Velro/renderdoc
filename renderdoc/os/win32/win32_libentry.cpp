@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -43,14 +43,15 @@ static BOOL add_hooks()
   if(f.find(L"dllhost.exe") != wstring::npos || f.find(L"explorer.exe") != wstring::npos)
   {
 #ifndef _RELEASE
-    OutputDebugStringA("Hosting renderdoc.dll in shell process\n");
+    OutputDebugStringA("Hosting " STRINGIZE(RDOC_DLL_FILE) ".dll in shell process\n");
 #endif
     return TRUE;
   }
 
-  if(f.find(L"renderdoccmd.exe") != wstring::npos ||
-     f.find(L"renderdocui.vshost.exe") != wstring::npos ||
-     f.find(L"qrenderdoc.exe") != wstring::npos || f.find(L"renderdocui.exe") != wstring::npos)
+  if(f.find(CONCAT(L, STRINGIZE(RDOC_DLL_FILE)) L"cmd.exe") != wstring::npos ||
+     f.find(CONCAT(L, STRINGIZE(RDOC_DLL_FILE)) L"ui.vshost.exe") != wstring::npos ||
+     f.find(L"q" CONCAT(L, STRINGIZE(RDOC_DLL_FILE)) L".exe") != wstring::npos ||
+     f.find(CONCAT(L, STRINGIZE(RDOC_DLL_FILE)) L"ui.exe") != wstring::npos)
   {
     RDCDEBUG("Not creating hooks - in replay app");
 

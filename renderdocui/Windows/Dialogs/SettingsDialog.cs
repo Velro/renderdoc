@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -64,6 +64,8 @@ namespace renderdocui.Windows.Dialogs
             externalDisassemblerEnabledCheckbox.Checked = m_Core.Config.ExternalDisassemblerEnabled;
             externalDisassemblerArgs.Text = m_Core.Config.GetDefaultExternalDisassembler().args;
             externalDisassemblePath.Text = m_Core.Config.GetDefaultExternalDisassembler().executable;
+            adbPath.Text = m_Core.Config.AdbExecutablePath;
+            maxConnectTimeout.Value = m_Core.Config.MaxConnectTimeout;
 
             TextureViewer_ResetRange.Checked = m_Core.Config.TextureViewer_ResetRange;
             TextureViewer_PerTexSettings.Checked = m_Core.Config.TextureViewer_PerTexSettings;
@@ -88,8 +90,10 @@ namespace renderdocui.Windows.Dialogs
 
             EventBrowser_TimeUnit.SelectedIndex = (int)m_Core.Config.EventBrowser_TimeUnit;
             EventBrowser_HideEmpty.Checked = m_Core.Config.EventBrowser_HideEmpty;
+            EventBrowser_HideAPICalls.Checked = m_Core.Config.EventBrowser_HideAPICalls;
             EventBrowser_ApplyColours.Checked = m_Core.Config.EventBrowser_ApplyColours;
             EventBrowser_ColourEventRow.Checked = m_Core.Config.EventBrowser_ColourEventRow;
+            EventBrowser_AddFake.Checked = m_Core.Config.EventBrowser_AddFake;
 
             // disable sub-checkbox
             EventBrowser_ColourEventRow.Enabled = EventBrowser_ApplyColours.Checked;
@@ -208,6 +212,13 @@ namespace renderdocui.Windows.Dialogs
             m_Core.Config.Serialize(Core.ConfigFilename);
         }
 
+        private void EventBrowser_HideAPICalls_CheckedChanged(object sender, EventArgs e)
+        {
+            m_Core.Config.EventBrowser_HideAPICalls = EventBrowser_HideAPICalls.Checked;
+
+            m_Core.Config.Serialize(Core.ConfigFilename);
+        }
+
         private void EventBrowser_ApplyColours_CheckedChanged(object sender, EventArgs e)
         {
             m_Core.Config.EventBrowser_ApplyColours = EventBrowser_ApplyColours.Checked;
@@ -221,6 +232,13 @@ namespace renderdocui.Windows.Dialogs
         private void EventBrowser_ColourEventRow_CheckedChanged(object sender, EventArgs e)
         {
             m_Core.Config.EventBrowser_ColourEventRow = EventBrowser_ColourEventRow.Checked;
+
+            m_Core.Config.Serialize(Core.ConfigFilename);
+        }
+
+        private void EventBrowser_AddFake_CheckedChanged(object sender, EventArgs e)
+        {
+            m_Core.Config.EventBrowser_AddFake = EventBrowser_AddFake.Checked;
 
             m_Core.Config.Serialize(Core.ConfigFilename);
         }
@@ -384,6 +402,45 @@ namespace renderdocui.Windows.Dialogs
         private void externalDisassemblerEnabledCheckbox_CheckedChanged(object sender, EventArgs e)
         {
             m_Core.Config.ExternalDisassemblerEnabled = externalDisassemblerEnabledCheckbox.Checked;
+        }
+
+        private void browseAdbPath_Click(object sender, EventArgs e)
+        {
+            var res = browseExtDisassembleDialog.ShowDialog();
+
+            if (res == DialogResult.Yes || res == DialogResult.OK)
+            {
+                try
+                {
+                    adbPath.Text = browseExtDisassembleDialog.FileName;
+                    m_Core.Config.AdbExecutablePath = adbPath.Text;
+                }
+                catch (Exception)
+                {
+                }
+            }
+        }
+
+        private void adbPath_TextChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                m_Core.Config.AdbExecutablePath = adbPath.Text;
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private void maxConnectTimeout_ValueChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                m_Core.Config.MaxConnectTimeout = (uint)maxConnectTimeout.Value;
+            }
+            catch (Exception)
+            {
+            }
         }
     }
 }

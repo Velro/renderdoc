@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -27,6 +27,7 @@
 #include "3rdparty/lz4/lz4.h"
 #include "api/app/renderdoc_app.h"
 #include "driver/d3d11/d3d11_context.h"
+#include "driver/d3d11/d3d11_renderstate.h"
 #include "driver/dxgi/dxgi_wrapped.h"
 
 WRAPPED_POOL_INST(WrappedID3D11Buffer);
@@ -53,6 +54,7 @@ WRAPPED_POOL_INST(WrappedID3D11Query1);
 WRAPPED_POOL_INST(WrappedID3D11Predicate);
 WRAPPED_POOL_INST(WrappedID3D11ClassInstance);
 WRAPPED_POOL_INST(WrappedID3D11ClassLinkage);
+WRAPPED_POOL_INST(WrappedID3DDeviceContextState);
 
 map<ResourceId, WrappedID3D11Texture1D::TextureEntry>
     WrappedTexture<ID3D11Texture1D, D3D11_TEXTURE1D_DESC, ID3D11Texture1D>::m_TextureList;
@@ -63,6 +65,8 @@ map<ResourceId, WrappedID3D11Texture3D1::TextureEntry>
 map<ResourceId, WrappedID3D11Buffer::BufferEntry> WrappedID3D11Buffer::m_BufferList;
 map<ResourceId, WrappedShader::ShaderEntry *> WrappedShader::m_ShaderList;
 Threading::CriticalSection WrappedShader::m_ShaderListLock;
+std::vector<WrappedID3DDeviceContextState *> WrappedID3DDeviceContextState::m_List;
+Threading::CriticalSection WrappedID3DDeviceContextState::m_Lock;
 
 const GUID RENDERDOC_ID3D11ShaderGUID_ShaderDebugMagicValue = RENDERDOC_ShaderDebugMagicValue_struct;
 
@@ -299,6 +303,15 @@ ResourceId GetIDForResource(ID3D11DeviceChild *ptr)
   if(ptr == NULL)
     return ResourceId();
 
+  if(WrappedID3D11Buffer::IsAlloc(ptr))
+    return ((WrappedID3D11Buffer *)ptr)->GetResourceID();
+  if(WrappedID3D11Texture2D1::IsAlloc(ptr))
+    return ((WrappedID3D11Texture2D1 *)ptr)->GetResourceID();
+  if(WrappedID3D11Texture3D1::IsAlloc(ptr))
+    return ((WrappedID3D11Texture3D1 *)ptr)->GetResourceID();
+  if(WrappedID3D11Texture1D::IsAlloc(ptr))
+    return ((WrappedID3D11Texture1D *)ptr)->GetResourceID();
+
   if(WrappedID3D11InputLayout::IsAlloc(ptr))
     return ((WrappedID3D11InputLayout *)ptr)->GetResourceID();
 
@@ -314,16 +327,6 @@ ResourceId GetIDForResource(ID3D11DeviceChild *ptr)
     return ((WrappedID3D11Shader<ID3D11DomainShader> *)ptr)->GetResourceID();
   if(WrappedID3D11Shader<ID3D11ComputeShader>::IsAlloc(ptr))
     return ((WrappedID3D11Shader<ID3D11ComputeShader> *)ptr)->GetResourceID();
-
-  if(WrappedID3D11Buffer::IsAlloc(ptr))
-    return ((WrappedID3D11Buffer *)ptr)->GetResourceID();
-
-  if(WrappedID3D11Texture1D::IsAlloc(ptr))
-    return ((WrappedID3D11Texture1D *)ptr)->GetResourceID();
-  if(WrappedID3D11Texture2D1::IsAlloc(ptr))
-    return ((WrappedID3D11Texture2D1 *)ptr)->GetResourceID();
-  if(WrappedID3D11Texture3D1::IsAlloc(ptr))
-    return ((WrappedID3D11Texture3D1 *)ptr)->GetResourceID();
 
   if(WrappedID3D11RasterizerState2::IsAlloc(ptr))
     return ((WrappedID3D11RasterizerState2 *)ptr)->GetResourceID();
@@ -359,6 +362,8 @@ ResourceId GetIDForResource(ID3D11DeviceChild *ptr)
     return ((WrappedID3D11DeviceContext *)ptr)->GetResourceID();
   if(WrappedID3D11CommandList::IsAlloc(ptr))
     return ((WrappedID3D11CommandList *)ptr)->GetResourceID();
+  if(WrappedID3DDeviceContextState::IsAlloc(ptr))
+    return ((WrappedID3DDeviceContextState *)ptr)->GetResourceID();
 
   RDCERR("Unknown type for ptr 0x%p", ptr);
 
@@ -423,9 +428,121 @@ ResourceType IdentifyTypeByPtr(IUnknown *ptr)
   if(WrappedID3D11CommandList::IsAlloc(ptr))
     return Resource_CommandList;
 
+  if(WrappedID3DDeviceContextState::IsAlloc(ptr))
+    return Resource_DeviceState;
+
   RDCERR("Unknown type for ptr 0x%p", ptr);
 
   return Resource_Unknown;
+}
+
+void *UnwrapDXDevice(void *dxDevice)
+{
+  if(WrappedID3D11Device::IsAlloc(dxDevice))
+    return ((WrappedID3D11Device *)(ID3D11Device *)dxDevice)->GetReal();
+
+  return NULL;
+}
+
+ID3D11Resource *UnwrapDXResource(void *dxObject)
+{
+  if(WrappedID3D11Buffer::IsAlloc(dxObject))
+  {
+    WrappedID3D11Buffer *w = (WrappedID3D11Buffer *)(ID3D11Buffer *)dxObject;
+    return w->GetReal();
+  }
+  else if(WrappedID3D11Texture1D::IsAlloc(dxObject))
+  {
+    WrappedID3D11Texture1D *w = (WrappedID3D11Texture1D *)(ID3D11Texture1D *)dxObject;
+    return w->GetReal();
+  }
+  else if(WrappedID3D11Texture2D1::IsAlloc(dxObject))
+  {
+    WrappedID3D11Texture2D1 *w = (WrappedID3D11Texture2D1 *)(ID3D11Texture2D1 *)dxObject;
+    return w->GetReal();
+  }
+  else if(WrappedID3D11Texture3D1::IsAlloc(dxObject))
+  {
+    WrappedID3D11Texture3D1 *w = (WrappedID3D11Texture3D1 *)(ID3D11Texture3D1 *)dxObject;
+    return w->GetReal();
+  }
+
+  return NULL;
+}
+
+void GetDXTextureProperties(void *dxObject, ResourceFormat &fmt, uint32_t &width, uint32_t &height,
+                            uint32_t &depth, uint32_t &mips, uint32_t &layers, uint32_t &samples)
+{
+  if(WrappedID3D11Buffer::IsAlloc(dxObject))
+  {
+    WrappedID3D11Buffer *w = (WrappedID3D11Buffer *)(ID3D11Buffer *)dxObject;
+
+    D3D11_BUFFER_DESC desc;
+    w->GetDesc(&desc);
+
+    fmt = ResourceFormat();
+    width = desc.ByteWidth;
+    height = 1;
+    depth = 1;
+    mips = 1;
+    layers = 1;
+    samples = 1;
+
+    return;
+  }
+  else if(WrappedID3D11Texture1D::IsAlloc(dxObject))
+  {
+    WrappedID3D11Texture1D *w = (WrappedID3D11Texture1D *)(ID3D11Texture1D *)dxObject;
+
+    D3D11_TEXTURE1D_DESC desc;
+    w->GetDesc(&desc);
+
+    fmt = MakeResourceFormat(desc.Format);
+    width = desc.Width;
+    height = 1;
+    depth = 1;
+    mips = desc.MipLevels ? desc.MipLevels : CalcNumMips(desc.Width, 1, 1);
+    layers = desc.ArraySize;
+    samples = 1;
+
+    return;
+  }
+  else if(WrappedID3D11Texture2D1::IsAlloc(dxObject))
+  {
+    WrappedID3D11Texture2D1 *w = (WrappedID3D11Texture2D1 *)(ID3D11Texture2D1 *)dxObject;
+
+    D3D11_TEXTURE2D_DESC desc;
+    w->GetDesc(&desc);
+
+    fmt = MakeResourceFormat(desc.Format);
+    width = desc.Width;
+    height = desc.Height;
+    depth = 1;
+    mips = desc.MipLevels ? desc.MipLevels : CalcNumMips(desc.Width, desc.Height, 1);
+    layers = desc.ArraySize;
+    samples = desc.SampleDesc.Count;
+
+    return;
+  }
+  else if(WrappedID3D11Texture3D1::IsAlloc(dxObject))
+  {
+    WrappedID3D11Texture3D1 *w = (WrappedID3D11Texture3D1 *)(ID3D11Texture3D1 *)dxObject;
+
+    D3D11_TEXTURE3D_DESC desc;
+    w->GetDesc(&desc);
+
+    fmt = MakeResourceFormat(desc.Format);
+    width = desc.Width;
+    height = desc.Height;
+    depth = desc.Depth;
+    mips = desc.MipLevels ? desc.MipLevels : CalcNumMips(desc.Width, desc.Height, desc.Depth);
+    layers = 1;
+    samples = 1;
+
+    return;
+  }
+
+  RDCERR("Getting DX texture properties for unknown/unhandled objects %p", dxObject);
 }
 
 HRESULT STDMETHODCALLTYPE RefCounter::QueryInterface(
@@ -466,4 +583,29 @@ void RefCounter::ReleaseDeviceSoftref(WrappedID3D11Device *device)
 {
   if(device)
     device->SoftRelease();
+}
+
+WrappedID3DDeviceContextState::WrappedID3DDeviceContextState(ID3DDeviceContextState *real,
+                                                             WrappedID3D11Device *device)
+    : WrappedDeviceChild11(real, device)
+{
+  state = new D3D11RenderState((Serialiser *)NULL);
+
+  {
+    SCOPED_LOCK(WrappedID3DDeviceContextState::m_Lock);
+    WrappedID3DDeviceContextState::m_List.push_back(this);
+  }
+}
+
+WrappedID3DDeviceContextState::~WrappedID3DDeviceContextState()
+{
+  SAFE_DELETE(state);
+  Shutdown();
+
+  {
+    SCOPED_LOCK(WrappedID3DDeviceContextState::m_Lock);
+    auto it = std::find(WrappedID3DDeviceContextState::m_List.begin(),
+                        WrappedID3DDeviceContextState::m_List.end(), this);
+    WrappedID3DDeviceContextState::m_List.erase(it);
+  }
 }

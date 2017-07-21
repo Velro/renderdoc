@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,26 +22,33 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
+#ifndef OPENGL_ES
 out gl_PerVertex
 {
 	vec4 gl_Position;
 	float gl_PointSize;
 };
+#endif
 
 layout (location = 0) out vec4 tex;
 layout (location = 1) out vec2 glyphuv;
 
 void main(void)
 {
-	const vec3 verts[4] = vec3[4](vec3( 0.0,  0.0, 0.5),
+	const vec3 verts[6] = vec3[6](vec3( 0.0,  0.0, 0.5),
+                                  vec3( 1.0,  0.0, 0.5),
+                                  vec3( 0.0,  1.0, 0.5),
+
                                   vec3( 1.0,  0.0, 0.5),
                                   vec3( 0.0,  1.0, 0.5),
                                   vec3( 1.0,  1.0, 0.5));
 
-	vec3 pos = verts[VERTEX_ID];
-	uint strindex = INSTANCE_ID;
+	uint vert = uint(VERTEX_ID)%6u;
+
+	vec3 pos = verts[vert];
+	uint strindex = uint(VERTEX_ID)/6u;
 	
-	vec2 charPos = vec2(strindex + pos.x + general.TextPosition.x, pos.y + general.TextPosition.y);
+	vec2 charPos = vec2(float(strindex) + pos.x + general.TextPosition.x, pos.y + general.TextPosition.y);
 
 	FontGlyphData G = glyphs.data[ str.chars[strindex].x ];
 	

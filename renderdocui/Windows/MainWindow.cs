@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -74,6 +74,8 @@ namespace renderdocui.Windows
 
         private List<LiveCapture> m_LiveCaptures = new List<LiveCapture>();
 
+        private RemoteHost m_SelectedHost = null;
+
         private string InformationalVersion
         {
             get
@@ -97,25 +99,11 @@ namespace renderdocui.Windows
         {
             get
             {
-                return InformationalVersion.Replace("-official", "").Replace("-beta", "");
+                return InformationalVersion;
             }
         }
 
-        private bool BetaVersion
-        {
-            get
-            {
-                return InformationalVersion.Contains("-beta");
-            }
-        }
-
-        private bool OfficialVersion
-        {
-            get
-            {
-                return InformationalVersion.Contains("-official");
-            }
-        }
+        private bool OfficialVersion { get { return /*RENDERDOC_OFFICIAL_BUILD*/false; } }
 
         private string BareVersionString
         {
@@ -176,16 +164,34 @@ namespace renderdocui.Windows
         {
             bool loaded = LoadLayout(0);
 
+            if (Win32PInvoke.GetModuleHandle("rdocself.dll") != IntPtr.Zero)
+            {
+                ToolStripMenuItem beginSelfCap = new ToolStripMenuItem();
+                beginSelfCap.Text = "Start Self-hosted Capture";
+                beginSelfCap.Click += new EventHandler((object o, EventArgs a) => { StaticExports.StartSelfHostCapture("rdocself.dll"); });
+
+                ToolStripMenuItem endSelfCap = new ToolStripMenuItem();
+                endSelfCap.Text = "End Self-hosted Capture";
+                endSelfCap.Click += new EventHandler((object o, EventArgs a) => { StaticExports.EndSelfHostCapture("rdocself.dll"); });
+
+                toolsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] {
+                    new System.Windows.Forms.ToolStripSeparator(),
+                    beginSelfCap,
+                    endSelfCap,
+                });
+            }
+
             CheckUpdates();
 
             Thread remoteStatusThread = Helpers.NewThread(new ThreadStart(() =>
             {
+                m_Core.Config.AddAndroidHosts();
                 for (int i = 0; i < m_Core.Config.RemoteHosts.Count; i++)
                     m_Core.Config.RemoteHosts[i].CheckStatus();
             }));
             remoteStatusThread.Start();
 
-            sendErrorReportToolStripMenuItem.Enabled = OfficialVersion || BetaVersion;
+            sendErrorReportToolStripMenuItem.Enabled = OfficialVersion;
 
             // create default layout if layout failed to load
             if (!loaded)
@@ -675,8 +681,6 @@ namespace renderdocui.Windows
             Text = prefix + "RenderDoc ";
             if(OfficialVersion)
                 Text += VersionString;
-            else if(BetaVersion)
-                Text += String.Format("{0}-beta - {1}", VersionString, GitCommitHash);
             else
                 Text += String.Format("Unofficial release ({0} - {1})", VersionString, GitCommitHash);
 
@@ -826,7 +830,7 @@ namespace renderdocui.Windows
                         }
                         catch (Exception)
                         {
-                            MessageBox.Show("Couldn't copy " + filename + " to remote host for replaying", "Error copying to remote",
+                            MessageBox.Show("Couldn't copy " + origFilename + " to remote host for replaying", "Error copying to remote",
                                                             MessageBoxButtons.OK, MessageBoxIcon.Error);
                             return;
                         }
@@ -1001,46 +1005,90 @@ namespace renderdocui.Windows
             return "";
         }
 
-        private LiveCapture OnCaptureTrigger(string exe, string workingDir, string cmdLine, EnvironmentModification[] env, CaptureOptions opts)
+        private void OnCaptureTrigger(string exe, string workingDir, string cmdLine, EnvironmentModification[] env, CaptureOptions opts, Dialogs.CaptureDialog.OnConnectionEstablishedMethod callback)
         {
             if (!PromptCloseLog())
-                return null;
+                return;
 
             string logfile = m_Core.TempLogFilename(Path.GetFileNameWithoutExtension(exe));
 
-            UInt32 ret = m_Core.Renderer.ExecuteAndInject(exe, workingDir, cmdLine, env, logfile, opts);
+            StaticExports.SetConfigSetting("MaxConnectTimeout", m_Core.Config.MaxConnectTimeout.ToString());
 
-            if (ret == 0)
+            Thread th = Helpers.NewThread(new ThreadStart(() =>
             {
-                MessageBox.Show(string.Format("Error launching {0} for capture.\n\nCheck diagnostic log in Help menu for more details.", exe),
-                                   "Error kicking capture", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return null;
-            }
+                UInt32 ret = m_Core.Renderer.ExecuteAndInject(exe, workingDir, cmdLine, env, logfile, opts);
 
-            var live = new LiveCapture(m_Core, m_Core.Renderer.Remote == null ? "" : m_Core.Renderer.Remote.Hostname, ret, this);
-            ShowLiveCapture(live);
-            return live;
+                this.BeginInvoke(new Action(() =>
+                {
+                    if (ret == 0)
+                    {
+                        MessageBox.Show(string.Format("Error launching {0} for capture.\n\nCheck diagnostic log in Help menu for more details.", exe),
+                                           "Error kicking capture", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    var live = new LiveCapture(m_Core, m_Core.Renderer.Remote == null ? "" : m_Core.Renderer.Remote.Hostname, ret, this);
+                    ShowLiveCapture(live);
+                    callback(live);
+                }));
+            }));
+            th.Start();
+
+            // wait a few ms before popping up a progress bar
+            th.Join(500);
+
+            if (th.IsAlive)
+            {
+                ProgressPopup modal = new ProgressPopup((ModalCloseCallback)delegate
+                {
+                    return !th.IsAlive;
+                }, false);
+                modal.SetModalText(String.Format("Launching {0}, please wait...", exe));
+
+                modal.ShowDialog();
+            }
         }
 
-        private LiveCapture OnInjectTrigger(UInt32 PID, EnvironmentModification[] env, string name, CaptureOptions opts)
+        private void OnInjectTrigger(UInt32 PID, EnvironmentModification[] env, string name, CaptureOptions opts, Dialogs.CaptureDialog.OnConnectionEstablishedMethod callback)
         {
             if (!PromptCloseLog())
-                return null;
+                return;
 
             string logfile = m_Core.TempLogFilename(name);
 
-            UInt32 ret = StaticExports.InjectIntoProcess(PID, env, logfile, opts);
-
-            if (ret == 0)
+            Thread th = Helpers.NewThread(new ThreadStart(() =>
             {
-                MessageBox.Show(string.Format("Error injecting into process {0} for capture.\n\nCheck diagnostic log in Help menu for more details.", PID),
-                                   "Error kicking capture", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return null;
-            }
+                UInt32 ret = StaticExports.InjectIntoProcess(PID, env, logfile, opts);
 
-            var live = new LiveCapture(m_Core, "", ret, this);
-            ShowLiveCapture(live);
-            return live;
+                this.BeginInvoke(new Action(() =>
+                {
+                    if (ret == 0)
+                    {
+                        MessageBox.Show(string.Format("Error injecting into process {0} for capture.\n\nCheck diagnostic log in Help menu for more details.", PID),
+                                           "Error kicking capture", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    var live = new LiveCapture(m_Core, m_Core.Renderer.Remote == null ? "" : m_Core.Renderer.Remote.Hostname, ret, this);
+                    ShowLiveCapture(live);
+                    callback(live);
+                }));
+            }));
+            th.Start();
+
+            // wait a few ms before popping up a progress bar
+            th.Join(500);
+
+            if (th.IsAlive)
+            {
+                ProgressPopup modal = new ProgressPopup((ModalCloseCallback)delegate
+                {
+                    return !th.IsAlive;
+                }, false);
+                modal.SetModalText(String.Format("Injecting into {0}, please wait...", PID));
+
+                modal.ShowDialog();
+            }
         }
 
         private void captureLogToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1157,7 +1205,9 @@ namespace renderdocui.Windows
         {
             ToolStripItem item = sender as ToolStripItem;
 
-            if(item == null)
+            m_SelectedHost = null;
+
+            if (item == null)
                 return;
 
             RemoteHost host = item.Tag as RemoteHost;
@@ -1217,6 +1267,8 @@ namespace renderdocui.Windows
                 SetTitle();
 
                 statusText.Text = "Checking remote server status...";
+
+                m_SelectedHost = host;
 
                 Thread th = Helpers.NewThread(new ThreadStart(() =>
                 {
@@ -1330,7 +1382,7 @@ namespace renderdocui.Windows
         {
             if (IsVersionMismatched())
             {
-                if (!OfficialVersion && !BetaVersion)
+                if (!OfficialVersion)
                 {
                     MessageBox.Show("You are running an unofficial build with mismatched core and UI versions.\n" +
                         "Double check where you got your build from and do a sanity check!",
@@ -1369,7 +1421,7 @@ namespace renderdocui.Windows
                 return;
             }
 
-            if (!OfficialVersion && !BetaVersion)
+            if (!OfficialVersion)
             {
                 if (callback != null) callback(UpdateResult.Unofficial);
                 return;
@@ -1400,9 +1452,6 @@ namespace renderdocui.Windows
             m_Core.Config.CheckUpdate_LastUpdate = today;
 
             string versionCheck = BareVersionString;
-
-            if (BetaVersion)
-                versionCheck += String.Format("-{0}-beta", GitCommitHash.Substring(0, 8));
 
             statusText.Text = "Checking for updates...";
             statusProgress.Visible = true;
@@ -1654,6 +1703,31 @@ namespace renderdocui.Windows
                         }
                     }
                 }
+
+                Control sender = Control.FromHandle(msg.HWnd);
+
+                if (m_Core.LogLoaded && !(sender is TextBox) && !(sender is ScintillaNET.Scintilla))
+                {
+                    if (keyData == (Keys.Control | Keys.Left))
+                    {
+                        FetchDrawcall draw = m_Core.CurDrawcall;
+
+                        if (draw != null && draw.previous != null)
+                            m_Core.SetEventID(null, draw.previous.eventID);
+
+                        return true;
+                    }
+
+                    if (keyData == (Keys.Control | Keys.Right))
+                    {
+                        FetchDrawcall draw = m_Core.CurDrawcall;
+
+                        if (draw != null && draw.next != null)
+                            m_Core.SetEventID(null, draw.next.eventID);
+
+                        return true;
+                    }
+                }
             }
             return base.ProcessCmdKey(ref msg, keyData);
         }
@@ -1667,6 +1741,14 @@ namespace renderdocui.Windows
                     e.Cancel = true;
                     return;
                 }
+            }
+
+            if (StaticExports.IsGlobalHookActive())
+            {
+                MessageBox.Show("Cannot close RenderDoc while global hook is active.", "Global hook active",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                e.Cancel = true;
+                return;
             }
 
             if (!PromptCloseLog())
@@ -1946,12 +2028,10 @@ namespace renderdocui.Windows
 
         private void startAndroidRemoteServerToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // /K to keep the window open after finishing.
-            // We want to see the output, e.g. to see if adb is on the path.
-            ProcessStartInfo processInfo = new ProcessStartInfo("cmd.exe", "/K android_remoteserver.bat");
-
-            Process process = Process.Start(processInfo);
-            process.Close();
+            string device = "";
+            if (m_SelectedHost != null)
+                device = m_SelectedHost.Hostname;
+            StaticExports.StartAndroidRemoteServer(device);
         }
     }
 }

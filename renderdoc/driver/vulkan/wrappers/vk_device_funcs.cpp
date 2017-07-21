@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -47,8 +47,6 @@ void InitInstanceTable(VkInstance inst, PFN_vkGetInstanceProcAddr gpa);
 // and
 // instance are destroyed. We only clean up after our own objects.
 
-//#define FORCE_VALIDATION_LAYERS
-
 static void StripUnwantedLayers(vector<string> &Layers)
 {
   for(auto it = Layers.begin(); it != Layers.end();)
@@ -68,11 +66,20 @@ static void StripUnwantedLayers(vector<string> &Layers)
       continue;
     }
 
+    // also remove the framerate monitor layer as it's buggy and doesn't do anything
+    // in our case
+    if(*it == "VK_LAYER_LUNARG_monitor")
+    {
+      it = Layers.erase(it);
+      continue;
+    }
+
     // filter out validation layers
     if(*it == "VK_LAYER_LUNARG_standard_validation" || *it == "VK_LAYER_LUNARG_core_validation" ||
        *it == "VK_LAYER_LUNARG_device_limits" || *it == "VK_LAYER_LUNARG_image" ||
        *it == "VK_LAYER_LUNARG_object_tracker" || *it == "VK_LAYER_LUNARG_parameter_validation" ||
-       *it == "VK_LAYER_LUNARG_swapchain" || *it == "VK_LAYER_GOOGLE_threading")
+       *it == "VK_LAYER_LUNARG_swapchain" || *it == "VK_LAYER_GOOGLE_threading" ||
+       *it == "VK_LAYER_GOOGLE_unique_objects")
     {
       it = Layers.erase(it);
       continue;
@@ -82,10 +89,10 @@ static void StripUnwantedLayers(vector<string> &Layers)
   }
 }
 
-ReplayCreateStatus WrappedVulkan::Initialise(VkInitParams &params)
+ReplayStatus WrappedVulkan::Initialise(VkInitParams &params)
 {
   if(m_pSerialiser->HasError())
-    return eReplayCreate_FileIOFailed;
+    return ReplayStatus::FileIOFailed;
 
   m_InitParams = params;
 
@@ -95,20 +102,22 @@ ReplayCreateStatus WrappedVulkan::Initialise(VkInitParams &params)
   // PORTABILITY verify that layers/extensions are available
   StripUnwantedLayers(params.Layers);
 
-#if defined(FORCE_VALIDATION_LAYERS)
+#if ENABLED(FORCE_VALIDATION_LAYERS)
   params.Layers.push_back("VK_LAYER_LUNARG_standard_validation");
 
   params.Extensions.push_back("VK_EXT_debug_report");
 #endif
 
-  // strip out any WSI extensions. We'll add the ones we want for creating windows
+  // strip out any WSI/direct display extensions. We'll add the ones we want for creating windows
   // on the current platforms below, and we don't replay any of the WSI functionality
   // directly so these extensions aren't needed
   for(auto it = params.Extensions.begin(); it != params.Extensions.end();)
   {
     if(*it == "VK_KHR_xlib_surface" || *it == "VK_KHR_xcb_surface" ||
        *it == "VK_KHR_wayland_surface" || *it == "VK_KHR_mir_surface" ||
-       *it == "VK_KHR_android_surface" || *it == "VK_KHR_win32_surface")
+       *it == "VK_KHR_android_surface" || *it == "VK_KHR_win32_surface" ||
+       *it == "VK_KHR_display" || *it == "VK_EXT_direct_mode_display" ||
+       *it == "VK_EXT_acquire_xlib_display" || *it == "VK_EXT_display_surface_counter")
     {
       it = params.Extensions.erase(it);
     }
@@ -117,6 +126,8 @@ ReplayCreateStatus WrappedVulkan::Initialise(VkInitParams &params)
       ++it;
     }
   }
+
+  RDCEraseEl(m_ExtensionsEnabled);
 
   std::set<string> supportedExtensions;
 
@@ -155,7 +166,7 @@ ReplayCreateStatus WrappedVulkan::Initialise(VkInitParams &params)
 
   // error message will be printed to log in above function if something went wrong
   if(!ok)
-    return eReplayCreate_APIHardwareUnsupported;
+    return ReplayStatus::APIHardwareUnsupported;
 
   // verify that extensions & layers are supported
   for(size_t i = 0; i < params.Layers.size(); i++)
@@ -163,7 +174,7 @@ ReplayCreateStatus WrappedVulkan::Initialise(VkInitParams &params)
     if(supportedLayers.find(params.Layers[i]) == supportedLayers.end())
     {
       RDCERR("Log requires layer '%s' which is not supported", params.Layers[i].c_str());
-      return eReplayCreate_APIHardwareUnsupported;
+      return ReplayStatus::APIHardwareUnsupported;
     }
   }
 
@@ -172,7 +183,7 @@ ReplayCreateStatus WrappedVulkan::Initialise(VkInitParams &params)
     if(supportedExtensions.find(params.Extensions[i]) == supportedExtensions.end())
     {
       RDCERR("Log requires extension '%s' which is not supported", params.Extensions[i].c_str());
-      return eReplayCreate_APIHardwareUnsupported;
+      return ReplayStatus::APIHardwareUnsupported;
     }
   }
 
@@ -213,7 +224,7 @@ ReplayCreateStatus WrappedVulkan::Initialise(VkInitParams &params)
   SAFE_DELETE_ARRAY(extscstr);
 
   if(ret != VK_SUCCESS)
-    return eReplayCreate_APIHardwareUnsupported;
+    return ReplayStatus::APIHardwareUnsupported;
 
   RDCASSERTEQUAL(ret, VK_SUCCESS);
 
@@ -243,7 +254,24 @@ ReplayCreateStatus WrappedVulkan::Initialise(VkInitParams &params)
         ->CreateDebugReportCallbackEXT(Unwrap(m_Instance), &debugInfo, NULL, &m_DbgMsgCallback);
   }
 
-  return eReplayCreate_Success;
+  uint32_t count = 0;
+
+  VkResult vkr = ObjDisp(m_Instance)->EnumeratePhysicalDevices(Unwrap(m_Instance), &count, NULL);
+  RDCASSERTEQUAL(vkr, VK_SUCCESS);
+
+  m_ReplayPhysicalDevices.resize(count);
+  m_ReplayPhysicalDevicesUsed.resize(count);
+  m_OriginalPhysicalDevices.resize(count);
+  m_MemIdxMaps.resize(count);
+
+  vkr = ObjDisp(m_Instance)
+            ->EnumeratePhysicalDevices(Unwrap(m_Instance), &count, &m_ReplayPhysicalDevices[0]);
+  RDCASSERTEQUAL(vkr, VK_SUCCESS);
+
+  for(uint32_t i = 0; i < count; i++)
+    GetResourceManager()->WrapResource(m_Instance, m_ReplayPhysicalDevices[i]);
+
+  return ReplayStatus::Succeeded;
 }
 
 VkResult WrappedVulkan::vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo,
@@ -280,6 +308,33 @@ VkResult WrappedVulkan::vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo
   VkInstanceCreateInfo modifiedCreateInfo;
   modifiedCreateInfo = *pCreateInfo;
 
+  for(uint32_t i = 0; i < modifiedCreateInfo.enabledExtensionCount; i++)
+  {
+    if(!IsSupportedExtension(modifiedCreateInfo.ppEnabledExtensionNames[i]))
+    {
+      RDCERR("RenderDoc does not support instance extension '%s'.",
+             modifiedCreateInfo.ppEnabledExtensionNames[i]);
+      RDCERR("File an issue on github to request support: https://github.com/baldurk/renderdoc");
+
+      // see if any debug report callbacks were passed in the pNext chain
+      VkDebugReportCallbackCreateInfoEXT *report =
+          (VkDebugReportCallbackCreateInfoEXT *)pCreateInfo->pNext;
+
+      while(report)
+      {
+        if(report && report->sType == VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT)
+          report->pfnCallback(VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                              VK_DEBUG_REPORT_OBJECT_TYPE_INSTANCE_EXT, 0, 1, 1, "RDOC",
+                              "RenderDoc does not support a requested instance extension.",
+                              report->pUserData);
+
+        report = (VkDebugReportCallbackCreateInfoEXT *)report->pNext;
+      }
+
+      return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+  }
+
   const char **addedExts = new const char *[modifiedCreateInfo.enabledExtensionCount + 1];
 
   for(uint32_t i = 0; i < modifiedCreateInfo.enabledExtensionCount; i++)
@@ -309,10 +364,10 @@ VkResult WrappedVulkan::vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo
   record->instDevInfo = new InstanceDeviceInfo();
 
 #undef CheckExt
-#define CheckExt(name)                                                        \
-  if(!strcmp(modifiedCreateInfo.ppEnabledExtensionNames[i], STRINGIZE(name))) \
-  {                                                                           \
-    record->instDevInfo->name = true;                                         \
+#define CheckExt(name)                                              \
+  if(!strcmp(modifiedCreateInfo.ppEnabledExtensionNames[i], #name)) \
+  {                                                                 \
+    record->instDevInfo->ext_##name = true;                         \
   }
 
   for(uint32_t i = 0; i < modifiedCreateInfo.enabledExtensionCount; i++)
@@ -358,9 +413,16 @@ VkResult WrappedVulkan::vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo
 
 void WrappedVulkan::Shutdown()
 {
-  // flush out any pending commands
+  // flush out any pending commands/semaphores
   SubmitCmds();
+  SubmitSemaphores();
   FlushQ();
+
+  // destroy any events we created for waiting on
+  for(size_t i = 0; i < m_PersistentEvents.size(); i++)
+    ObjDisp(GetDev())->DestroyEvent(Unwrap(GetDev()), m_PersistentEvents[i], NULL);
+
+  m_PersistentEvents.clear();
 
   // since we didn't create proper registered resources for our command buffers,
   // they won't be taken down properly with the pool. So we release them (just our
@@ -372,6 +434,12 @@ void WrappedVulkan::Shutdown()
   ObjDisp(m_Device)->DestroyCommandPool(Unwrap(m_Device), Unwrap(m_InternalCmds.cmdpool), NULL);
   GetResourceManager()->ReleaseWrappedResource(m_InternalCmds.cmdpool);
 
+  for(size_t i = 0; i < m_InternalCmds.freesems.size(); i++)
+  {
+    ObjDisp(m_Device)->DestroySemaphore(Unwrap(m_Device), Unwrap(m_InternalCmds.freesems[i]), NULL);
+    GetResourceManager()->ReleaseWrappedResource(m_InternalCmds.freesems[i]);
+  }
+
   // we do more in Shutdown than the equivalent vkDestroyInstance since on replay there's
   // no explicit vkDestroyDevice, we destroy the device here then the instance
 
@@ -382,6 +450,11 @@ void WrappedVulkan::Shutdown()
     GetResourceManager()->ReleaseWrappedResource(m_CleanupMems[i]);
   }
   m_CleanupMems.clear();
+
+  // destroy the physical devices manually because due to remapping the may have leftover
+  // refcounts
+  for(size_t i = 0; i < m_ReplayPhysicalDevices.size(); i++)
+    GetResourceManager()->ReleaseWrappedResource(m_ReplayPhysicalDevices[i]);
 
   // destroy debug manager and any objects it created
   SAFE_DELETE(m_DebugManager);
@@ -407,6 +480,7 @@ void WrappedVulkan::Shutdown()
   m_Device = VK_NULL_HANDLE;
   m_Instance = VK_NULL_HANDLE;
 
+  m_ReplayPhysicalDevices.clear();
   m_PhysicalDevices.clear();
 
   for(size_t i = 0; i < m_QueueFamilies.size(); i++)
@@ -492,74 +566,118 @@ bool WrappedVulkan::Serialise_vkEnumeratePhysicalDevices(Serialiser *localSerial
   }
   else
   {
-    uint32_t count;
-    VkPhysicalDevice *devices;
-
-    instance = GetResourceManager()->GetLiveHandle<VkInstance>(inst);
-    VkResult vkr = ObjDisp(instance)->EnumeratePhysicalDevices(Unwrap(instance), &count, NULL);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
-
-    if(count <= physIndex)
     {
-      RDCERR(
-          "Capture had more physical devices than available on replay! This will lead to a crash "
-          "if they are used.");
-      return true;
+      VkDriverInfo capturedVersion(physProps);
+
+      RDCLOG("Captured log describes physical device %u:", physIndex);
+      RDCLOG("   - %s (ver %u.%u patch 0x%x) - %04x:%04x", physProps.deviceName,
+             capturedVersion.Major(), capturedVersion.Minor(), capturedVersion.Patch(),
+             physProps.vendorID, physProps.deviceID);
+
+      if(physIndex >= m_OriginalPhysicalDevices.size())
+        m_OriginalPhysicalDevices.resize(physIndex + 1);
+
+      m_OriginalPhysicalDevices[physIndex].props = physProps;
+      m_OriginalPhysicalDevices[physIndex].memProps = memProps;
+      m_OriginalPhysicalDevices[physIndex].features = physFeatures;
     }
 
-    devices = new VkPhysicalDevice[count];
+    // match up physical devices to those available on replay as best as possible. In general
+    // hopefully the most common case is when there's a precise match, and maybe the order changed.
+    //
+    // If more GPUs were present on replay than during capture, we map many-to-one which might have
+    // bad side-effects as e.g. we have to pick one memidxmap, but this is as good as we can do.
 
-    if(physIndex >= m_PhysicalDevices.size())
+    uint32_t bestIdx = 0;
+    VkPhysicalDeviceProperties bestPhysProps;
+    VkPhysicalDeviceMemoryProperties bestMemProps;
+
+    pd = m_ReplayPhysicalDevices[bestIdx];
+
+    ObjDisp(pd)->GetPhysicalDeviceProperties(Unwrap(pd), &bestPhysProps);
+    ObjDisp(pd)->GetPhysicalDeviceMemoryProperties(Unwrap(pd), &bestMemProps);
+
+    for(uint32_t i = 1; i < (uint32_t)m_ReplayPhysicalDevices.size(); i++)
     {
-      m_PhysicalDevices.resize(physIndex + 1);
-      m_MemIdxMaps.resize(physIndex + 1);
-    }
+      VkPhysicalDeviceProperties compPhysProps;
+      VkPhysicalDeviceMemoryProperties compMemProps;
 
-    vkr = ObjDisp(instance)->EnumeratePhysicalDevices(Unwrap(instance), &count, devices);
-    RDCASSERTEQUAL(vkr, VK_SUCCESS);
+      pd = m_ReplayPhysicalDevices[i];
 
-    // PORTABILITY match up physical devices to those available on replay
+      // find the best possible match for this physical device
+      ObjDisp(pd)->GetPhysicalDeviceProperties(Unwrap(pd), &compPhysProps);
+      ObjDisp(pd)->GetPhysicalDeviceMemoryProperties(Unwrap(pd), &compMemProps);
 
-    pd = devices[physIndex];
-
-    for(size_t i = 0; i < m_PhysicalDevices.size(); i++)
-    {
-      // physical devices might be re-created inside EnumeratePhysicalDevices every time, so
-      // we need to re-wrap any previously enumerated physical devices
-      if(m_PhysicalDevices[i] != VK_NULL_HANDLE)
+      // an exact vendorID match is a better match than not
+      if(compPhysProps.vendorID == physProps.vendorID && bestPhysProps.vendorID != physProps.vendorID)
       {
-        RDCASSERTNOTEQUAL(i, physIndex);
-        GetWrapped(m_PhysicalDevices[i])->RewrapObject(devices[i]);
+        bestIdx = i;
+        bestPhysProps = compPhysProps;
+        bestMemProps = compMemProps;
+        continue;
       }
+      else if(compPhysProps.vendorID != physProps.vendorID)
+      {
+        continue;
+      }
+
+      // ditto deviceID
+      if(compPhysProps.deviceID == physProps.deviceID && bestPhysProps.deviceID != physProps.deviceID)
+      {
+        bestIdx = i;
+        bestPhysProps = compPhysProps;
+        bestMemProps = compMemProps;
+        continue;
+      }
+      else if(compPhysProps.deviceID != physProps.deviceID)
+      {
+        continue;
+      }
+
+      // if we have multiple identical devices, which isn't uncommon, favour the one
+      // that hasn't been assigned
+      if(m_ReplayPhysicalDevicesUsed[bestIdx] && !m_ReplayPhysicalDevicesUsed[i])
+      {
+        bestIdx = i;
+        bestPhysProps = compPhysProps;
+        bestMemProps = compMemProps;
+        continue;
+      }
+
+      // this device isn't any better, ignore it
     }
 
-    SAFE_DELETE_ARRAY(devices);
+    {
+      VkDriverInfo runningVersion(bestPhysProps);
 
-    GetResourceManager()->WrapResource(instance, pd);
+      RDCLOG("Mapping during replay to physical device %u:", bestIdx);
+      RDCLOG("   - %s (ver %u.%u patch 0x%x) - %04x:%04x", bestPhysProps.deviceName,
+             runningVersion.Major(), runningVersion.Minor(), runningVersion.Patch(),
+             bestPhysProps.vendorID, bestPhysProps.deviceID);
+    }
+
+    pd = m_ReplayPhysicalDevices[bestIdx];
+
     GetResourceManager()->AddLiveResource(physId, pd);
 
+    if(physIndex >= m_PhysicalDevices.size())
+      m_PhysicalDevices.resize(physIndex + 1);
     m_PhysicalDevices[physIndex] = pd;
 
-    uint32_t *storedMap = new uint32_t[32];
-    memcpy(storedMap, memIdxMap, sizeof(memIdxMap));
-    m_MemIdxMaps[physIndex] = storedMap;
-
-    VkDriverInfo capturedVersion(physProps);
-
-    RDCLOG("Captured log describes physical device %u:", physIndex);
-    RDCLOG("   - %s (ver %u.%u patch 0x%x) - %04x:%04x", physProps.deviceName,
-           capturedVersion.Major(), capturedVersion.Minor(), capturedVersion.Patch(),
-           physProps.vendorID, physProps.deviceID);
-
-    ObjDisp(pd)->GetPhysicalDeviceProperties(Unwrap(pd), &physProps);
-    ObjDisp(pd)->GetPhysicalDeviceMemoryProperties(Unwrap(pd), &memProps);
-    ObjDisp(pd)->GetPhysicalDeviceFeatures(Unwrap(pd), &physFeatures);
-
-    VkDriverInfo runningVersion(physProps);
-
-    RDCLOG("Replaying on physical device %u:", physIndex);
-    RDCLOG("   - %s (ver %u.%u patch 0x%x) - %04x:%04x", physProps.deviceName, runningVersion.Major(),
-           runningVersion.Minor(), runningVersion.Patch(), physProps.vendorID, physProps.deviceID);
+    if(m_ReplayPhysicalDevicesUsed[bestIdx])
+    {
+      // error if we're remapping multiple physical devices to the same best match
+      RDCERR(
+          "Mappnig multiple capture-time physical devices to a single replay-time physical device."
+          "This means the HW has changed between capture and replay and may cause bugs.");
+    }
+    else
+    {
+      // the first physical device 'wins' for the memory index map
+      uint32_t *storedMap = new uint32_t[32];
+      memcpy(storedMap, memIdxMap, sizeof(memIdxMap));
+      m_MemIdxMaps[physIndex] = storedMap;
+    }
   }
 
   return true;
@@ -757,8 +875,20 @@ bool WrappedVulkan::Serialise_vkCreateDevice(Serialiser *localSerialiser,
     {
       // don't include the debug marker extension
       if(strcmp(createInfo.ppEnabledExtensionNames[i], VK_EXT_DEBUG_MARKER_EXTENSION_NAME))
-        Extensions.push_back(createInfo.ppEnabledExtensionNames[i]);
+        continue;
+
+      // don't include direct-display WSI extensions
+      if(strcmp(createInfo.ppEnabledExtensionNames[i], VK_KHR_DISPLAY_SWAPCHAIN_EXTENSION_NAME) ||
+         strcmp(createInfo.ppEnabledExtensionNames[i], VK_EXT_DISPLAY_CONTROL_EXTENSION_NAME) ||
+         strcmp(createInfo.ppEnabledExtensionNames[i], VK_EXT_DISPLAY_CONTROL_EXTENSION_NAME))
+        continue;
+
+      Extensions.push_back(createInfo.ppEnabledExtensionNames[i]);
     }
+
+    if(std::find(Extensions.begin(), Extensions.end(),
+                 VK_AMD_NEGATIVE_VIEWPORT_HEIGHT_EXTENSION_NAME) != Extensions.end())
+      m_ExtensionsEnabled[VkCheckExt_AMD_neg_viewport] = true;
 
     std::vector<string> Layers;
     for(uint32_t i = 0; i < createInfo.enabledLayerCount; i++)
@@ -790,7 +920,7 @@ bool WrappedVulkan::Serialise_vkCreateDevice(Serialiser *localSerialiser,
 
     AddRequiredExtensions(false, Extensions, supportedExtensions);
 
-#if defined(FORCE_VALIDATION_LAYERS)
+#if ENABLED(FORCE_VALIDATION_LAYERS)
     Layers.push_back("VK_LAYER_LUNARG_standard_validation");
 #endif
 
@@ -900,6 +1030,12 @@ bool WrappedVulkan::Serialise_vkCreateDevice(Serialiser *localSerialiser,
     VkPhysicalDeviceFeatures availFeatures = {0};
     ObjDisp(physicalDevice)->GetPhysicalDeviceFeatures(Unwrap(physicalDevice), &availFeatures);
 
+    if(availFeatures.depthClamp)
+      enabledFeatures.depthClamp = true;
+    else
+      RDCWARN(
+          "depthClamp = false, overlays like highlight drawcall won't show depth-clipped pixels.");
+
     if(availFeatures.fillModeNonSolid)
       enabledFeatures.fillModeNonSolid = true;
     else
@@ -922,6 +1058,20 @@ bool WrappedVulkan::Serialise_vkCreateDevice(Serialiser *localSerialiser,
     else
       RDCWARN(
           "shaderStorageImageWriteWithoutFormat = false, save/load from 2DMS textures will not be "
+          "possible");
+
+    if(availFeatures.shaderStorageImageMultisample)
+      enabledFeatures.shaderStorageImageMultisample = true;
+    else
+      RDCWARN(
+          "shaderStorageImageMultisample = false, save/load from 2DMS textures will not be "
+          "possible");
+
+    if(availFeatures.sampleRateShading)
+      enabledFeatures.sampleRateShading = true;
+    else
+      RDCWARN(
+          "sampleRateShading = false, save/load from depth 2DMS textures will not be "
           "possible");
 
     uint32_t numExts = 0;
@@ -1149,6 +1299,52 @@ VkResult WrappedVulkan::vkCreateDevice(VkPhysicalDevice physicalDevice,
     m_SetDeviceLoaderData = layerCreateInfo->u.pfnSetDeviceLoaderData;
   }
 
+  // patch enabled features
+
+  VkPhysicalDeviceFeatures availFeatures;
+
+  ObjDisp(physicalDevice)->GetPhysicalDeviceFeatures(Unwrap(physicalDevice), &availFeatures);
+
+  // default to all off. This is equivalent to createInfo.pEnabledFeatures == NULL
+  VkPhysicalDeviceFeatures enabledFeatures = {0};
+
+  // if the user enabled features, of course we want to enable them.
+  if(createInfo.pEnabledFeatures)
+    enabledFeatures = *createInfo.pEnabledFeatures;
+
+  if(availFeatures.shaderStorageImageWriteWithoutFormat)
+    enabledFeatures.shaderStorageImageWriteWithoutFormat = true;
+  else
+    RDCWARN(
+        "shaderStorageImageWriteWithoutFormat = false, save/load from 2DMS textures will not be "
+        "possible");
+
+  if(availFeatures.shaderStorageImageMultisample)
+    enabledFeatures.shaderStorageImageMultisample = true;
+  else
+    RDCWARN(
+        "shaderStorageImageMultisample = false, save/load from 2DMS textures will not be "
+        "possible");
+
+  if(availFeatures.sampleRateShading)
+    enabledFeatures.sampleRateShading = true;
+  else
+    RDCWARN(
+        "sampleRateShading = false, save/load from depth 2DMS textures will not be "
+        "possible");
+
+  if(availFeatures.occlusionQueryPrecise)
+    enabledFeatures.occlusionQueryPrecise = true;
+  else
+    RDCWARN("occlusionQueryPrecise = false, samples written counter will not work");
+
+  if(availFeatures.pipelineStatisticsQuery)
+    enabledFeatures.pipelineStatisticsQuery = true;
+  else
+    RDCWARN("pipelineStatisticsQuery = false, pipeline counters will not work");
+
+  createInfo.pEnabledFeatures = &enabledFeatures;
+
   VkResult ret = createFunc(Unwrap(physicalDevice), &createInfo, pAllocator, pDevice);
 
   // don't serialise out any of the pNext stuff for layer initialisation
@@ -1184,17 +1380,18 @@ VkResult WrappedVulkan::vkCreateDevice(VkPhysicalDevice physicalDevice,
       record->instDevInfo = new InstanceDeviceInfo();
 
 #undef CheckExt
-#define CheckExt(name) record->instDevInfo->name = GetRecord(m_Instance)->instDevInfo->name;
+#define CheckExt(name) \
+  record->instDevInfo->ext_##name = GetRecord(m_Instance)->instDevInfo->ext_##name;
 
       // inherit extension enablement from instance, that way GetDeviceProcAddress can check
       // for enabled extensions for instance functions
       CheckInstanceExts();
 
 #undef CheckExt
-#define CheckExt(name)                                                \
-  if(!strcmp(createInfo.ppEnabledExtensionNames[i], STRINGIZE(name))) \
-  {                                                                   \
-    record->instDevInfo->name = true;                                 \
+#define CheckExt(name)                                      \
+  if(!strcmp(createInfo.ppEnabledExtensionNames[i], #name)) \
+  {                                                         \
+    record->instDevInfo->ext_##name = true;                 \
   }
 
       for(uint32_t i = 0; i < createInfo.enabledExtensionCount; i++)
@@ -1203,8 +1400,6 @@ VkResult WrappedVulkan::vkCreateDevice(VkPhysicalDevice physicalDevice,
       }
 
       InitDeviceExtensionTables(*pDevice);
-
-      GetRecord(m_Instance)->AddParent(record);
     }
     else
     {

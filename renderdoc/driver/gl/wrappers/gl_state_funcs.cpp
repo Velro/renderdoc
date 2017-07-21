@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -276,7 +276,12 @@ void WrappedOpenGL::glBlendEquationSeparatei(GLuint buf, GLenum modeRGB, GLenum 
 bool WrappedOpenGL::Serialise_glBlendBarrierKHR()
 {
   if(m_State <= EXECUTING)
-    m_Real.glBlendBarrierKHR();
+  {
+    if(IsGLES && m_Real.glBlendBarrier)
+      m_Real.glBlendBarrier();
+    else
+      m_Real.glBlendBarrierKHR();
+  }
 
   return true;
 }
@@ -286,6 +291,21 @@ void WrappedOpenGL::glBlendBarrierKHR()
   CoherentMapImplicitBarrier();
 
   m_Real.glBlendBarrierKHR();
+
+  if(m_State == WRITING_CAPFRAME)
+  {
+    SCOPED_SERIALISE_CONTEXT(BLEND_BARRIER);
+    Serialise_glBlendBarrierKHR();
+
+    m_ContextRecord->AddChunk(scope.Get());
+  }
+}
+
+void WrappedOpenGL::glBlendBarrier()
+{
+  CoherentMapImplicitBarrier();
+
+  m_Real.glBlendBarrier();
 
   if(m_State == WRITING_CAPFRAME)
   {
@@ -542,7 +562,10 @@ bool WrappedOpenGL::Serialise_glClearDepth(GLdouble depth)
 
   if(m_State <= EXECUTING)
   {
-    m_Real.glClearDepth(d);
+    if(IsGLES)
+      m_Real.glClearDepthf((float)d);
+    else
+      m_Real.glClearDepth(d);
   }
 
   return true;

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -36,6 +36,28 @@
 
 class WrappedID3D11Device;
 struct D3D11RenderState;
+
+// replay only class for handling marker regions
+struct D3D11MarkerRegion
+{
+  D3D11MarkerRegion(const std::string &marker);
+  ~D3D11MarkerRegion();
+  static void Set(const std::string &marker);
+
+  static WrappedID3D11Device *device;
+};
+
+TextureDim MakeTextureDim(D3D11_SRV_DIMENSION dim);
+TextureDim MakeTextureDim(D3D11_RTV_DIMENSION dim);
+TextureDim MakeTextureDim(D3D11_DSV_DIMENSION dim);
+TextureDim MakeTextureDim(D3D11_UAV_DIMENSION dim);
+AddressMode MakeAddressMode(D3D11_TEXTURE_ADDRESS_MODE addr);
+CompareFunc MakeCompareFunc(D3D11_COMPARISON_FUNC func);
+TextureFilter MakeFilter(D3D11_FILTER filter);
+LogicOp MakeLogicOp(D3D11_LOGIC_OP op);
+BlendMultiplier MakeBlendMultiplier(D3D11_BLEND blend, bool alpha);
+BlendOp MakeBlendOp(D3D11_BLEND_OP op);
+StencilOp MakeStencilOp(D3D11_STENCIL_OP op);
 
 ShaderReflection *MakeShaderReflection(DXBC::DXBCFile *dxbc);
 
@@ -347,6 +369,8 @@ enum D3D11ChunkType
   SWAP_PRESENT,
   RESTORE_STATE_AFTER_EXEC,
   RESTORE_STATE_AFTER_FINISH,
+
+  SWAP_DEVICE_STATE,
 
   NUM_D3D11_CHUNKS,
 };

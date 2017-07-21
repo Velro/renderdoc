@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -45,7 +45,9 @@ struct D3D12RenderState
   D3D12RenderState();
   D3D12RenderState &operator=(const D3D12RenderState &o);
 
-  void ApplyState(ID3D12GraphicsCommandList *list);
+  void ApplyState(ID3D12GraphicsCommandList *list) const;
+  void ApplyComputeRootElements(ID3D12GraphicsCommandList *cmd) const;
+  void ApplyGraphicsRootElements(ID3D12GraphicsCommandList *cmd) const;
 
   vector<D3D12_VIEWPORT> views;
   vector<D3D12_RECT> scissors;
@@ -54,37 +56,29 @@ struct D3D12RenderState
   bool rtSingle;
   PortableHandle dsv;
 
+  vector<ResourceId> GetRTVIDs() const;
+  ResourceId GetDSVID() const;
+
   struct SignatureElement
   {
     SignatureElement() : type(eRootUnknown), offset(0) {}
     SignatureElement(SignatureElementType t, ResourceId i, UINT64 o) : type(t), id(i), offset(o) {}
-    SignatureElement(UINT offs, UINT val) : type(eRootConst), offset(offs)
+    void SetConstant(UINT offs, UINT val) { SetConstants(1, &val, offs); }
+    void SetConstants(UINT numVals, const void *vals, UINT offs)
     {
       type = eRootConst;
-      SetValues(1, &val, offs);
-    }
-    SignatureElement(UINT numVals, const void *vals, UINT offs)
-    {
-      type = eRootConst;
-      SetValues(numVals, vals, offs);
-    }
 
-    void SetValues(UINT numVals, const void *vals, UINT offs)
-    {
       if(constants.size() < offs + numVals)
         constants.resize(offs + numVals);
 
       memcpy(&constants[offs], vals, numVals * sizeof(UINT));
     }
 
-    void SetToGraphics(D3D12ResourceManager *rm, ID3D12GraphicsCommandList *cmd, UINT slot)
+    void SetToGraphics(D3D12ResourceManager *rm, ID3D12GraphicsCommandList *cmd, UINT slot) const
     {
       if(type == eRootConst)
       {
-        if(constants.size() == 1)
-          cmd->SetGraphicsRoot32BitConstant(slot, constants[0], (UINT)offset);
-        else
-          cmd->SetGraphicsRoot32BitConstants(slot, (UINT)constants.size(), &constants[0], 0);
+        cmd->SetGraphicsRoot32BitConstants(slot, (UINT)constants.size(), &constants[0], 0);
       }
       else if(type == eRootTable)
       {
@@ -110,7 +104,7 @@ struct D3D12RenderState
       }
     }
 
-    void SetToCompute(D3D12ResourceManager *rm, ID3D12GraphicsCommandList *cmd, UINT slot)
+    void SetToCompute(D3D12ResourceManager *rm, ID3D12GraphicsCommandList *cmd, UINT slot) const
     {
       if(type == eRootConst)
       {
@@ -190,6 +184,6 @@ struct D3D12RenderState
   };
   vector<VertBuffer> vbuffers;
 
-  D3D12ResourceManager *GetResourceManager() { return m_ResourceManager; }
+  D3D12ResourceManager *GetResourceManager() const { return m_ResourceManager; }
   D3D12ResourceManager *m_ResourceManager;
 };

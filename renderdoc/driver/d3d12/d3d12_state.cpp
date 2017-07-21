@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -81,53 +81,126 @@ D3D12RenderState &D3D12RenderState::operator=(const D3D12RenderState &o)
   return *this;
 }
 
-void D3D12RenderState::ApplyState(ID3D12GraphicsCommandList *cmd)
+vector<ResourceId> D3D12RenderState::GetRTVIDs() const
 {
-  if(pipe != ResourceId())
-    cmd->SetPipelineState(GetResourceManager()->GetCurrentAs<ID3D12PipelineState>(pipe));
+  vector<ResourceId> ret;
 
-  if(!views.empty())
-    cmd->RSSetViewports((UINT)views.size(), &views[0]);
-
-  if(!scissors.empty())
-    cmd->RSSetScissorRects((UINT)scissors.size(), &scissors[0]);
-
-  if(topo != D3D_PRIMITIVE_TOPOLOGY_UNDEFINED)
-    cmd->IASetPrimitiveTopology(topo);
-
-  cmd->OMSetStencilRef(stencilRef);
-  cmd->OMSetBlendFactor(blendFactor);
-
-  if(ibuffer.buf != ResourceId())
+  if(rtSingle)
   {
-    D3D12_INDEX_BUFFER_VIEW ib;
+    if(!rts.empty())
+    {
+      const D3D12Descriptor *descs = DescriptorFromPortableHandle(GetResourceManager(), rts[0]);
 
-    ID3D12Resource *res = GetResourceManager()->GetCurrentAs<ID3D12Resource>(ibuffer.buf);
-    if(res)
-      ib.BufferLocation = res->GetGPUVirtualAddress() + ibuffer.offs;
-    else
-      ib.BufferLocation = 0;
+      for(UINT i = 0; i < rts.size(); i++)
+      {
+        RDCASSERT(descs[i].GetType() == D3D12Descriptor::TypeRTV);
+        ret.push_back(GetResID(descs[i].nonsamp.resource));
+      }
+    }
+  }
+  else
+  {
+    for(UINT i = 0; i < rts.size(); i++)
+    {
+      WrappedID3D12DescriptorHeap *heap =
+          GetResourceManager()->GetLiveAs<WrappedID3D12DescriptorHeap>(rts[0].heap);
 
-    ib.Format = (ibuffer.bytewidth == 2 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT);
-    ib.SizeInBytes = ibuffer.size;
+      const D3D12Descriptor &desc = heap->GetDescriptors()[rts[i].index];
 
-    cmd->IASetIndexBuffer(&ib);
+      RDCASSERT(desc.GetType() == D3D12Descriptor::TypeRTV);
+      ret.push_back(GetResID(desc.nonsamp.resource));
+    }
   }
 
-  for(size_t i = 0; i < vbuffers.size(); i++)
-  {
-    D3D12_VERTEX_BUFFER_VIEW vb;
+  return ret;
+}
 
-    ID3D12Resource *res = GetResourceManager()->GetCurrentAs<ID3D12Resource>(vbuffers[i].buf);
-    if(res)
-      vb.BufferLocation = res->GetGPUVirtualAddress() + vbuffers[i].offs;
-    else
+ResourceId D3D12RenderState::GetDSVID() const
+{
+  if(dsv.heap != ResourceId())
+  {
+    const D3D12Descriptor *desc = DescriptorFromPortableHandle(GetResourceManager(), dsv);
+
+    RDCASSERT(desc->GetType() == D3D12Descriptor::TypeDSV);
+
+    return GetResID(desc->nonsamp.resource);
+  }
+
+  return ResourceId();
+}
+
+void D3D12RenderState::ApplyState(ID3D12GraphicsCommandList *cmd) const
+{
+  D3D12_COMMAND_LIST_TYPE type = cmd->GetType();
+
+  if(type == D3D12_COMMAND_LIST_TYPE_DIRECT || type == D3D12_COMMAND_LIST_TYPE_BUNDLE)
+  {
+    if(pipe != ResourceId())
+      cmd->SetPipelineState(GetResourceManager()->GetCurrentAs<ID3D12PipelineState>(pipe));
+
+    if(!views.empty())
+      cmd->RSSetViewports((UINT)views.size(), &views[0]);
+
+    if(!scissors.empty())
+      cmd->RSSetScissorRects((UINT)scissors.size(), &scissors[0]);
+
+    if(topo != D3D_PRIMITIVE_TOPOLOGY_UNDEFINED)
+      cmd->IASetPrimitiveTopology(topo);
+
+    cmd->OMSetStencilRef(stencilRef);
+    cmd->OMSetBlendFactor(blendFactor);
+
+    if(ibuffer.buf != ResourceId())
+    {
+      D3D12_INDEX_BUFFER_VIEW ib;
+
+      ID3D12Resource *res = GetResourceManager()->GetCurrentAs<ID3D12Resource>(ibuffer.buf);
+      if(res)
+        ib.BufferLocation = res->GetGPUVirtualAddress() + ibuffer.offs;
+      else
+        ib.BufferLocation = 0;
+
+      ib.Format = (ibuffer.bytewidth == 2 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT);
+      ib.SizeInBytes = ibuffer.size;
+
+      cmd->IASetIndexBuffer(&ib);
+    }
+
+    for(size_t i = 0; i < vbuffers.size(); i++)
+    {
+      D3D12_VERTEX_BUFFER_VIEW vb;
       vb.BufferLocation = 0;
 
-    vb.StrideInBytes = vbuffers[i].stride;
-    vb.SizeInBytes = vbuffers[i].size;
+      if(vbuffers[i].buf != ResourceId())
+      {
+        ID3D12Resource *res = GetResourceManager()->GetCurrentAs<ID3D12Resource>(vbuffers[i].buf);
+        if(res)
+          vb.BufferLocation = res->GetGPUVirtualAddress() + vbuffers[i].offs;
+        else
+          vb.BufferLocation = 0;
 
-    cmd->IASetVertexBuffers((UINT)i, 1, &vb);
+        vb.StrideInBytes = vbuffers[i].stride;
+        vb.SizeInBytes = vbuffers[i].size;
+
+        cmd->IASetVertexBuffers((UINT)i, 1, &vb);
+      }
+    }
+
+    if(!rts.empty() || dsv.heap != ResourceId())
+    {
+      D3D12_CPU_DESCRIPTOR_HANDLE rtHandles[8];
+      D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CPUHandleFromPortableHandle(GetResourceManager(), dsv);
+
+      UINT rtCount = (UINT)rts.size();
+      UINT numActualHandles = rtSingle ? RDCMIN(1U, rtCount) : rtCount;
+
+      for(UINT i = 0; i < numActualHandles; i++)
+        rtHandles[i] = CPUHandleFromPortableHandle(GetResourceManager(), rts[i]);
+
+      // need to unwrap here, as FromPortableHandle unwraps too.
+      Unwrap(cmd)->OMSetRenderTargets((UINT)rts.size(), rtHandles, rtSingle ? TRUE : FALSE,
+                                      dsv.heap != ResourceId() ? &dsvHandle : NULL);
+    }
   }
 
   std::vector<ID3D12DescriptorHeap *> descHeaps;
@@ -139,28 +212,12 @@ void D3D12RenderState::ApplyState(ID3D12GraphicsCommandList *cmd)
   if(!descHeaps.empty())
     cmd->SetDescriptorHeaps((UINT)descHeaps.size(), &descHeaps[0]);
 
-  if(!rts.empty() || dsv.heap != ResourceId())
-  {
-    D3D12_CPU_DESCRIPTOR_HANDLE rtHandles[8];
-    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CPUHandleFromPortableHandle(GetResourceManager(), dsv);
-
-    UINT numActualHandles = rtSingle ? 1 : (UINT)rts.size();
-
-    for(UINT i = 0; i < numActualHandles; i++)
-      rtHandles[i] = CPUHandleFromPortableHandle(GetResourceManager(), rts[i]);
-
-    // need to unwrap here, as FromPortableHandle unwraps too.
-    Unwrap(cmd)->OMSetRenderTargets((UINT)rts.size(), rtHandles, rtSingle ? TRUE : FALSE,
-                                    dsv.heap != ResourceId() ? &dsvHandle : NULL);
-  }
-
   if(graphics.rootsig != ResourceId())
   {
     cmd->SetGraphicsRootSignature(
         GetResourceManager()->GetCurrentAs<ID3D12RootSignature>(graphics.rootsig));
 
-    for(size_t i = 0; i < graphics.sigelems.size(); i++)
-      graphics.sigelems[i].SetToGraphics(GetResourceManager(), cmd, (UINT)i);
+    ApplyGraphicsRootElements(cmd);
   }
 
   if(compute.rootsig != ResourceId())
@@ -168,7 +225,44 @@ void D3D12RenderState::ApplyState(ID3D12GraphicsCommandList *cmd)
     cmd->SetComputeRootSignature(
         GetResourceManager()->GetCurrentAs<ID3D12RootSignature>(compute.rootsig));
 
-    for(size_t i = 0; i < compute.sigelems.size(); i++)
+    ApplyComputeRootElements(cmd);
+  }
+}
+
+void D3D12RenderState::ApplyComputeRootElements(ID3D12GraphicsCommandList *cmd) const
+{
+  for(size_t i = 0; i < compute.sigelems.size(); i++)
+  {
+    // just don't set tables that aren't in the descriptor heaps, since it's invalid and can crash
+    // and is probably just from stale bindings that aren't going to be used
+    if(compute.sigelems[i].type != eRootTable ||
+       std::find(heaps.begin(), heaps.end(), compute.sigelems[i].id) != heaps.end())
+    {
       compute.sigelems[i].SetToCompute(GetResourceManager(), cmd, (UINT)i);
+    }
+    else
+    {
+      RDCDEBUG("Skipping setting possibly stale compute root table referring to heap %llu",
+               compute.sigelems[i].id);
+    }
+  }
+}
+
+void D3D12RenderState::ApplyGraphicsRootElements(ID3D12GraphicsCommandList *cmd) const
+{
+  for(size_t i = 0; i < graphics.sigelems.size(); i++)
+  {
+    // just don't set tables that aren't in the descriptor heaps, since it's invalid and can crash
+    // and is probably just from stale bindings that aren't going to be used
+    if(graphics.sigelems[i].type != eRootTable ||
+       std::find(heaps.begin(), heaps.end(), graphics.sigelems[i].id) != heaps.end())
+    {
+      graphics.sigelems[i].SetToGraphics(GetResourceManager(), cmd, (UINT)i);
+    }
+    else
+    {
+      RDCDEBUG("Skipping setting possibly stale graphics root table referring to heap %llu",
+               graphics.sigelems[i].id);
+    }
   }
 }

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -30,13 +30,16 @@
 
 struct GLHookSet;
 
-size_t GetCompressedByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum internalformat, int mip);
+size_t GetCompressedByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum internalformat);
 size_t GetByteSize(GLsizei w, GLsizei h, GLsizei d, GLenum format, GLenum type);
 GLenum GetBaseFormat(GLenum internalFormat);
 GLenum GetDataType(GLenum internalFormat);
-GLenum GetSizedFormat(const GLHookSet &gl, GLenum target, GLenum internalFormat);
+GLenum GetSizedFormat(const GLHookSet &gl, GLenum target, GLenum internalFormat,
+                      GLenum type = eGL_NONE);
 void GetFramebufferMipAndLayer(const GLHookSet &gl, GLenum framebuffer, GLenum attachment,
                                GLint *mip, GLint *layer);
+void GetTextureSwizzle(const GLHookSet &gl, GLuint tex, GLenum target, GLenum *swizzleRGBA);
+void SetTextureSwizzle(const GLHookSet &gl, GLuint tex, GLenum target, GLenum *swizzleRGBA);
 
 bool EmulateLuminanceFormat(const GLHookSet &gl, GLuint tex, GLenum target, GLenum &internalFormat,
                             GLenum &dataFormat);
@@ -55,12 +58,14 @@ bool IsUIntFormat(GLenum internalFormat);
 bool IsSIntFormat(GLenum internalFormat);
 bool IsSRGBFormat(GLenum internalFormat);
 
+bool IsCubeFace(GLenum target);
 GLint CubeTargetIndex(GLenum face);
 GLenum TextureBinding(GLenum target);
 GLenum TextureTarget(GLenum target);
 bool IsProxyTarget(GLenum target);
 
 GLenum BufferBinding(GLenum target);
+GLenum FramebufferBinding(GLenum target);
 
 enum GLNamespace
 {
@@ -196,6 +201,8 @@ struct GLResourceRecord : public ResourceRecord
 {
   static const NullInitialiser NullResource = MakeNullResource;
 
+  static byte markerValue[32];
+
   GLResourceRecord(ResourceId id) : ResourceRecord(id, true), datatype(eGL_NONE), usage(eGL_NONE)
   {
     RDCEraseEl(ShadowPtr);
@@ -218,6 +225,7 @@ struct GLResourceRecord : public ResourceRecord
     GLbitfield access;
     MapStatus status;
     bool invalidate;
+    bool verifyWrite;
     byte *ptr;
 
     byte *persistentPtr;
@@ -244,7 +252,7 @@ struct GLResourceRecord : public ResourceRecord
 
   void VerifyDataType(GLenum target)
   {
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
     if(target == eGL_NONE)
       return;    // target == GL_NONE means ARB_dsa, target was omitted
     if(datatype == eGL_NONE)
@@ -271,9 +279,25 @@ struct GLResourceRecord : public ResourceRecord
   {
     if(ShadowPtr[0] == NULL)
     {
-      ShadowPtr[0] = Serialiser::AllocAlignedBuffer(size);
-      ShadowPtr[1] = Serialiser::AllocAlignedBuffer(size);
+      ShadowPtr[0] = Serialiser::AllocAlignedBuffer(size + sizeof(markerValue));
+      ShadowPtr[1] = Serialiser::AllocAlignedBuffer(size + sizeof(markerValue));
+
+      memcpy(ShadowPtr[0] + size, markerValue, sizeof(markerValue));
+      memcpy(ShadowPtr[1] + size, markerValue, sizeof(markerValue));
+
+      ShadowSize = size;
     }
+  }
+
+  bool VerifyShadowStorage()
+  {
+    if(ShadowPtr[0] && memcmp(ShadowPtr[0] + ShadowSize, markerValue, sizeof(markerValue)))
+      return false;
+
+    if(ShadowPtr[1] && memcmp(ShadowPtr[1] + ShadowSize, markerValue, sizeof(markerValue)))
+      return false;
+
+    return true;
   }
 
   void FreeShadowStorage()
@@ -289,4 +313,5 @@ struct GLResourceRecord : public ResourceRecord
   byte *GetShadowPtr(int p) { return ShadowPtr[p]; }
 private:
   byte *ShadowPtr[2];
+  size_t ShadowSize;
 };

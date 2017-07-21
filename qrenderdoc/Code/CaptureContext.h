@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,37 +25,36 @@
 #pragma once
 
 #include <QDebug>
-#include <QFileDialog>
 #include <QList>
 #include <QMap>
 #include <QMessageBox>
 #include <QString>
 #include <QtWidgets/QWidget>
-#include "CommonPipelineState.h"
-#include "PersistantConfig.h"
-#include "RenderManager.h"
+#include "Interface/QRDInterface.h"
+#include "ReplayManager.h"
 
 #if defined(RENDERDOC_PLATFORM_LINUX)
 #include <QX11Info>
 #endif
 
-struct ILogViewerForm
-{
-  virtual void OnLogfileLoaded() = 0;
-  virtual void OnLogfileClosed() = 0;
-  virtual void OnEventSelected(uint32_t eventID) = 0;
-};
-
-struct ILogLoadProgressListener
-{
-  virtual void LogfileProgressBegin() = 0;
-  virtual void LogfileProgress(float progress) = 0;
-};
-
 class MainWindow;
+class EventBrowser;
+class APIInspector;
+class PipelineStateViewer;
+class BufferViewer;
+class TextureViewer;
+class CaptureDialog;
+class DebugMessageView;
+class StatisticsViewer;
+class TimelineBar;
+class PythonShell;
 
-class CaptureContext
+QString ConfigFilePath(const QString &filename);
+
+class CaptureContext : public ICaptureContext
 {
+  Q_DECLARE_TR_FUNCTIONS(CaptureContext);
+
 public:
   CaptureContext(QString paramFilename, QString remoteHost, uint32_t remoteIdent, bool temp,
                  PersistantConfig &cfg);
@@ -63,105 +62,177 @@ public:
 
   bool isRunning();
 
-  static QString ConfigFile(const QString &filename);
-
-  static QString TempLogFilename(QString appname);
+  QString ConfigFilePath(const QString &filename) override { return ::ConfigFilePath(filename); }
+  QString TempLogFilename(QString appname) override;
 
   //////////////////////////////////////////////////////////////////////////////
   // Control functions
 
-  // loading a local log, no remote replay
-  void LoadLogfile(QString logFile, bool temporary);
+  void LoadLogfile(const QString &logFile, const QString &origFilename, bool temporary,
+                   bool local) override;
 
-  // when loading a log while replaying remotely, provide the proxy renderer that will be used
-  // as well as the hostname to replay on.
-  void LoadLogfile(int proxyRenderer, QString replayHost, QString logFile, bool temporary);
+  void CloseLogfile() override;
 
-  void CloseLogfile();
-
-  void SetEventID(ILogViewerForm *exclude, uint32_t eventID);
-
-  void AddLogProgressListener(ILogLoadProgressListener *p);
-
-  void AddLogViewer(ILogViewerForm *f)
+  void SetEventID(const QVector<ILogViewer *> &exclude, uint32_t selectedEventID, uint32_t eventID,
+                  bool force = false) override;
+  void RefreshStatus() override { SetEventID({}, m_SelectedEventID, m_EventID, true); }
+  void AddLogViewer(ILogViewer *f) override
   {
     m_LogViewers.push_back(f);
 
     if(LogLoaded())
     {
       f->OnLogfileLoaded();
-      f->OnEventSelected(CurEvent());
+      f->OnEventChanged(CurEvent());
     }
   }
 
-  void RemoveLogViewer(ILogViewerForm *f) { m_LogViewers.removeAll(f); }
-  //////////////////////////////////////////////////////////////////////////////
-  // Singleton windows
-
-  /*
-  private MainWindow m_MainWindow = null;
-  private EventBrowser m_EventBrowser = null;
-  private APIInspector m_APIInspector = null;
-  private DebugMessages m_DebugMessages = null;
-  private TimelineBar m_TimelineBar = null;
-  private TextureViewer m_TextureViewer = null;
-  private PipelineStateViewer m_PipelineStateViewer = null;
-  */
-
+  void RemoveLogViewer(ILogViewer *f) override { m_LogViewers.removeAll(f); }
   //////////////////////////////////////////////////////////////////////////////
   // Accessors
 
-  RenderManager *Renderer() { return &m_Renderer; }
-  bool LogLoaded() { return m_LogLoaded; }
-  bool LogLoading() { return m_LoadInProgress; }
-  QString LogFilename() { return m_LogFile; }
-  const FetchFrameInfo &FrameInfo() { return m_FrameInfo; }
-  const APIProperties &APIProps() { return m_APIProps; }
-  uint32_t CurEvent() { return m_EventID; }
-  const FetchDrawcall *CurDrawcall() { return GetDrawcall(CurEvent()); }
-  const rdctype::array<FetchDrawcall> &CurDrawcalls() { return m_Drawcalls; }
-  FetchTexture *GetTexture(ResourceId id) { return m_Textures[id]; }
-  const rdctype::array<FetchTexture> &GetTextures() { return m_TextureList; }
-  FetchBuffer *GetBuffer(ResourceId id) { return m_Buffers[id]; }
-  const rdctype::array<FetchBuffer> &GetBuffers() { return m_BufferList; }
-  QVector<DebugMessage> DebugMessages;
-  int UnreadMessageCount;
-  void AddMessages(rdctype::array<DebugMessage> &msgs)
+  ReplayManager &Replay() override { return m_Renderer; }
+  bool LogLoaded() override { return m_LogLoaded; }
+  bool IsLogLocal() override { return m_LogLocal; }
+  bool LogLoading() override { return m_LoadInProgress; }
+  QString LogFilename() override { return m_LogFile; }
+  const FrameDescription &FrameInfo() override { return m_FrameInfo; }
+  const APIProperties &APIProps() override { return m_APIProps; }
+  uint32_t CurSelectedEvent() override { return m_SelectedEventID; }
+  uint32_t CurEvent() override { return m_EventID; }
+  const DrawcallDescription *CurSelectedDrawcall() override
   {
-    UnreadMessageCount += msgs.count;
-    for(DebugMessage &msg : msgs)
-      DebugMessages.push_back(msg);
+    return GetDrawcall(CurSelectedEvent());
+  }
+  const DrawcallDescription *CurDrawcall() override { return GetDrawcall(CurEvent()); }
+  const DrawcallDescription *GetFirstDrawcall() override { return m_FirstDrawcall; };
+  const DrawcallDescription *GetLastDrawcall() override { return m_LastDrawcall; };
+  const rdctype::array<DrawcallDescription> &CurDrawcalls() override { return m_Drawcalls; }
+  TextureDescription *GetTexture(ResourceId id) override { return m_Textures[id]; }
+  const rdctype::array<TextureDescription> &GetTextures() override { return m_TextureList; }
+  BufferDescription *GetBuffer(ResourceId id) override { return m_Buffers[id]; }
+  const rdctype::array<BufferDescription> &GetBuffers() override { return m_BufferList; }
+  const DrawcallDescription *GetDrawcall(uint32_t eventID) override
+  {
+    return GetDrawcall(m_Drawcalls, eventID);
   }
 
-  WindowingSystem m_CurWinSystem;
-  void *FillWindowingData(WId widget);
+  WindowingSystem CurWindowingSystem() override { return m_CurWinSystem; }
+  void *FillWindowingData(uintptr_t winId) override;
 
-  D3D11PipelineState CurD3D11PipelineState;
-  D3D12PipelineState CurD3D12PipelineState;
-  GLPipelineState CurGLPipelineState;
-  VulkanPipelineState CurVulkanPipelineState;
-  CommonPipelineState CurPipelineState;
+  const QVector<DebugMessage> &DebugMessages() override { return m_DebugMessages; }
+  int UnreadMessageCount() override { return m_UnreadMessageCount; }
+  void MarkMessagesRead() override { m_UnreadMessageCount = 0; }
+  void AddMessages(const rdctype::array<DebugMessage> &msgs) override;
 
-  PersistantConfig &Config;
+  IMainWindow *GetMainWindow() override;
+  IEventBrowser *GetEventBrowser() override;
+  IAPIInspector *GetAPIInspector() override;
+  ITextureViewer *GetTextureViewer() override;
+  IBufferViewer *GetMeshPreview() override;
+  IPipelineStateViewer *GetPipelineViewer() override;
+  ICaptureDialog *GetCaptureDialog() override;
+  IDebugMessageView *GetDebugMessageView() override;
+  IStatisticsViewer *GetStatisticsViewer() override;
+  ITimelineBar *GetTimelineBar() override;
+  IPythonShell *GetPythonShell() override;
 
+  bool HasEventBrowser() override { return m_EventBrowser != NULL; }
+  bool HasAPIInspector() override { return m_APIInspector != NULL; }
+  bool HasTextureViewer() override { return m_TextureViewer != NULL; }
+  bool HasPipelineViewer() override { return m_PipelineViewer != NULL; }
+  bool HasMeshPreview() override { return m_MeshPreview != NULL; }
+  bool HasCaptureDialog() override { return m_CaptureDialog != NULL; }
+  bool HasDebugMessageView() override { return m_DebugMessageView != NULL; }
+  bool HasStatisticsViewer() override { return m_StatisticsViewer != NULL; }
+  bool HasTimelineBar() override { return m_TimelineBar != NULL; }
+  bool HasPythonShell() override { return m_PythonShell != NULL; }
+  void ShowEventBrowser() override;
+  void ShowAPIInspector() override;
+  void ShowTextureViewer() override;
+  void ShowMeshPreview() override;
+  void ShowPipelineViewer() override;
+  void ShowCaptureDialog() override;
+  void ShowDebugMessageView() override;
+  void ShowStatisticsViewer() override;
+  void ShowTimelineBar() override;
+  void ShowPythonShell() override;
+
+  IShaderViewer *EditShader(bool customShader, const QString &entryPoint, const QStringMap &files,
+                            IShaderViewer::SaveCallback saveCallback,
+                            IShaderViewer::CloseCallback closeCallback) override;
+
+  IShaderViewer *DebugShader(const ShaderBindpointMapping *bind, const ShaderReflection *shader,
+                             ShaderStage stage, ShaderDebugTrace *trace,
+                             const QString &debugContext) override;
+
+  IShaderViewer *ViewShader(const ShaderBindpointMapping *bind, const ShaderReflection *shader,
+                            ShaderStage stage) override;
+
+  IBufferViewer *ViewBuffer(uint64_t byteOffset, uint64_t byteSize, ResourceId id,
+                            const QString &format = QString()) override;
+  IBufferViewer *ViewTextureAsBuffer(uint32_t arrayIdx, uint32_t mip, ResourceId id,
+                                     const QString &format = QString()) override;
+
+  IConstantBufferPreviewer *ViewConstantBuffer(ShaderStage stage, uint32_t slot,
+                                               uint32_t idx) override;
+  IPixelHistoryView *ViewPixelHistory(ResourceId texID, int x, int y,
+                                      const TextureDisplay &display) override;
+
+  QWidget *CreateBuiltinWindow(const QString &objectName) override;
+  void BuiltinWindowClosed(QWidget *window) override;
+
+  void RaiseDockWindow(QWidget *dockWindow) override;
+  void AddDockWindow(QWidget *newWindow, DockReference ref, QWidget *refWindow,
+                     float percentage = 0.5f) override;
+
+  D3D11Pipe::State &CurD3D11PipelineState() override { return m_CurD3D11PipelineState; }
+  D3D12Pipe::State &CurD3D12PipelineState() override { return m_CurD3D12PipelineState; }
+  GLPipe::State &CurGLPipelineState() override { return m_CurGLPipelineState; }
+  VKPipe::State &CurVulkanPipelineState() override { return m_CurVulkanPipelineState; }
+  CommonPipelineState &CurPipelineState() override { return m_CurPipelineState; }
+  PersistantConfig &Config() override { return m_Config; }
 private:
-  RenderManager m_Renderer;
+  ReplayManager m_Renderer;
 
-  QVector<ILogViewerForm *> m_LogViewers;
-  QVector<ILogLoadProgressListener *> m_ProgressListeners;
+  D3D11Pipe::State m_CurD3D11PipelineState;
+  D3D12Pipe::State m_CurD3D12PipelineState;
+  GLPipe::State m_CurGLPipelineState;
+  VKPipe::State m_CurVulkanPipelineState;
+  CommonPipelineState m_CurPipelineState;
 
-  bool m_LogLoaded, m_LoadInProgress;
+  PersistantConfig &m_Config;
+
+  QVector<ILogViewer *> m_LogViewers;
+
+  bool m_LogLoaded, m_LoadInProgress, m_LogLocal;
   QString m_LogFile;
 
+  QVector<DebugMessage> m_DebugMessages;
+  int m_UnreadMessageCount;
+
+  bool PassEquivalent(const DrawcallDescription &a, const DrawcallDescription &b);
+  bool ContainsMarker(const rdctype::array<DrawcallDescription> &m_Drawcalls);
+  void AddFakeProfileMarkers();
+
+  float m_LoadProgress = 0.0f;
+  float m_PostloadProgress = 0.0f;
+  float UpdateLoadProgress();
+
+  void LoadLogfileThreaded(const QString &logFile, const QString &origFilename, bool temporary,
+                           bool local);
+
+  uint32_t m_SelectedEventID;
   uint32_t m_EventID;
 
-  const FetchDrawcall *GetDrawcall(const rdctype::array<FetchDrawcall> &draws, uint32_t eventID)
+  const DrawcallDescription *GetDrawcall(const rdctype::array<DrawcallDescription> &draws,
+                                         uint32_t eventID)
   {
-    for(const FetchDrawcall &d : draws)
+    for(const DrawcallDescription &d : draws)
     {
       if(!d.children.empty())
       {
-        const FetchDrawcall *draw = GetDrawcall(d.children, eventID);
+        const DrawcallDescription *draw = GetDrawcall(d.children, eventID);
         if(draw != NULL)
           return draw;
       }
@@ -173,157 +244,41 @@ private:
     return NULL;
   }
 
-  const FetchDrawcall *GetDrawcall(uint32_t eventID) { return GetDrawcall(m_Drawcalls, eventID); }
-  rdctype::array<FetchDrawcall> m_Drawcalls;
+  void setupDockWindow(QWidget *shad);
+
+  rdctype::array<DrawcallDescription> m_Drawcalls;
 
   APIProperties m_APIProps;
-  FetchFrameInfo m_FrameInfo;
+  FrameDescription m_FrameInfo;
+  DrawcallDescription *m_FirstDrawcall = NULL;
+  DrawcallDescription *m_LastDrawcall = NULL;
 
-  QMap<ResourceId, FetchTexture *> m_Textures;
-  rdctype::array<FetchTexture> m_TextureList;
-  QMap<ResourceId, FetchBuffer *> m_Buffers;
-  rdctype::array<FetchBuffer> m_BufferList;
+  QMap<ResourceId, TextureDescription *> m_Textures;
+  rdctype::array<TextureDescription> m_TextureList;
+  QMap<ResourceId, BufferDescription *> m_Buffers;
+  rdctype::array<BufferDescription> m_BufferList;
 
   rdctype::array<WindowingSystem> m_WinSystems;
+
+  WindowingSystem m_CurWinSystem;
 
 #if defined(RENDERDOC_PLATFORM_LINUX)
   xcb_connection_t *m_XCBConnection;
   Display *m_X11Display;
 #endif
 
+  QIcon *m_Icon;
+
   // Windows
-  MainWindow *m_MainWindow;
-};
-
-// Utility class for invoking a lambda on the GUI thread.
-// This is supported by QTimer::singleShot on Qt 5.4 but it's probably
-// wise not to require a higher version that necessary.
-#include <functional>
-
-class GUIInvoke : public QObject
-{
-private:
-  Q_OBJECT
-  GUIInvoke(const std::function<void()> &f) : func(f) {}
-  std::function<void()> func;
-
-public:
-  static void call(const std::function<void()> &f);
-  static void blockcall(const std::function<void()> &f);
-
-protected slots:
-  void doInvoke()
-  {
-    func();
-    deleteLater();
-  }
-};
-
-// Utility class for calling a lambda on a new thread.
-#include <QThread>
-
-class LambdaThread : public QObject
-{
-private:
-  Q_OBJECT
-
-  std::function<void()> m_func;
-  QThread *m_Thread;
-
-public slots:
-  void process()
-  {
-    m_func();
-    m_Thread->quit();
-    deleteLater();
-    m_Thread->deleteLater();
-    m_Thread = NULL;
-  }
-
-public:
-  explicit LambdaThread(std::function<void()> f)
-  {
-    m_Thread = new QThread();
-    m_func = f;
-    moveToThread(m_Thread);
-    QObject::connect(m_Thread, &QThread::started, this, &LambdaThread::process);
-  }
-
-  void start(QThread::Priority prio = QThread::InheritPriority) { m_Thread->start(prio); }
-  bool isRunning() { return m_Thread; }
-};
-
-// helper for doing a manual blocking invoke of a dialog
-struct RDDialog
-{
-  static void show(QDialog *dialog);
-  static QMessageBox::StandardButton messageBox(
-      QMessageBox::Icon, QWidget *parent, const QString &title, const QString &text,
-      QMessageBox::StandardButtons buttons = QMessageBox::Ok,
-      QMessageBox::StandardButton defaultButton = QMessageBox::NoButton);
-
-  static QMessageBox::StandardButton information(
-      QWidget *parent, const QString &title, const QString &text,
-      QMessageBox::StandardButtons buttons = QMessageBox::Ok,
-      QMessageBox::StandardButton defaultButton = QMessageBox::NoButton)
-  {
-    return messageBox(QMessageBox::Information, parent, title, text, buttons, defaultButton);
-  }
-
-  static QMessageBox::StandardButton question(
-      QWidget *parent, const QString &title, const QString &text,
-      QMessageBox::StandardButtons buttons = QMessageBox::StandardButtons(QMessageBox::Yes |
-                                                                          QMessageBox::No),
-      QMessageBox::StandardButton defaultButton = QMessageBox::NoButton)
-  {
-    return messageBox(QMessageBox::Question, parent, title, text, buttons, defaultButton);
-  }
-
-  static QMessageBox::StandardButton warning(
-      QWidget *parent, const QString &title, const QString &text,
-      QMessageBox::StandardButtons buttons = QMessageBox::Ok,
-      QMessageBox::StandardButton defaultButton = QMessageBox::NoButton)
-  {
-    return messageBox(QMessageBox::Warning, parent, title, text, buttons, defaultButton);
-  }
-
-  static QMessageBox::StandardButton critical(
-      QWidget *parent, const QString &title, const QString &text,
-      QMessageBox::StandardButtons buttons = QMessageBox::Ok,
-      QMessageBox::StandardButton defaultButton = QMessageBox::NoButton)
-  {
-    return messageBox(QMessageBox::Critical, parent, title, text, buttons, defaultButton);
-  }
-
-  static QString getExistingDirectory(QWidget *parent = NULL, const QString &caption = QString(),
-                                      const QString &dir = QString(),
-                                      QFileDialog::Options options = QFileDialog::ShowDirsOnly);
-
-  static QString getOpenFileName(QWidget *parent = NULL, const QString &caption = QString(),
-                                 const QString &dir = QString(), const QString &filter = QString(),
-                                 QString *selectedFilter = NULL,
-                                 QFileDialog::Options options = QFileDialog::Options());
-
-  static QString getSaveFileName(QWidget *parent = NULL, const QString &caption = QString(),
-                                 const QString &dir = QString(), const QString &filter = QString(),
-                                 QString *selectedFilter = NULL,
-                                 QFileDialog::Options options = QFileDialog::Options());
-};
-
-// useful delegate for enforcing a given size
-#include <QItemDelegate>
-
-class SizeDelegate : public QItemDelegate
-{
-private:
-  Q_OBJECT
-
-  QSize m_Size;
-
-public:
-  SizeDelegate(QSize size) : m_Size(size) {}
-  QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
-  {
-    return m_Size;
-  }
+  MainWindow *m_MainWindow = NULL;
+  EventBrowser *m_EventBrowser = NULL;
+  APIInspector *m_APIInspector = NULL;
+  TextureViewer *m_TextureViewer = NULL;
+  BufferViewer *m_MeshPreview = NULL;
+  PipelineStateViewer *m_PipelineViewer = NULL;
+  CaptureDialog *m_CaptureDialog = NULL;
+  DebugMessageView *m_DebugMessageView = NULL;
+  StatisticsViewer *m_StatisticsViewer = NULL;
+  TimelineBar *m_TimelineBar = NULL;
+  PythonShell *m_PythonShell = NULL;
 };

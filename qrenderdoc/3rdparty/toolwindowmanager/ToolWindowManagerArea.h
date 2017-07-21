@@ -29,6 +29,7 @@
 #include <QVariantMap>
 
 class ToolWindowManager;
+class ToolWindowManagerTabBar;
 
 /*!
  * \brief The ToolWindowManagerArea class is a tab widget used to store tool windows.
@@ -45,12 +46,17 @@ public:
   /*!
    * Add \a toolWindow to this area.
    */
-  void addToolWindow(QWidget* toolWindow);
+  void addToolWindow(QWidget* toolWindow, int insertIndex = -1);
 
   /*!
    * Add \a toolWindows to this area.
    */
-  void addToolWindows(const QList<QWidget*>& toolWindows);
+  void addToolWindows(const QList<QWidget*>& toolWindows, int insertIndex = -1);
+
+  void enableUserDrop() { m_userCanDrop = true; }
+  void disableUserDrop() { m_userCanDrop = false; }
+
+  bool allowUserDrop() { return m_userCanDrop; }
 
   /*!
    * Returns a list of all tool windows in this area.
@@ -65,27 +71,36 @@ public:
   void updateToolWindow(QWidget* toolWindow);
 
 protected:
-  //! Reimplemented from QTabWidget::mousePressEvent.
-  virtual void mousePressEvent(QMouseEvent *);
-  //! Reimplemented from QTabWidget::mouseReleaseEvent.
-  virtual void mouseReleaseEvent(QMouseEvent *);
   //! Reimplemented from QTabWidget::mouseMoveEvent.
   virtual void mouseMoveEvent(QMouseEvent *);
   //! Reimplemented from QTabWidget::eventFilter.
   virtual bool eventFilter(QObject *object, QEvent *event);
 
+  //! Reimplemented from QTabWidget::tabInserted.
+  virtual void tabInserted(int index);
+  //! Reimplemented from QTabWidget::tabRemoved.
+  virtual void tabRemoved(int index);
+
 private:
   ToolWindowManager* m_manager;
+  ToolWindowManagerTabBar* m_tabBar;
   bool m_dragCanStart; // indicates that user has started mouse movement on QTabWidget
                        // that can be considered as dragging it if the cursor will leave
                        // its area
+  QPoint m_dragCanStartPos; // the position the cursor was at
 
   bool m_tabDragCanStart; // indicates that user has started mouse movement on QTabWidget
                           // that can be considered as dragging current tab
                           // if the cursor will leave the tab bar area
 
+  bool m_userCanDrop; // indictes the user is allowed to drop things on this area
+
   bool m_inTabMoved; // if we're in the tabMoved() function (so if we call tabMove to cancel
                      // the movement, we shouldn't re-check the tabMoved behaviour)
+
+  QVector<int> m_tabSelectOrder; // This is the 'history' order of the tabs as they were selected,
+                                 // with most recently selected index last. Any time a tab is closed
+                                 // we select the last one on the list.
 
   QVariantMap saveState(); // dump contents to variable
   void restoreState(const QVariantMap& data); //restore contents from given variable
@@ -93,11 +108,16 @@ private:
   //check if mouse left tab widget area so that dragging should start
   void check_mouse_move();
 
+  bool useMinimalTabBar();
+
   friend class ToolWindowManager;
+  friend class ToolWindowManagerTabBar;
   friend class ToolWindowManagerWrapper;
 
 private slots:
   void tabMoved(int from, int to);
+  void tabSelected(int index);
+  void tabClosing(int index);
 };
 
 #endif // TOOLWINDOWMANAGERAREA_H

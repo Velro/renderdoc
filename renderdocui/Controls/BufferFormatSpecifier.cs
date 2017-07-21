@@ -1,7 +1,7 @@
 ﻿/******************************************************************************
  * The MIT License (MIT)
  * 
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -77,7 +77,7 @@ namespace renderdocui.Windows.Dialogs
             }
         }
 
-        private void toggleHelp_Click(object sender, EventArgs e)
+        public void ToggleHelp()
         {
             helpText.Visible = !helpText.Visible;
 
@@ -98,6 +98,11 @@ namespace renderdocui.Windows.Dialogs
 
             tableLayoutPanel1.ResumeLayout(false);
             tableLayoutPanel1.PerformLayout();
+        }
+
+        private void toggleHelp_Click(object sender, EventArgs e)
+        {
+            ToggleHelp();
         }
     }
 

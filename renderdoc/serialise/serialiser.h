@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -102,7 +102,7 @@ public:
   uint32_t GetChunkType() { return m_ChunkType; }
   bool IsAligned() { return m_AlignedData; }
   bool IsTemporary() { return m_Temporary; }
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
   static uint64_t NumLiveChunks() { return m_LiveChunks; }
   static uint64_t TotalMem() { return m_TotalMem; }
 #else
@@ -132,7 +132,7 @@ private:
   byte *m_Data;
   string m_DebugStr;
 
-#if !defined(RELEASE)
+#if ENABLED(RDOC_DEVEL)
   static int64_t m_LiveChunks, m_MaxChunks, m_TotalMem;
 #endif
 };
@@ -199,7 +199,7 @@ public:
   // Init and error handling
 
   Serialiser(size_t length, const byte *memoryBuf, bool fileheader);
-  Serialiser(const char *path, Mode mode, bool debugMode = false);
+  Serialiser(const char *path, Mode mode, bool debugMode, uint64_t sizeHint = 128 * 1024);
   ~Serialiser();
 
   bool HasError() { return m_HasError; }
@@ -231,6 +231,14 @@ public:
       return m_BufferSize;
 
     return m_BufferHead - m_Buffer;
+  }
+
+  uint64_t GetFileSize()
+  {
+    if(m_Mode == READING)
+      return m_FileSize;
+
+    return 0;
   }
 
   byte *GetRawPtr(size_t offs) const { return m_Buffer + offs; }
@@ -498,9 +506,10 @@ public:
     }
     else
     {
-      create_array_uninit(el, sz);
+      create_array_uninit(el, sz + 1);
       for(int32_t i = 0; i < sz; i++)
         Serialise("", el.elems[i]);
+      el.elems[sz] = 0;
     }
   }
 
@@ -680,6 +689,8 @@ private:
   // m_ReadOffset into the frame capture section
   uint64_t m_ReadOffset;
 
+  uint64_t m_FileSize;
+
   // how big is the current in-memory window
   size_t m_CurrentBufferSize;
 
@@ -841,3 +852,7 @@ struct ToStrHelper<true, T>
 // stringize the parameter
 #define TOSTR_CASE_STRINGIZE(a) \
   case a: return #a;
+
+// stringize the parameter (class enum version)
+#define TOSTR_CASE_STRINGIZE_SCOPED(a, b) \
+  case a::b: return #b;

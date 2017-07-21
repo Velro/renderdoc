@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -24,6 +24,8 @@
  ******************************************************************************/
 
 #include "gl_replay.h"
+#include "driver/ihv/amd/amd_isa.h"
+#include "maths/matrix.h"
 #include "serialise/string_utils.h"
 #include "gl_driver.h"
 #include "gl_resources.h"
@@ -36,12 +38,16 @@ GLReplay::GLReplay()
   m_pDriver = NULL;
   m_Proxy = false;
 
+  m_Degraded = false;
+
   RDCEraseEl(m_ReplayCtx);
   m_DebugCtx = NULL;
 
   m_DebugID = 0;
 
   m_OutputWindowID = 1;
+
+  RDCEraseEl(m_GetTexturePrevData);
 }
 
 void GLReplay::Shutdown()
@@ -53,6 +59,13 @@ void GLReplay::Shutdown()
   DestroyOutputWindow(m_DebugID);
 
   CloseReplayContext();
+
+  // clean up cached GetTextureData allocations
+  for(size_t i = 0; i < ARRAY_COUNT(m_GetTexturePrevData); i++)
+  {
+    delete[] m_GetTexturePrevData[i];
+    m_GetTexturePrevData[i] = NULL;
+  }
 
   delete m_pDriver;
 
@@ -77,13 +90,13 @@ vector<uint32_t> GLReplay::GetPassEvents(uint32_t eventID)
 {
   vector<uint32_t> passEvents;
 
-  const FetchDrawcall *draw = m_pDriver->GetDrawcall(eventID);
+  const DrawcallDescription *draw = m_pDriver->GetDrawcall(eventID);
 
-  const FetchDrawcall *start = draw;
+  const DrawcallDescription *start = draw;
   while(start && start->previous != 0 &&
-        (m_pDriver->GetDrawcall((uint32_t)start->previous)->flags & eDraw_Clear) == 0)
+        !(m_pDriver->GetDrawcall((uint32_t)start->previous)->flags & DrawFlags::Clear))
   {
-    const FetchDrawcall *prev = m_pDriver->GetDrawcall((uint32_t)start->previous);
+    const DrawcallDescription *prev = m_pDriver->GetDrawcall((uint32_t)start->previous);
 
     if(memcmp(start->outputs, prev->outputs, sizeof(start->outputs)) ||
        start->depthOut != prev->depthOut)
@@ -97,7 +110,7 @@ vector<uint32_t> GLReplay::GetPassEvents(uint32_t eventID)
     if(start == draw)
       break;
 
-    if(start->flags & eDraw_Drawcall)
+    if(start->flags & DrawFlags::Drawcall)
       passEvents.push_back(start->eventID);
 
     start = m_pDriver->GetDrawcall((uint32_t)start->next);
@@ -106,7 +119,7 @@ vector<uint32_t> GLReplay::GetPassEvents(uint32_t eventID)
   return passEvents;
 }
 
-FetchFrameRecord GLReplay::GetFrameRecord()
+FrameRecord GLReplay::GetFrameRecord()
 {
   return m_pDriver->GetFrameRecord();
 }
@@ -120,9 +133,9 @@ APIProperties GLReplay::GetAPIProperties()
 {
   APIProperties ret;
 
-  ret.pipelineType = eGraphicsAPI_OpenGL;
-  ret.localRenderer = eGraphicsAPI_OpenGL;
-  ret.degraded = false;
+  ret.pipelineType = GraphicsAPI::OpenGL;
+  ret.localRenderer = GraphicsAPI::OpenGL;
+  ret.degraded = m_Degraded;
 
   return ret;
 }
@@ -132,7 +145,13 @@ vector<ResourceId> GLReplay::GetBuffers()
   vector<ResourceId> ret;
 
   for(auto it = m_pDriver->m_Buffers.begin(); it != m_pDriver->m_Buffers.end(); ++it)
+  {
+    // skip buffers that aren't from the log
+    if(m_pDriver->GetResourceManager()->GetOriginalID(it->first) == it->first)
+      continue;
+
     ret.push_back(it->first);
+  }
 
   return ret;
 }
@@ -204,8 +223,9 @@ void GLReplay::CreateOutputWindowBackbuffer(OutputWindow &outwin, bool depth)
   gl.glGenTextures(1, &outwin.BlitData.backbuffer);
   gl.glBindTexture(eGL_TEXTURE_2D, outwin.BlitData.backbuffer);
 
-  gl.glTextureStorage2DEXT(outwin.BlitData.backbuffer, eGL_TEXTURE_2D, 1, eGL_SRGB8, outwin.width,
-                           outwin.height);
+  gl.glTextureImage2DEXT(outwin.BlitData.backbuffer, eGL_TEXTURE_2D, 0, eGL_SRGB8, outwin.width,
+                         outwin.height, 0, eGL_RGB, eGL_UNSIGNED_BYTE, NULL);
+  gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MAX_LEVEL, 0);
   gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MIN_FILTER, eGL_NEAREST);
   gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MAG_FILTER, eGL_NEAREST);
   gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_WRAP_S, eGL_CLAMP_TO_EDGE);
@@ -217,8 +237,10 @@ void GLReplay::CreateOutputWindowBackbuffer(OutputWindow &outwin, bool depth)
     gl.glGenTextures(1, &outwin.BlitData.depthstencil);
     gl.glBindTexture(eGL_TEXTURE_2D, outwin.BlitData.depthstencil);
 
-    gl.glTextureStorage2DEXT(outwin.BlitData.depthstencil, eGL_TEXTURE_2D, 1, eGL_DEPTH_COMPONENT24,
-                             outwin.width, outwin.height);
+    gl.glTextureImage2DEXT(outwin.BlitData.depthstencil, eGL_TEXTURE_2D, 0, eGL_DEPTH_COMPONENT24,
+                           outwin.width, outwin.height, 0, eGL_DEPTH_COMPONENT, eGL_UNSIGNED_INT,
+                           NULL);
+    gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MAX_LEVEL, 0);
     gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MIN_FILTER, eGL_NEAREST);
     gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MAG_FILTER, eGL_NEAREST);
     gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_WRAP_S, eGL_CLAMP_TO_EDGE);
@@ -309,7 +331,7 @@ void GLReplay::BindOutputWindow(uint64_t id, bool depth)
   DebugData.outHeight = float(outw.height);
 }
 
-void GLReplay::ClearOutputWindowColour(uint64_t id, float col[4])
+void GLReplay::ClearOutputWindowColor(uint64_t id, float col[4])
 {
   if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
     return;
@@ -421,7 +443,7 @@ bool GLReplay::IsRenderOutput(ResourceId id)
   return false;
 }
 
-FetchTexture GLReplay::GetTexture(ResourceId id)
+TextureDescription GLReplay::GetTexture(ResourceId id)
 {
   auto it = m_CachedTextures.find(id);
   if(it == m_CachedTextures.end())
@@ -435,7 +457,7 @@ FetchTexture GLReplay::GetTexture(ResourceId id)
 
 void GLReplay::CacheTexture(ResourceId id)
 {
-  FetchTexture tex;
+  TextureDescription tex;
 
   MakeCurrentReplayContext(&m_ReplayCtx);
 
@@ -453,13 +475,12 @@ void GLReplay::CacheTexture(ResourceId id)
     tex.customName = true;
     tex.format = ResourceFormat();
     tex.dimension = 1;
-    tex.resType = eResType_None;
+    tex.resType = TextureDim::Unknown;
     tex.width = tex.height = tex.depth = 1;
     tex.cubemap = false;
     tex.mips = 1;
     tex.arraysize = 1;
-    tex.numSubresources = 1;
-    tex.creationFlags = 0;
+    tex.creationFlags = TextureCategory::NoFlags;
     tex.msQual = 0;
     tex.msSamp = 1;
     tex.byteSize = 1;
@@ -471,29 +492,25 @@ void GLReplay::CacheTexture(ResourceId id)
   if(res.resource.Namespace == eResRenderbuffer || res.curType == eGL_RENDERBUFFER)
   {
     tex.dimension = 2;
-    tex.resType = eResType_Texture2D;
+    tex.resType = TextureDim::Texture2D;
     tex.width = res.width;
     tex.height = res.height;
     tex.depth = 1;
     tex.cubemap = false;
     tex.mips = 1;
     tex.arraysize = 1;
-    tex.numSubresources = 1;
-    tex.creationFlags = eTextureCreate_RTV;
+    tex.creationFlags = TextureCategory::ColorTarget;
     tex.msQual = 0;
     tex.msSamp = RDCMAX(1, res.samples);
 
-    tex.format = MakeResourceFormat(gl, eGL_TEXTURE_2D, res.internalFormat);
+    tex.format = MakeResourceFormat(gl.GetHookset(), eGL_TEXTURE_2D, res.internalFormat);
 
     if(IsDepthStencilFormat(res.internalFormat))
-      tex.creationFlags |= eTextureCreate_DSV;
+      tex.creationFlags |= TextureCategory::DepthTarget;
 
     tex.byteSize = (tex.width * tex.height) * (tex.format.compByteWidth * tex.format.compCount);
 
-    string str = "";
-    char name[128] = {0};
-    gl.glGetObjectLabel(eGL_RENDERBUFFER, res.resource.name, 127, NULL, name);
-    str = name;
+    string str = m_pDriver->GetResourceManager()->GetName(tex.ID);
     tex.customName = true;
 
     if(str == "")
@@ -504,9 +521,9 @@ void GLReplay::CacheTexture(ResourceId id)
       if(tex.msSamp > 1)
         ms = "MS";
 
-      if(tex.creationFlags & eTextureCreate_RTV)
+      if(tex.creationFlags & TextureCategory::ColorTarget)
         suffix = " RTV";
-      if(tex.creationFlags & eTextureCreate_DSV)
+      if(tex.creationFlags & TextureCategory::DepthTarget)
         suffix = " DSV";
 
       tex.customName = false;
@@ -567,20 +584,20 @@ void GLReplay::CacheTexture(ResourceId id)
 
   switch(target)
   {
-    case eGL_TEXTURE_BUFFER: tex.resType = eResType_Buffer; break;
-    case eGL_TEXTURE_1D: tex.resType = eResType_Texture1D; break;
-    case eGL_TEXTURE_2D: tex.resType = eResType_Texture2D; break;
-    case eGL_TEXTURE_3D: tex.resType = eResType_Texture3D; break;
-    case eGL_TEXTURE_1D_ARRAY: tex.resType = eResType_Texture1DArray; break;
-    case eGL_TEXTURE_2D_ARRAY: tex.resType = eResType_Texture2DArray; break;
-    case eGL_TEXTURE_RECTANGLE: tex.resType = eResType_TextureRect; break;
-    case eGL_TEXTURE_2D_MULTISAMPLE: tex.resType = eResType_Texture2DMS; break;
-    case eGL_TEXTURE_2D_MULTISAMPLE_ARRAY: tex.resType = eResType_Texture2DMSArray; break;
-    case eGL_TEXTURE_CUBE_MAP: tex.resType = eResType_TextureCube; break;
-    case eGL_TEXTURE_CUBE_MAP_ARRAY: tex.resType = eResType_TextureCubeArray; break;
+    case eGL_TEXTURE_BUFFER: tex.resType = TextureDim::Buffer; break;
+    case eGL_TEXTURE_1D: tex.resType = TextureDim::Texture1D; break;
+    case eGL_TEXTURE_2D: tex.resType = TextureDim::Texture2D; break;
+    case eGL_TEXTURE_3D: tex.resType = TextureDim::Texture3D; break;
+    case eGL_TEXTURE_1D_ARRAY: tex.resType = TextureDim::Texture1DArray; break;
+    case eGL_TEXTURE_2D_ARRAY: tex.resType = TextureDim::Texture2DArray; break;
+    case eGL_TEXTURE_RECTANGLE: tex.resType = TextureDim::TextureRect; break;
+    case eGL_TEXTURE_2D_MULTISAMPLE: tex.resType = TextureDim::Texture2DMS; break;
+    case eGL_TEXTURE_2D_MULTISAMPLE_ARRAY: tex.resType = TextureDim::Texture2DMSArray; break;
+    case eGL_TEXTURE_CUBE_MAP: tex.resType = TextureDim::TextureCube; break;
+    case eGL_TEXTURE_CUBE_MAP_ARRAY: tex.resType = TextureDim::TextureCubeArray; break;
 
     default:
-      tex.resType = eResType_None;
+      tex.resType = TextureDim::Unknown;
       RDCERR("Unexpected texture enum %s", ToStr::Get(target).c_str());
   }
 
@@ -631,22 +648,19 @@ void GLReplay::CacheTexture(ResourceId id)
 
   tex.creationFlags = res.creationFlags;
   if(res.resource.name == gl.m_FakeBB_Color || res.resource.name == gl.m_FakeBB_DepthStencil)
-    tex.creationFlags |= eTextureCreate_SwapBuffer;
+    tex.creationFlags |= TextureCategory::SwapBuffer;
 
   // surely this will be the same for each level... right? that would be insane if it wasn't
   GLint fmt = 0;
   gl.glGetTextureLevelParameterivEXT(res.resource.name, levelQueryType, 0,
                                      eGL_TEXTURE_INTERNAL_FORMAT, &fmt);
 
-  tex.format = MakeResourceFormat(gl, target, (GLenum)fmt);
+  tex.format = MakeResourceFormat(gl.GetHookset(), target, (GLenum)fmt);
 
-  if(tex.format.compType == eCompType_Depth)
-    tex.creationFlags |= eTextureCreate_DSV;
+  if(tex.format.compType == CompType::Depth)
+    tex.creationFlags |= TextureCategory::DepthTarget;
 
-  string str = "";
-  char name[128] = {0};
-  gl.glGetObjectLabel(eGL_TEXTURE, res.resource.name, 127, NULL, name);
-  str = name;
+  string str = m_pDriver->GetResourceManager()->GetName(tex.ID);
   tex.customName = true;
 
   if(str == "")
@@ -657,9 +671,9 @@ void GLReplay::CacheTexture(ResourceId id)
     if(tex.msSamp > 1)
       ms = "MS";
 
-    if(tex.creationFlags & eTextureCreate_RTV)
+    if(tex.creationFlags & TextureCategory::ColorTarget)
       suffix = " RTV";
-    if(tex.creationFlags & eTextureCreate_DSV)
+    if(tex.creationFlags & TextureCategory::DepthTarget)
       suffix = " DSV";
 
     tex.customName = false;
@@ -689,8 +703,7 @@ void GLReplay::CacheTexture(ResourceId id)
     tex.cubemap = false;
     tex.mips = 1;
     tex.arraysize = 1;
-    tex.numSubresources = 1;
-    tex.creationFlags = eTextureCreate_SRV;
+    tex.creationFlags = TextureCategory::ShaderRead;
     tex.msQual = 0;
     tex.msSamp = 1;
     tex.byteSize = 0;
@@ -705,8 +718,6 @@ void GLReplay::CacheTexture(ResourceId id)
 
   tex.mips = GetNumMips(gl.m_Real, target, res.resource.name, tex.width, tex.height, tex.depth);
 
-  tex.numSubresources = tex.mips * tex.arraysize;
-
   GLint compressed;
   gl.glGetTextureLevelParameterivEXT(res.resource.name, levelQueryType, 0, eGL_TEXTURE_COMPRESSED,
                                      &compressed);
@@ -717,9 +728,8 @@ void GLReplay::CacheTexture(ResourceId id)
     {
       if(compressed)
       {
-        gl.glGetTextureLevelParameterivEXT(res.resource.name, levelQueryType, m,
-                                           eGL_TEXTURE_COMPRESSED_IMAGE_SIZE, &compressed);
-        tex.byteSize += compressed;
+        tex.byteSize += (uint64_t)GetCompressedByteSize(
+            RDCMAX(1U, tex.width >> m), RDCMAX(1U, tex.height >> m), 1, (GLenum)fmt);
       }
       else if(tex.format.special)
       {
@@ -738,9 +748,9 @@ void GLReplay::CacheTexture(ResourceId id)
   m_CachedTextures[id] = tex;
 }
 
-FetchBuffer GLReplay::GetBuffer(ResourceId id)
+BufferDescription GLReplay::GetBuffer(ResourceId id)
 {
-  FetchBuffer ret;
+  BufferDescription ret;
 
   MakeCurrentReplayContext(&m_ReplayCtx);
 
@@ -765,29 +775,7 @@ FetchBuffer GLReplay::GetBuffer(ResourceId id)
     gl.glBindBuffer(res.curType, res.resource.name);
   }
 
-  ret.creationFlags = 0;
-  switch(res.curType)
-  {
-    case eGL_ARRAY_BUFFER: ret.creationFlags = eBufferCreate_VB; break;
-    case eGL_ELEMENT_ARRAY_BUFFER: ret.creationFlags = eBufferCreate_IB; break;
-    case eGL_UNIFORM_BUFFER: ret.creationFlags = eBufferCreate_CB; break;
-    case eGL_SHADER_STORAGE_BUFFER: ret.creationFlags = eBufferCreate_UAV; break;
-    case eGL_DRAW_INDIRECT_BUFFER:
-    case eGL_DISPATCH_INDIRECT_BUFFER:
-    case eGL_PARAMETER_BUFFER_ARB: ret.creationFlags = eBufferCreate_Indirect; break;
-    case eGL_PIXEL_PACK_BUFFER:
-    case eGL_PIXEL_UNPACK_BUFFER:
-    case eGL_COPY_WRITE_BUFFER:
-    case eGL_COPY_READ_BUFFER:
-    case eGL_QUERY_BUFFER:
-    case eGL_TEXTURE_BUFFER:
-    case eGL_TRANSFORM_FEEDBACK_BUFFER:
-    case eGL_ATOMIC_COUNTER_BUFFER: break;
-    case eGL_NONE:
-      break;    // could be from a 'create' DSA call which didn't ever bind the buffer to an
-                // explicit type
-    default: RDCERR("Unexpected buffer type %s", ToStr::Get(res.curType).c_str()); break;
-  }
+  ret.creationFlags = res.creationFlags;
 
   GLint size = 0;
   // if the type is NONE it's probably a DSA created buffer
@@ -810,10 +798,7 @@ FetchBuffer GLReplay::GetBuffer(ResourceId id)
     res.size = ret.length;
   }
 
-  string str = "";
-  char name[128] = {0};
-  gl.glGetObjectLabel(eGL_BUFFER, res.resource.name, 127, NULL, name);
-  str = name;
+  string str = m_pDriver->GetResourceManager()->GetName(ret.ID);
   ret.customName = true;
 
   if(str == "")
@@ -848,9 +833,46 @@ ShaderReflection *GLReplay::GetShader(ResourceId shader, string entryPoint)
   return &shaderDetails.reflection;
 }
 
+vector<string> GLReplay::GetDisassemblyTargets()
+{
+  vector<string> ret;
+
+  GCNISA::GetTargets(GraphicsAPI::OpenGL, ret);
+
+  // default is always first
+  ret.insert(ret.begin(), "SPIR-V (RenderDoc)");
+
+  return ret;
+}
+
+string GLReplay::DisassembleShader(const ShaderReflection *refl, const string &target)
+{
+  auto &shaderDetails = m_pDriver->m_Shaders[m_pDriver->GetResourceManager()->GetLiveID(refl->ID)];
+
+  if(shaderDetails.sources.empty())
+    return "Invalid Shader Specified";
+
+  if(target == "SPIR-V (RenderDoc)" || target.empty())
+  {
+    std::string &disasm = shaderDetails.disassembly;
+
+    if(disasm.empty())
+      disasm = shaderDetails.spirv.Disassemble(refl->EntryPoint.c_str());
+
+    return disasm;
+  }
+
+  ShaderStage stages[] = {
+      ShaderStage::Vertex,   ShaderStage::Tess_Control, ShaderStage::Tess_Eval,
+      ShaderStage::Geometry, ShaderStage::Fragment,     ShaderStage::Compute,
+  };
+
+  return GCNISA::Disassemble(stages[ShaderIdx(shaderDetails.type)], shaderDetails.sources, target);
+}
+
 void GLReplay::SavePipelineState()
 {
-  GLPipelineState &pipe = m_CurPipelineState;
+  GLPipe::State &pipe = m_CurPipelineState;
   WrappedOpenGL &gl = *m_pDriver;
   GLResourceManager *rm = m_pDriver->GetResourceManager();
 
@@ -912,7 +934,8 @@ void GLReplay::SavePipelineState()
     gl.glGetVertexAttribiv(i, eGL_VERTEX_ATTRIB_ARRAY_INTEGER, &integer);
 
     RDCEraseEl(pipe.m_VtxIn.attributes[i].GenericValue);
-    gl.glGetVertexAttribfv(i, eGL_CURRENT_VERTEX_ATTRIB, pipe.m_VtxIn.attributes[i].GenericValue.f);
+    gl.glGetVertexAttribfv(i, eGL_CURRENT_VERTEX_ATTRIB,
+                           pipe.m_VtxIn.attributes[i].GenericValue.value_f);
 
     ResourceFormat fmt;
 
@@ -927,83 +950,83 @@ void GLReplay::SavePipelineState()
       default:
       case eGL_BYTE:
         fmt.compByteWidth = 1;
-        fmt.compType = intComponent ? eCompType_SInt : eCompType_SNorm;
+        fmt.compType = intComponent ? CompType::SInt : CompType::SNorm;
         fmt.strname = (fmt.compCount > 1 ? StringFormat::Fmt("GL_BYTE%d", fmt.compCount)
                                          : string("GL_BYTE")) +
                       (intComponent ? "" : "_SNORM");
         break;
       case eGL_UNSIGNED_BYTE:
         fmt.compByteWidth = 1;
-        fmt.compType = intComponent ? eCompType_UInt : eCompType_UNorm;
+        fmt.compType = intComponent ? CompType::UInt : CompType::UNorm;
         fmt.strname = (fmt.compCount > 1 ? StringFormat::Fmt("GL_UNSIGNED_BYTE%d", fmt.compCount)
                                          : string("GL_UNSIGNED_BYTE")) +
                       (intComponent ? "" : "_UNORM");
         break;
       case eGL_SHORT:
         fmt.compByteWidth = 2;
-        fmt.compType = intComponent ? eCompType_SInt : eCompType_SNorm;
+        fmt.compType = intComponent ? CompType::SInt : CompType::SNorm;
         fmt.strname = (fmt.compCount > 1 ? StringFormat::Fmt("GL_SHORT%d", fmt.compCount)
                                          : string("GL_SHORT")) +
                       (intComponent ? "" : "_SNORM");
         break;
       case eGL_UNSIGNED_SHORT:
         fmt.compByteWidth = 2;
-        fmt.compType = intComponent ? eCompType_UInt : eCompType_UNorm;
+        fmt.compType = intComponent ? CompType::UInt : CompType::UNorm;
         fmt.strname = (fmt.compCount > 1 ? StringFormat::Fmt("GL_UNSIGNED_SHORT%d", fmt.compCount)
                                          : string("GL_UNSIGNED_SHORT")) +
                       (intComponent ? "" : "_UNORM");
         break;
       case eGL_INT:
         fmt.compByteWidth = 4;
-        fmt.compType = intComponent ? eCompType_SInt : eCompType_SNorm;
+        fmt.compType = intComponent ? CompType::SInt : CompType::SNorm;
         fmt.strname =
             (fmt.compCount > 1 ? StringFormat::Fmt("GL_INT%d", fmt.compCount) : string("GL_INT")) +
             (intComponent ? "" : "_SNORM");
         break;
       case eGL_UNSIGNED_INT:
         fmt.compByteWidth = 4;
-        fmt.compType = intComponent ? eCompType_UInt : eCompType_UNorm;
+        fmt.compType = intComponent ? CompType::UInt : CompType::UNorm;
         fmt.strname = (fmt.compCount > 1 ? StringFormat::Fmt("GL_UNSIGNED_INT%d", fmt.compCount)
                                          : string("GL_UNSIGNED_INT")) +
                       (intComponent ? "" : "_UNORM");
         break;
       case eGL_FLOAT:
         fmt.compByteWidth = 4;
-        fmt.compType = eCompType_Float;
+        fmt.compType = CompType::Float;
         fmt.strname = (fmt.compCount > 1 ? StringFormat::Fmt("GL_FLOAT%d", fmt.compCount)
                                          : string("GL_FLOAT"));
         break;
       case eGL_DOUBLE:
         fmt.compByteWidth = 8;
-        fmt.compType = eCompType_Double;
+        fmt.compType = CompType::Double;
         fmt.strname = (fmt.compCount > 1 ? StringFormat::Fmt("GL_DOUBLE%d", fmt.compCount)
                                          : string("GL_DOUBLE"));
         break;
       case eGL_HALF_FLOAT:
         fmt.compByteWidth = 2;
-        fmt.compType = eCompType_Float;
+        fmt.compType = CompType::Float;
         fmt.strname = (fmt.compCount > 1 ? StringFormat::Fmt("GL_HALF_FLOAT%d", fmt.compCount)
                                          : string("GL_HALF_FLOAT"));
         break;
       case eGL_INT_2_10_10_10_REV:
         fmt.special = true;
-        fmt.specialFormat = eSpecial_R10G10B10A2;
+        fmt.specialFormat = SpecialFormat::R10G10B10A2;
         fmt.compCount = 4;
-        fmt.compType = eCompType_UInt;
+        fmt.compType = CompType::UInt;
         fmt.strname = "GL_INT_2_10_10_10_REV";
         break;
       case eGL_UNSIGNED_INT_2_10_10_10_REV:
         fmt.special = true;
-        fmt.specialFormat = eSpecial_R10G10B10A2;
+        fmt.specialFormat = SpecialFormat::R10G10B10A2;
         fmt.compCount = 4;
-        fmt.compType = eCompType_SInt;
+        fmt.compType = CompType::SInt;
         fmt.strname = "GL_UNSIGNED_INT_2_10_10_10_REV";
         break;
       case eGL_UNSIGNED_INT_10F_11F_11F_REV:
         fmt.special = true;
-        fmt.specialFormat = eSpecial_R11G11B10;
+        fmt.specialFormat = SpecialFormat::R11G11B10;
         fmt.compCount = 3;
-        fmt.compType = eCompType_Float;
+        fmt.compType = CompType::Float;
         fmt.strname = "GL_UNSIGNED_INT_10F_11F_11F_REV";
         break;
     }
@@ -1013,7 +1036,7 @@ void GLReplay::SavePipelineState()
       fmt.compByteWidth = 1;
       fmt.compCount = 4;
       fmt.bgraOrder = true;
-      fmt.compType = eCompType_UNorm;
+      fmt.compType = CompType::UNorm;
 
       if(type == eGL_UNSIGNED_BYTE)
       {
@@ -1021,8 +1044,8 @@ void GLReplay::SavePipelineState()
       }
       else if(type == eGL_UNSIGNED_INT_2_10_10_10_REV || type == eGL_INT_2_10_10_10_REV)
       {
-        fmt.specialFormat = eSpecial_R10G10B10A2;
-        fmt.compType = type == eGL_UNSIGNED_INT_2_10_10_10_REV ? eCompType_UInt : eCompType_SInt;
+        fmt.specialFormat = SpecialFormat::R10G10B10A2;
+        fmt.compType = type == eGL_UNSIGNED_INT_2_10_10_10_REV ? CompType::UInt : CompType::SInt;
         fmt.strname = type == eGL_UNSIGNED_INT_2_10_10_10_REV ? "GL_UNSIGNED_INT_2_10_10_10_REV"
                                                               : "GL_INT_2_10_10_10_REV";
       }
@@ -1061,17 +1084,17 @@ void GLReplay::SavePipelineState()
   GLenum activeTexture = eGL_TEXTURE0;
   gl.glGetIntegerv(eGL_ACTIVE_TEXTURE, (GLint *)&activeTexture);
 
-  pipe.m_VS.stage = eShaderStage_Vertex;
-  pipe.m_TCS.stage = eShaderStage_Tess_Control;
-  pipe.m_TES.stage = eShaderStage_Tess_Eval;
-  pipe.m_GS.stage = eShaderStage_Geometry;
-  pipe.m_FS.stage = eShaderStage_Fragment;
-  pipe.m_CS.stage = eShaderStage_Compute;
+  pipe.m_VS.stage = ShaderStage::Vertex;
+  pipe.m_TCS.stage = ShaderStage::Tess_Control;
+  pipe.m_TES.stage = ShaderStage::Tess_Eval;
+  pipe.m_GS.stage = ShaderStage::Geometry;
+  pipe.m_FS.stage = ShaderStage::Fragment;
+  pipe.m_CS.stage = ShaderStage::Compute;
 
   GLuint curProg = 0;
   gl.glGetIntegerv(eGL_CURRENT_PROGRAM, (GLint *)&curProg);
 
-  GLPipelineState::ShaderStage *stages[6] = {
+  GLPipe::Shader *stages[6] = {
       &pipe.m_VS, &pipe.m_TCS, &pipe.m_TES, &pipe.m_GS, &pipe.m_FS, &pipe.m_CS,
   };
   ShaderReflection *refls[6] = {NULL};
@@ -1079,7 +1102,7 @@ void GLReplay::SavePipelineState()
 
   for(int i = 0; i < 6; i++)
   {
-    stages[i]->Shader = ResourceId();
+    stages[i]->Object = ResourceId();
     stages[i]->ShaderDetails = NULL;
     stages[i]->BindpointMapping.ConstantBlocks.Delete();
     stages[i]->BindpointMapping.ReadOnlyResources.Delete();
@@ -1103,12 +1126,7 @@ void GLReplay::SavePipelineState()
       ResourceId id = rm->GetID(ProgramPipeRes(ctx, curProg));
       auto &pipeDetails = m_pDriver->m_Pipelines[id];
 
-      string pipelineName;
-      {
-        char name[128] = {0};
-        gl.glGetObjectLabel(eGL_PROGRAM_PIPELINE, curProg, 127, NULL, name);
-        pipelineName = name;
-      }
+      string pipelineName = rm->GetName(rm->GetOriginalID(id));
 
       for(size_t i = 0; i < ARRAY_COUNT(pipeDetails.stageShaders); i++)
       {
@@ -1119,44 +1137,31 @@ void GLReplay::SavePipelineState()
         if(pipeDetails.stageShaders[i] != ResourceId())
         {
           curProg = rm->GetCurrentResource(pipeDetails.stagePrograms[i]).name;
-          stages[i]->Shader = rm->GetOriginalID(pipeDetails.stageShaders[i]);
+          stages[i]->Object = rm->GetOriginalID(pipeDetails.stageShaders[i]);
           refls[i] = GetShader(pipeDetails.stageShaders[i], "");
           GetBindpointMapping(gl.GetHookset(), curProg, (int)i, refls[i],
                               stages[i]->BindpointMapping);
           mappings[i] = &stages[i]->BindpointMapping;
 
-          {
-            char name[128] = {0};
-            gl.glGetObjectLabel(eGL_PROGRAM, curProg, 127, NULL, name);
-            stages[i]->ProgramName = name;
-            stages[i]->customProgramName = (name[0] != 0);
-          }
+          stages[i]->ProgramName = rm->GetName(rm->GetOriginalID(pipeDetails.stagePrograms[i]));
+          stages[i]->customProgramName = !stages[i]->ProgramName.empty();
 
-          {
-            char name[128] = {0};
-            gl.glGetObjectLabel(eGL_SHADER, rm->GetCurrentResource(pipeDetails.stageShaders[i]).name,
-                                127, NULL, name);
-            stages[i]->ShaderName = name;
-            stages[i]->customShaderName = (name[0] != 0);
-          }
+          stages[i]->ShaderName = rm->GetName(rm->GetOriginalID(pipeDetails.stageShaders[i]));
+          stages[i]->customShaderName = !stages[i]->ShaderName.empty();
         }
         else
         {
-          stages[i]->Shader = ResourceId();
+          stages[i]->Object = ResourceId();
         }
       }
     }
   }
   else
   {
-    auto &progDetails = m_pDriver->m_Programs[rm->GetID(ProgramRes(ctx, curProg))];
+    ResourceId id = rm->GetID(ProgramRes(ctx, curProg));
+    auto &progDetails = m_pDriver->m_Programs[id];
 
-    string programName;
-    {
-      char name[128] = {0};
-      gl.glGetObjectLabel(eGL_PROGRAM, curProg, 127, NULL, name);
-      programName = name;
-    }
+    string programName = rm->GetName(rm->GetOriginalID(id));
 
     for(size_t i = 0; i < ARRAY_COUNT(progDetails.stageShaders); i++)
     {
@@ -1165,49 +1170,48 @@ void GLReplay::SavePipelineState()
         stages[i]->ProgramName = programName;
         stages[i]->customProgramName = (programName != "");
 
-        stages[i]->Shader = rm->GetOriginalID(progDetails.stageShaders[i]);
+        stages[i]->Object = rm->GetOriginalID(progDetails.stageShaders[i]);
         refls[i] = GetShader(progDetails.stageShaders[i], "");
         GetBindpointMapping(gl.GetHookset(), curProg, (int)i, refls[i], stages[i]->BindpointMapping);
         mappings[i] = &stages[i]->BindpointMapping;
 
-        {
-          char name[128] = {0};
-          gl.glGetObjectLabel(eGL_SHADER, rm->GetCurrentResource(progDetails.stageShaders[i]).name,
-                              127, NULL, name);
-          stages[i]->ShaderName = name;
-          stages[i]->customShaderName = (name[0] != 0);
-        }
+        stages[i]->ShaderName = rm->GetName(rm->GetOriginalID(progDetails.stageShaders[i]));
+        stages[i]->customShaderName = !stages[i]->ShaderName.empty();
       }
     }
   }
 
   RDCEraseEl(pipe.m_Feedback);
 
-  GLuint feedback = 0;
-  gl.glGetIntegerv(eGL_TRANSFORM_FEEDBACK_BINDING, (GLint *)&feedback);
-
-  if(feedback != 0)
-    pipe.m_Feedback.Obj = rm->GetOriginalID(rm->GetID(FeedbackRes(ctx, feedback)));
-
-  GLint maxCount = 0;
-  gl.glGetIntegerv(eGL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS, &maxCount);
-
-  for(int i = 0; i < (int)ARRAY_COUNT(pipe.m_Feedback.BufferBinding) && i < maxCount; i++)
+  if(HasExt[ARB_transform_feedback2])
   {
-    GLuint buffer = 0;
-    gl.glGetIntegeri_v(eGL_TRANSFORM_FEEDBACK_BUFFER_BINDING, i, (GLint *)&buffer);
-    pipe.m_Feedback.BufferBinding[i] = rm->GetOriginalID(rm->GetID(BufferRes(ctx, buffer)));
-    gl.glGetInteger64i_v(eGL_TRANSFORM_FEEDBACK_BUFFER_START, i,
-                         (GLint64 *)&pipe.m_Feedback.Offset[i]);
-    gl.glGetInteger64i_v(eGL_TRANSFORM_FEEDBACK_BUFFER_SIZE, i, (GLint64 *)&pipe.m_Feedback.Size[i]);
+    GLuint feedback = 0;
+    gl.glGetIntegerv(eGL_TRANSFORM_FEEDBACK_BINDING, (GLint *)&feedback);
+
+    if(feedback != 0)
+      pipe.m_Feedback.Obj = rm->GetOriginalID(rm->GetID(FeedbackRes(ctx, feedback)));
+
+    GLint maxCount = 0;
+    gl.glGetIntegerv(eGL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS, &maxCount);
+
+    for(int i = 0; i < (int)ARRAY_COUNT(pipe.m_Feedback.BufferBinding) && i < maxCount; i++)
+    {
+      GLuint buffer = 0;
+      gl.glGetIntegeri_v(eGL_TRANSFORM_FEEDBACK_BUFFER_BINDING, i, (GLint *)&buffer);
+      pipe.m_Feedback.BufferBinding[i] = rm->GetOriginalID(rm->GetID(BufferRes(ctx, buffer)));
+      gl.glGetInteger64i_v(eGL_TRANSFORM_FEEDBACK_BUFFER_START, i,
+                           (GLint64 *)&pipe.m_Feedback.Offset[i]);
+      gl.glGetInteger64i_v(eGL_TRANSFORM_FEEDBACK_BUFFER_SIZE, i,
+                           (GLint64 *)&pipe.m_Feedback.Size[i]);
+    }
+
+    GLint p = 0;
+    gl.glGetIntegerv(eGL_TRANSFORM_FEEDBACK_BUFFER_PAUSED, &p);
+    pipe.m_Feedback.Paused = (p != 0);
+
+    gl.glGetIntegerv(eGL_TRANSFORM_FEEDBACK_BUFFER_ACTIVE, &p);
+    pipe.m_Feedback.Active = (p != 0);
   }
-
-  GLint p = 0;
-  gl.glGetIntegerv(eGL_TRANSFORM_FEEDBACK_BUFFER_PAUSED, &p);
-  pipe.m_Feedback.Paused = (p != 0);
-
-  gl.glGetIntegerv(eGL_TRANSFORM_FEEDBACK_BUFFER_ACTIVE, &p);
-  pipe.m_Feedback.Active = (p != 0);
 
   for(int i = 0; i < 6; i++)
   {
@@ -1242,7 +1246,7 @@ void GLReplay::SavePipelineState()
   {
     GLenum binding = eGL_NONE;
     GLenum target = eGL_NONE;
-    ShaderResourceType resType = eResType_None;
+    TextureDim resType = TextureDim::Unknown;
 
     bool shadow = false;
 
@@ -1263,19 +1267,19 @@ void GLReplay::SavePipelineState()
 
           switch(refls[s]->ReadOnlyResources[r].resType)
           {
-            case eResType_None: target = eGL_NONE; break;
-            case eResType_Buffer: target = eGL_TEXTURE_BUFFER; break;
-            case eResType_Texture1D: target = eGL_TEXTURE_1D; break;
-            case eResType_Texture1DArray: target = eGL_TEXTURE_1D_ARRAY; break;
-            case eResType_Texture2D: target = eGL_TEXTURE_2D; break;
-            case eResType_TextureRect: target = eGL_TEXTURE_RECTANGLE; break;
-            case eResType_Texture2DArray: target = eGL_TEXTURE_2D_ARRAY; break;
-            case eResType_Texture2DMS: target = eGL_TEXTURE_2D_MULTISAMPLE; break;
-            case eResType_Texture2DMSArray: target = eGL_TEXTURE_2D_MULTISAMPLE_ARRAY; break;
-            case eResType_Texture3D: target = eGL_TEXTURE_3D; break;
-            case eResType_TextureCube: target = eGL_TEXTURE_CUBE_MAP; break;
-            case eResType_TextureCubeArray: target = eGL_TEXTURE_CUBE_MAP_ARRAY; break;
-            case eResType_Count: RDCERR("Invalid shader resource type"); break;
+            case TextureDim::Unknown: target = eGL_NONE; break;
+            case TextureDim::Buffer: target = eGL_TEXTURE_BUFFER; break;
+            case TextureDim::Texture1D: target = eGL_TEXTURE_1D; break;
+            case TextureDim::Texture1DArray: target = eGL_TEXTURE_1D_ARRAY; break;
+            case TextureDim::Texture2D: target = eGL_TEXTURE_2D; break;
+            case TextureDim::TextureRect: target = eGL_TEXTURE_RECTANGLE; break;
+            case TextureDim::Texture2DArray: target = eGL_TEXTURE_2D_ARRAY; break;
+            case TextureDim::Texture2DMS: target = eGL_TEXTURE_2D_MULTISAMPLE; break;
+            case TextureDim::Texture2DMSArray: target = eGL_TEXTURE_2D_MULTISAMPLE_ARRAY; break;
+            case TextureDim::Texture3D: target = eGL_TEXTURE_3D; break;
+            case TextureDim::TextureCube: target = eGL_TEXTURE_CUBE_MAP; break;
+            case TextureDim::TextureCubeArray: target = eGL_TEXTURE_CUBE_MAP_ARRAY; break;
+            case TextureDim::Count: RDCERR("Invalid shader resource type"); break;
           }
 
           if(target != eGL_NONE)
@@ -1305,29 +1309,30 @@ void GLReplay::SavePipelineState()
     {
       gl.glActiveTexture(GLenum(eGL_TEXTURE0 + unit));
 
-      GLuint tex;
-      gl.glGetIntegerv(binding, (GLint *)&tex);
+      GLuint tex = 0;
+
+      if(binding == eGL_TEXTURE_CUBE_MAP_ARRAY && !HasExt[ARB_texture_cube_map_array])
+        tex = 0;
+      else
+        gl.glGetIntegerv(binding, (GLint *)&tex);
 
       if(tex == 0)
       {
         pipe.Textures[unit].Resource = ResourceId();
         pipe.Textures[unit].FirstSlice = 0;
-        pipe.Textures[unit].ResType = eResType_None;
+        pipe.Textures[unit].ResType = TextureDim::Unknown;
         pipe.Textures[unit].DepthReadChannel = -1;
-        pipe.Textures[unit].Swizzle[0] = eSwizzle_Red;
-        pipe.Textures[unit].Swizzle[1] = eSwizzle_Green;
-        pipe.Textures[unit].Swizzle[2] = eSwizzle_Blue;
-        pipe.Textures[unit].Swizzle[3] = eSwizzle_Alpha;
+        pipe.Textures[unit].Swizzle[0] = TextureSwizzle::Red;
+        pipe.Textures[unit].Swizzle[1] = TextureSwizzle::Green;
+        pipe.Textures[unit].Swizzle[2] = TextureSwizzle::Blue;
+        pipe.Textures[unit].Swizzle[3] = TextureSwizzle::Alpha;
 
         RDCEraseEl(pipe.Samplers[unit].BorderColor);
-        pipe.Samplers[unit].AddressS = "";
-        pipe.Samplers[unit].AddressT = "";
-        pipe.Samplers[unit].AddressR = "";
-        pipe.Samplers[unit].Comparison = "";
-        pipe.Samplers[unit].MinFilter = "";
-        pipe.Samplers[unit].MagFilter = "";
-        pipe.Samplers[unit].UseBorder = false;
-        pipe.Samplers[unit].UseComparison = false;
+        pipe.Samplers[unit].AddressS = AddressMode::Wrap;
+        pipe.Samplers[unit].AddressT = AddressMode::Wrap;
+        pipe.Samplers[unit].AddressR = AddressMode::Wrap;
+        pipe.Samplers[unit].Comparison = CompareFunc::AlwaysTrue;
+        pipe.Samplers[unit].Filter = TextureFilter();
         pipe.Samplers[unit].SeamlessCube = false;
         pipe.Samplers[unit].MaxAniso = 0.0f;
         pipe.Samplers[unit].MaxLOD = 0.0f;
@@ -1339,7 +1344,7 @@ void GLReplay::SavePipelineState()
         // very bespoke/specific
         GLint firstSlice = 0, firstMip = 0;
 
-        if(target != eGL_TEXTURE_BUFFER)
+        if(target != eGL_TEXTURE_BUFFER && HasExt[ARB_texture_view])
         {
           gl.glGetTexParameteriv(target, eGL_TEXTURE_VIEW_MIN_LEVEL, &firstMip);
           gl.glGetTexParameteriv(target, eGL_TEXTURE_VIEW_MIN_LAYER, &firstSlice);
@@ -1359,8 +1364,10 @@ void GLReplay::SavePipelineState()
         fmt = GetSizedFormat(gl.GetHookset(), target, fmt);
         if(IsDepthStencilFormat(fmt))
         {
-          GLint depthMode;
-          gl.glGetTexParameteriv(target, eGL_DEPTH_STENCIL_TEXTURE_MODE, &depthMode);
+          GLint depthMode = eGL_DEPTH_COMPONENT;
+
+          if(HasExt[ARB_stencil_texturing])
+            gl.glGetTexParameteriv(target, eGL_DEPTH_STENCIL_TEXTURE_MODE, &depthMode);
 
           if(depthMode == eGL_DEPTH_COMPONENT)
             pipe.Textures[unit].DepthReadChannel = 0;
@@ -1369,25 +1376,27 @@ void GLReplay::SavePipelineState()
         }
 
         GLint swizzles[4] = {eGL_RED, eGL_GREEN, eGL_BLUE, eGL_ALPHA};
-        if(target != eGL_TEXTURE_BUFFER)
-          gl.glGetTexParameteriv(target, eGL_TEXTURE_SWIZZLE_RGBA, swizzles);
+        if(target != eGL_TEXTURE_BUFFER &&
+           (HasExt[ARB_texture_swizzle] || HasExt[EXT_texture_swizzle]))
+          GetTextureSwizzle(gl.GetHookset(), tex, target, (GLenum *)swizzles);
 
         for(int i = 0; i < 4; i++)
         {
           switch(swizzles[i])
           {
             default:
-            case GL_ZERO: pipe.Textures[unit].Swizzle[i] = eSwizzle_Zero; break;
-            case GL_ONE: pipe.Textures[unit].Swizzle[i] = eSwizzle_One; break;
-            case eGL_RED: pipe.Textures[unit].Swizzle[i] = eSwizzle_Red; break;
-            case eGL_GREEN: pipe.Textures[unit].Swizzle[i] = eSwizzle_Green; break;
-            case eGL_BLUE: pipe.Textures[unit].Swizzle[i] = eSwizzle_Blue; break;
-            case eGL_ALPHA: pipe.Textures[unit].Swizzle[i] = eSwizzle_Alpha; break;
+            case GL_ZERO: pipe.Textures[unit].Swizzle[i] = TextureSwizzle::Zero; break;
+            case GL_ONE: pipe.Textures[unit].Swizzle[i] = TextureSwizzle::One; break;
+            case eGL_RED: pipe.Textures[unit].Swizzle[i] = TextureSwizzle::Red; break;
+            case eGL_GREEN: pipe.Textures[unit].Swizzle[i] = TextureSwizzle::Green; break;
+            case eGL_BLUE: pipe.Textures[unit].Swizzle[i] = TextureSwizzle::Blue; break;
+            case eGL_ALPHA: pipe.Textures[unit].Swizzle[i] = TextureSwizzle::Alpha; break;
           }
         }
 
-        GLuint samp;
-        gl.glGetIntegerv(eGL_SAMPLER_BINDING, (GLint *)&samp);
+        GLuint samp = 0;
+        if(HasExt[ARB_sampler_objects])
+          gl.glGetIntegerv(eGL_SAMPLER_BINDING, (GLint *)&samp);
 
         pipe.Samplers[unit].Samp = rm->GetOriginalID(rm->GetID(SamplerRes(ctx, samp)));
 
@@ -1400,39 +1409,36 @@ void GLReplay::SavePipelineState()
             gl.glGetTexParameterfv(target, eGL_TEXTURE_BORDER_COLOR,
                                    &pipe.Samplers[unit].BorderColor[0]);
 
-          pipe.Samplers[unit].UseBorder = false;
-          pipe.Samplers[unit].UseComparison = shadow;
-
           GLint v;
           v = 0;
           if(samp != 0)
             gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_S, &v);
           else
             gl.glGetTexParameteriv(target, eGL_TEXTURE_WRAP_S, &v);
-          pipe.Samplers[unit].AddressS = SamplerString((GLenum)v);
-          pipe.Samplers[unit].UseBorder |= (v == eGL_CLAMP_TO_BORDER);
+          pipe.Samplers[unit].AddressS = MakeAddressMode((GLenum)v);
 
           v = 0;
           if(samp != 0)
             gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_T, &v);
           else
             gl.glGetTexParameteriv(target, eGL_TEXTURE_WRAP_T, &v);
-          pipe.Samplers[unit].AddressT = SamplerString((GLenum)v);
-          pipe.Samplers[unit].UseBorder |= (v == eGL_CLAMP_TO_BORDER);
+          pipe.Samplers[unit].AddressT = MakeAddressMode((GLenum)v);
 
           v = 0;
           if(samp != 0)
             gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_WRAP_R, &v);
           else
             gl.glGetTexParameteriv(target, eGL_TEXTURE_WRAP_R, &v);
-          pipe.Samplers[unit].AddressR = SamplerString((GLenum)v);
-          pipe.Samplers[unit].UseBorder |= (v == eGL_CLAMP_TO_BORDER);
+          pipe.Samplers[unit].AddressR = MakeAddressMode((GLenum)v);
 
           v = 0;
-          if(samp != 0)
-            gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_CUBE_MAP_SEAMLESS, &v);
-          else
-            gl.glGetTexParameteriv(target, eGL_TEXTURE_CUBE_MAP_SEAMLESS, &v);
+          if(HasExt[ARB_seamless_cubemap_per_texture])
+          {
+            if(samp != 0)
+              gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_CUBE_MAP_SEAMLESS, &v);
+            else
+              gl.glGetTexParameteriv(target, eGL_TEXTURE_CUBE_MAP_SEAMLESS, &v);
+          }
           pipe.Samplers[unit].SeamlessCube =
               (v != 0 || rs.Enabled[GLRenderState::eEnabled_TexCubeSeamless]);
 
@@ -1441,45 +1447,53 @@ void GLReplay::SavePipelineState()
             gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_COMPARE_FUNC, &v);
           else
             gl.glGetTexParameteriv(target, eGL_TEXTURE_COMPARE_FUNC, &v);
-          pipe.Samplers[unit].Comparison = ToStr::Get((GLenum)v).substr(3).c_str();
+          pipe.Samplers[unit].Comparison = MakeCompareFunc((GLenum)v);
 
-          v = 0;
+          GLint minf = 0;
+          GLint magf = 0;
           if(samp != 0)
-            gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_MIN_FILTER, &v);
+            gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_MIN_FILTER, &minf);
           else
-            gl.glGetTexParameteriv(target, eGL_TEXTURE_MIN_FILTER, &v);
-          pipe.Samplers[unit].MinFilter = SamplerString((GLenum)v);
-
-          v = 0;
-          if(samp != 0)
-            gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_MAG_FILTER, &v);
-          else
-            gl.glGetTexParameteriv(target, eGL_TEXTURE_MAG_FILTER, &v);
-          pipe.Samplers[unit].MagFilter = SamplerString((GLenum)v);
+            gl.glGetTexParameteriv(target, eGL_TEXTURE_MIN_FILTER, &minf);
 
           if(samp != 0)
-            gl.glGetSamplerParameterfv(samp, eGL_TEXTURE_MAX_ANISOTROPY_EXT,
-                                       &pipe.Samplers[unit].MaxAniso);
+            gl.glGetSamplerParameteriv(samp, eGL_TEXTURE_MAG_FILTER, &magf);
           else
-            gl.glGetTexParameterfv(target, eGL_TEXTURE_MAX_ANISOTROPY_EXT,
-                                   &pipe.Samplers[unit].MaxAniso);
+            gl.glGetTexParameteriv(target, eGL_TEXTURE_MAG_FILTER, &magf);
+
+          if(HasExt[EXT_texture_filter_anisotropic])
+          {
+            if(samp != 0)
+              gl.glGetSamplerParameterfv(samp, eGL_TEXTURE_MAX_ANISOTROPY_EXT,
+                                         &pipe.Samplers[unit].MaxAniso);
+            else
+              gl.glGetTexParameterfv(target, eGL_TEXTURE_MAX_ANISOTROPY_EXT,
+                                     &pipe.Samplers[unit].MaxAniso);
+          }
+          else
+          {
+            pipe.Samplers[unit].MaxAniso = 0.0f;
+          }
+
+          pipe.Samplers[unit].Filter =
+              MakeFilter((GLenum)minf, (GLenum)magf, shadow, pipe.Samplers[unit].MaxAniso);
 
           gl.glGetTexParameterfv(target, eGL_TEXTURE_MAX_LOD, &pipe.Samplers[unit].MaxLOD);
           gl.glGetTexParameterfv(target, eGL_TEXTURE_MIN_LOD, &pipe.Samplers[unit].MinLOD);
-          gl.glGetTexParameterfv(target, eGL_TEXTURE_LOD_BIAS, &pipe.Samplers[unit].MipLODBias);
+          if(!IsGLES)
+            gl.glGetTexParameterfv(target, eGL_TEXTURE_LOD_BIAS, &pipe.Samplers[unit].MipLODBias);
+          else
+            pipe.Samplers[unit].MipLODBias = 0.0f;
         }
         else
         {
           // texture buffers don't support sampling
           RDCEraseEl(pipe.Samplers[unit].BorderColor);
-          pipe.Samplers[unit].AddressS = "";
-          pipe.Samplers[unit].AddressT = "";
-          pipe.Samplers[unit].AddressR = "";
-          pipe.Samplers[unit].Comparison = "";
-          pipe.Samplers[unit].MinFilter = "";
-          pipe.Samplers[unit].MagFilter = "";
-          pipe.Samplers[unit].UseBorder = false;
-          pipe.Samplers[unit].UseComparison = false;
+          pipe.Samplers[unit].AddressS = AddressMode::Wrap;
+          pipe.Samplers[unit].AddressT = AddressMode::Wrap;
+          pipe.Samplers[unit].AddressR = AddressMode::Wrap;
+          pipe.Samplers[unit].Comparison = CompareFunc::AlwaysTrue;
+          pipe.Samplers[unit].Filter = TextureFilter();
           pipe.Samplers[unit].SeamlessCube = false;
           pipe.Samplers[unit].MaxAniso = 0.0f;
           pipe.Samplers[unit].MaxLOD = 0.0f;
@@ -1577,7 +1591,8 @@ void GLReplay::SavePipelineState()
         pipe.Images[i].readAllowed = true;
         pipe.Images[i].writeAllowed = true;
       }
-      pipe.Images[i].Format = MakeResourceFormat(gl, eGL_TEXTURE_2D, rs.Images[i].format);
+      pipe.Images[i].Format =
+          MakeResourceFormat(gl.GetHookset(), eGL_TEXTURE_2D, rs.Images[i].format);
 
       pipe.Images[i].ResType = m_CachedTextures[id].resType;
     }
@@ -1615,15 +1630,15 @@ void GLReplay::SavePipelineState()
       RDCWARN("Unexpected value for POLYGON_MODE %x", rs.PolygonMode);
     // fall through
     case eGL_FILL:
-      pipe.m_Rasterizer.m_State.FillMode = eFill_Solid;
+      pipe.m_Rasterizer.m_State.fillMode = FillMode::Solid;
       polygonOffsetEnableEnum = GLRenderState::eEnabled_PolyOffsetFill;
       break;
     case eGL_LINE:
-      pipe.m_Rasterizer.m_State.FillMode = eFill_Wireframe;
+      pipe.m_Rasterizer.m_State.fillMode = FillMode::Wireframe;
       polygonOffsetEnableEnum = GLRenderState::eEnabled_PolyOffsetLine;
       break;
     case eGL_POINT:
-      pipe.m_Rasterizer.m_State.FillMode = eFill_Point;
+      pipe.m_Rasterizer.m_State.fillMode = FillMode::Point;
       polygonOffsetEnableEnum = GLRenderState::eEnabled_PolyOffsetPoint;
       break;
   }
@@ -1647,14 +1662,14 @@ void GLReplay::SavePipelineState()
       default:
         RDCWARN("Unexpected value for CULL_FACE %x", rs.CullFace);
       // fall through
-      case eGL_BACK: pipe.m_Rasterizer.m_State.CullMode = eCull_Back; break;
-      case eGL_FRONT: pipe.m_Rasterizer.m_State.CullMode = eCull_Front; break;
-      case eGL_FRONT_AND_BACK: pipe.m_Rasterizer.m_State.CullMode = eCull_FrontAndBack; break;
+      case eGL_BACK: pipe.m_Rasterizer.m_State.cullMode = CullMode::Back; break;
+      case eGL_FRONT: pipe.m_Rasterizer.m_State.cullMode = CullMode::Front; break;
+      case eGL_FRONT_AND_BACK: pipe.m_Rasterizer.m_State.cullMode = CullMode::FrontAndBack; break;
     }
   }
   else
   {
-    pipe.m_Rasterizer.m_State.CullMode = eCull_None;
+    pipe.m_Rasterizer.m_State.cullMode = CullMode::NoCull;
   }
 
   RDCASSERT(rs.FrontFace == eGL_CCW || rs.FrontFace == eGL_CW);
@@ -1684,7 +1699,7 @@ void GLReplay::SavePipelineState()
 
   pipe.m_DepthState.DepthEnable = rs.Enabled[GLRenderState::eEnabled_DepthTest];
   pipe.m_DepthState.DepthWrites = rs.DepthWriteMask != 0;
-  pipe.m_DepthState.DepthFunc = ToStr::Get(rs.DepthFunc).substr(3);
+  pipe.m_DepthState.DepthFunc = MakeCompareFunc(rs.DepthFunc);
 
   pipe.m_DepthState.DepthBounds = rs.Enabled[GLRenderState::eEnabled_DepthBoundsEXT];
   pipe.m_DepthState.NearBound = rs.DepthBounds.nearZ;
@@ -1693,18 +1708,18 @@ void GLReplay::SavePipelineState()
   pipe.m_StencilState.StencilEnable = rs.Enabled[GLRenderState::eEnabled_StencilTest];
   pipe.m_StencilState.m_FrontFace.ValueMask = rs.StencilFront.valuemask;
   pipe.m_StencilState.m_FrontFace.WriteMask = rs.StencilFront.writemask;
-  pipe.m_StencilState.m_FrontFace.Ref = rs.StencilFront.ref;
-  pipe.m_StencilState.m_FrontFace.Func = ToStr::Get(rs.StencilFront.func).substr(3);
-  pipe.m_StencilState.m_FrontFace.PassOp = ToStr::Get(rs.StencilFront.pass).substr(3);
-  pipe.m_StencilState.m_FrontFace.FailOp = ToStr::Get(rs.StencilFront.stencilFail).substr(3);
-  pipe.m_StencilState.m_FrontFace.DepthFailOp = ToStr::Get(rs.StencilFront.depthFail).substr(3);
+  pipe.m_StencilState.m_FrontFace.Ref = uint8_t(rs.StencilFront.ref & 0xff);
+  pipe.m_StencilState.m_FrontFace.Func = MakeCompareFunc(rs.StencilFront.func);
+  pipe.m_StencilState.m_FrontFace.PassOp = MakeStencilOp(rs.StencilFront.pass);
+  pipe.m_StencilState.m_FrontFace.FailOp = MakeStencilOp(rs.StencilFront.stencilFail);
+  pipe.m_StencilState.m_FrontFace.DepthFailOp = MakeStencilOp(rs.StencilFront.depthFail);
   pipe.m_StencilState.m_BackFace.ValueMask = rs.StencilBack.valuemask;
   pipe.m_StencilState.m_BackFace.WriteMask = rs.StencilBack.writemask;
-  pipe.m_StencilState.m_BackFace.Ref = rs.StencilBack.ref;
-  pipe.m_StencilState.m_BackFace.Func = ToStr::Get(rs.StencilBack.func).substr(3);
-  pipe.m_StencilState.m_BackFace.PassOp = ToStr::Get(rs.StencilBack.pass).substr(3);
-  pipe.m_StencilState.m_BackFace.FailOp = ToStr::Get(rs.StencilBack.stencilFail).substr(3);
-  pipe.m_StencilState.m_BackFace.DepthFailOp = ToStr::Get(rs.StencilBack.depthFail).substr(3);
+  pipe.m_StencilState.m_BackFace.Ref = uint8_t(rs.StencilBack.ref & 0xff);
+  pipe.m_StencilState.m_BackFace.Func = MakeCompareFunc(rs.StencilBack.func);
+  pipe.m_StencilState.m_BackFace.PassOp = MakeStencilOp(rs.StencilBack.pass);
+  pipe.m_StencilState.m_BackFace.FailOp = MakeStencilOp(rs.StencilBack.stencilFail);
+  pipe.m_StencilState.m_BackFace.DepthFailOp = MakeStencilOp(rs.StencilBack.depthFail);
 
   // Frame buffer
 
@@ -1762,14 +1777,38 @@ void GLReplay::SavePipelineState()
     create_array_uninit(pipe.m_FB.m_DrawFBO.Color, numCols);
     for(GLint i = 0; i < numCols; i++)
     {
-      pipe.m_FB.m_DrawFBO.Color[i].Obj = rm->GetOriginalID(
-          rm->GetID(rbCol[i] ? RenderbufferRes(ctx, curCol[i]) : TextureRes(ctx, curCol[i])));
+      ResourceId id =
+          rm->GetID(rbCol[i] ? RenderbufferRes(ctx, curCol[i]) : TextureRes(ctx, curCol[i]));
+
+      pipe.m_FB.m_DrawFBO.Color[i].Obj = rm->GetOriginalID(id);
 
       if(pipe.m_FB.m_DrawFBO.Color[i].Obj != ResourceId() && !rbCol[i])
         GetFramebufferMipAndLayer(gl.GetHookset(), eGL_DRAW_FRAMEBUFFER,
                                   GLenum(eGL_COLOR_ATTACHMENT0 + i),
                                   (GLint *)&pipe.m_FB.m_DrawFBO.Color[i].Mip,
                                   (GLint *)&pipe.m_FB.m_DrawFBO.Color[i].Layer);
+
+      GLint swizzles[4] = {eGL_RED, eGL_GREEN, eGL_BLUE, eGL_ALPHA};
+      if(!rbCol[i] && id != ResourceId() &&
+         (HasExt[ARB_texture_swizzle] || HasExt[EXT_texture_swizzle]))
+      {
+        GLenum target = m_pDriver->m_Textures[id].curType;
+        GetTextureSwizzle(gl.GetHookset(), curCol[i], target, (GLenum *)swizzles);
+      }
+
+      for(int s = 0; s < 4; s++)
+      {
+        switch(swizzles[s])
+        {
+          default:
+          case GL_ZERO: pipe.m_FB.m_DrawFBO.Color[i].Swizzle[s] = TextureSwizzle::Zero; break;
+          case GL_ONE: pipe.m_FB.m_DrawFBO.Color[i].Swizzle[s] = TextureSwizzle::One; break;
+          case eGL_RED: pipe.m_FB.m_DrawFBO.Color[i].Swizzle[s] = TextureSwizzle::Red; break;
+          case eGL_GREEN: pipe.m_FB.m_DrawFBO.Color[i].Swizzle[s] = TextureSwizzle::Green; break;
+          case eGL_BLUE: pipe.m_FB.m_DrawFBO.Color[i].Swizzle[s] = TextureSwizzle::Blue; break;
+          case eGL_ALPHA: pipe.m_FB.m_DrawFBO.Color[i].Swizzle[s] = TextureSwizzle::Alpha; break;
+        }
+      }
     }
 
     pipe.m_FB.m_DrawFBO.Depth.Obj = rm->GetOriginalID(
@@ -1882,20 +1921,23 @@ void GLReplay::SavePipelineState()
   for(size_t i = 0; i < ARRAY_COUNT(rs.Blends); i++)
   {
     pipe.m_FB.m_Blending.Blends[i].Enabled = rs.Blends[i].Enabled;
-    pipe.m_FB.m_Blending.Blends[i].LogicOp = "";
+    pipe.m_FB.m_Blending.Blends[i].Logic = LogicOp::NoOp;
     if(rs.LogicOp != eGL_NONE && rs.LogicOp != eGL_COPY &&
        rs.Enabled[GLRenderState::eEnabled_ColorLogicOp])
-      pipe.m_FB.m_Blending.Blends[i].LogicOp =
-          ToStr::Get(rs.LogicOp).substr(3);    // 3 == strlen("GL_")
+    {
+      pipe.m_FB.m_Blending.Blends[i].Logic = MakeLogicOp(rs.LogicOp);
+    }
 
-    pipe.m_FB.m_Blending.Blends[i].m_Blend.Source = BlendString(rs.Blends[i].SourceRGB);
-    pipe.m_FB.m_Blending.Blends[i].m_Blend.Destination = BlendString(rs.Blends[i].DestinationRGB);
-    pipe.m_FB.m_Blending.Blends[i].m_Blend.Operation = BlendString(rs.Blends[i].EquationRGB);
+    pipe.m_FB.m_Blending.Blends[i].m_Blend.Source = MakeBlendMultiplier(rs.Blends[i].SourceRGB);
+    pipe.m_FB.m_Blending.Blends[i].m_Blend.Destination =
+        MakeBlendMultiplier(rs.Blends[i].DestinationRGB);
+    pipe.m_FB.m_Blending.Blends[i].m_Blend.Operation = MakeBlendOp(rs.Blends[i].EquationRGB);
 
-    pipe.m_FB.m_Blending.Blends[i].m_AlphaBlend.Source = BlendString(rs.Blends[i].SourceAlpha);
+    pipe.m_FB.m_Blending.Blends[i].m_AlphaBlend.Source =
+        MakeBlendMultiplier(rs.Blends[i].SourceAlpha);
     pipe.m_FB.m_Blending.Blends[i].m_AlphaBlend.Destination =
-        BlendString(rs.Blends[i].DestinationAlpha);
-    pipe.m_FB.m_Blending.Blends[i].m_AlphaBlend.Operation = BlendString(rs.Blends[i].EquationAlpha);
+        MakeBlendMultiplier(rs.Blends[i].DestinationAlpha);
+    pipe.m_FB.m_Blending.Blends[i].m_AlphaBlend.Operation = MakeBlendOp(rs.Blends[i].EquationAlpha);
 
     pipe.m_FB.m_Blending.Blends[i].WriteMask = 0;
     if(rs.ColorMasks[i].red)
@@ -1911,33 +1953,33 @@ void GLReplay::SavePipelineState()
   switch(rs.Hints.Derivatives)
   {
     default:
-    case eGL_DONT_CARE: pipe.m_Hints.Derivatives = eQuality_DontCare; break;
-    case eGL_NICEST: pipe.m_Hints.Derivatives = eQuality_Nicest; break;
-    case eGL_FASTEST: pipe.m_Hints.Derivatives = eQuality_Fastest; break;
+    case eGL_DONT_CARE: pipe.m_Hints.Derivatives = QualityHint::DontCare; break;
+    case eGL_NICEST: pipe.m_Hints.Derivatives = QualityHint::Nicest; break;
+    case eGL_FASTEST: pipe.m_Hints.Derivatives = QualityHint::Fastest; break;
   }
 
   switch(rs.Hints.LineSmooth)
   {
     default:
-    case eGL_DONT_CARE: pipe.m_Hints.LineSmooth = eQuality_DontCare; break;
-    case eGL_NICEST: pipe.m_Hints.LineSmooth = eQuality_Nicest; break;
-    case eGL_FASTEST: pipe.m_Hints.LineSmooth = eQuality_Fastest; break;
+    case eGL_DONT_CARE: pipe.m_Hints.LineSmooth = QualityHint::DontCare; break;
+    case eGL_NICEST: pipe.m_Hints.LineSmooth = QualityHint::Nicest; break;
+    case eGL_FASTEST: pipe.m_Hints.LineSmooth = QualityHint::Fastest; break;
   }
 
   switch(rs.Hints.PolySmooth)
   {
     default:
-    case eGL_DONT_CARE: pipe.m_Hints.PolySmooth = eQuality_DontCare; break;
-    case eGL_NICEST: pipe.m_Hints.PolySmooth = eQuality_Nicest; break;
-    case eGL_FASTEST: pipe.m_Hints.PolySmooth = eQuality_Fastest; break;
+    case eGL_DONT_CARE: pipe.m_Hints.PolySmooth = QualityHint::DontCare; break;
+    case eGL_NICEST: pipe.m_Hints.PolySmooth = QualityHint::Nicest; break;
+    case eGL_FASTEST: pipe.m_Hints.PolySmooth = QualityHint::Fastest; break;
   }
 
   switch(rs.Hints.TexCompression)
   {
     default:
-    case eGL_DONT_CARE: pipe.m_Hints.TexCompression = eQuality_DontCare; break;
-    case eGL_NICEST: pipe.m_Hints.TexCompression = eQuality_Nicest; break;
-    case eGL_FASTEST: pipe.m_Hints.TexCompression = eQuality_Fastest; break;
+    case eGL_DONT_CARE: pipe.m_Hints.TexCompression = QualityHint::DontCare; break;
+    case eGL_NICEST: pipe.m_Hints.TexCompression = QualityHint::Nicest; break;
+    case eGL_FASTEST: pipe.m_Hints.TexCompression = QualityHint::Fastest; break;
   }
 
   pipe.m_Hints.LineSmoothEnabled = rs.Enabled[GLRenderState::eEnabled_LineSmooth];
@@ -1991,16 +2033,17 @@ void GLReplay::FillCBufferValue(WrappedOpenGL &gl, GLuint prog, bool bufferBacke
   {
     switch(outVar.type)
     {
-      case eVar_Float: gl.glGetUniformfv(prog, offs, outVar.value.fv); break;
-      case eVar_Int: gl.glGetUniformiv(prog, offs, outVar.value.iv); break;
-      case eVar_UInt: gl.glGetUniformuiv(prog, offs, outVar.value.uv); break;
-      case eVar_Double: gl.glGetUniformdv(prog, offs, outVar.value.dv); break;
+      case VarType::Unknown:
+      case VarType::Float: gl.glGetUniformfv(prog, offs, outVar.value.fv); break;
+      case VarType::Int: gl.glGetUniformiv(prog, offs, outVar.value.iv); break;
+      case VarType::UInt: gl.glGetUniformuiv(prog, offs, outVar.value.uv); break;
+      case VarType::Double: gl.glGetUniformdv(prog, offs, outVar.value.dv); break;
     }
   }
 
   if(!rowMajor)
   {
-    if(outVar.type != eVar_Double)
+    if(outVar.type != VarType::Double)
     {
       uint32_t uv[16];
       memcpy(&uv[0], &outVar.value.uv[0], sizeof(uv));
@@ -2227,7 +2270,7 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
      texType == eGL_TEXTURE_CUBE_MAP_ARRAY)
   {
     // array size doesn't get mip'd down
-    depth = texDetails.depth;
+    depth = 1;
     arraysize = texDetails.depth;
   }
 
@@ -2244,9 +2287,12 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
     gl.glGenTextures(1, &tempTex);
     gl.glBindTexture(newtarget, tempTex);
     if(newtarget == eGL_TEXTURE_3D)
-      gl.glTextureStorage3DEXT(tempTex, newtarget, 1, finalFormat, width, height, depth);
+      gl.glTextureImage3DEXT(tempTex, newtarget, 0, finalFormat, width, height, depth, 0,
+                             GetBaseFormat(finalFormat), GetDataType(finalFormat), NULL);
     else
-      gl.glTextureStorage2DEXT(tempTex, newtarget, 1, finalFormat, width, height);
+      gl.glTextureImage2DEXT(tempTex, newtarget, 0, finalFormat, width, height, 0,
+                             GetBaseFormat(finalFormat), GetDataType(finalFormat), NULL);
+    gl.glTexParameteri(newtarget, eGL_TEXTURE_MAX_LEVEL, 0);
 
     // create temp framebuffer
     GLuint fbo = 0;
@@ -2261,6 +2307,8 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
     if(newtarget == eGL_TEXTURE_3D)
       gl.glFramebufferTexture3D(eGL_FRAMEBUFFER, eGL_COLOR_ATTACHMENT0, eGL_TEXTURE_3D, tempTex, 0,
                                 0);
+    else if(newtarget == eGL_TEXTURE_2D || newtarget == eGL_TEXTURE_2D_MULTISAMPLE)
+      gl.glFramebufferTexture2D(eGL_FRAMEBUFFER, eGL_COLOR_ATTACHMENT0, newtarget, tempTex, 0);
     else
       gl.glFramebufferTexture(eGL_FRAMEBUFFER, eGL_COLOR_ATTACHMENT0, tempTex, 0);
 
@@ -2281,7 +2329,7 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
       texDisplay.Red = texDisplay.Green = texDisplay.Blue = texDisplay.Alpha = true;
       texDisplay.HDRMul = -1.0f;
       texDisplay.linearDisplayAsGamma = false;
-      texDisplay.overlay = eTexOverlay_None;
+      texDisplay.overlay = DebugOverlay::NoOverlay;
       texDisplay.FlipY = false;
       texDisplay.mip = mip;
       texDisplay.sampleIdx = ~0U;
@@ -2291,7 +2339,7 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
       texDisplay.rangemax = params.whitePoint;
       texDisplay.scale = 1.0f;
       texDisplay.texid = tex;
-      texDisplay.typeHint = eCompType_None;
+      texDisplay.typeHint = CompType::Typeless;
       texDisplay.rawoutput = false;
       texDisplay.offx = 0;
       texDisplay.offy = 0;
@@ -2315,11 +2363,12 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
     texType = newtarget;
     texname = tempTex;
     intFormat = finalFormat;
-    if(newtarget == eGL_TEXTURE_2D)
+    if(newtarget != eGL_TEXTURE_3D)
       depth = 1;
     arraysize = 1;
     samples = 1;
     mip = 0;
+    arrayIdx = 0;
 
     gl.glDeleteFramebuffers(1, &fbo);
   }
@@ -2335,7 +2384,9 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
     // create temporary texture of width/height in same format to render to
     gl.glGenTextures(1, &tempTex);
     gl.glBindTexture(eGL_TEXTURE_2D, tempTex);
-    gl.glTextureStorage2DEXT(tempTex, eGL_TEXTURE_2D, 1, intFormat, width, height);
+    gl.glTextureImage2DEXT(tempTex, eGL_TEXTURE_2D, 0, intFormat, width, height, 0,
+                           GetBaseFormat(intFormat), GetDataType(intFormat), NULL);
+    gl.glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MAX_LEVEL, 0);
 
     // create temp framebuffers
     GLuint fbos[2] = {0};
@@ -2363,6 +2414,8 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
     texType = eGL_TEXTURE_2D;
     texname = tempTex;
     depth = 1;
+    mip = 0;
+    arrayIdx = 0;
     arraysize = 1;
     samples = 1;
 
@@ -2379,8 +2432,10 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
     // with the same number of array slices as multi samples.
     gl.glGenTextures(1, &tempTex);
     gl.glBindTexture(eGL_TEXTURE_2D_ARRAY, tempTex);
-    gl.glTextureStorage3DEXT(tempTex, eGL_TEXTURE_2D_ARRAY, 1, intFormat, width, height,
-                             arraysize * samples);
+    gl.glTextureImage3DEXT(tempTex, eGL_TEXTURE_2D_ARRAY, 0, intFormat, width, height,
+                           arraysize * samples, 0, GetBaseFormat(intFormat), GetDataType(intFormat),
+                           NULL);
+    gl.glTexParameteri(eGL_TEXTURE_2D_ARRAY, eGL_TEXTURE_MAX_LEVEL, 0);
 
     // copy multisampled texture to an array
     CopyTex2DMSToArray(tempTex, texname, width, height, arraysize, samples, intFormat);
@@ -2388,7 +2443,7 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
     // rewrite the variables to temporary texture
     texType = eGL_TEXTURE_2D_ARRAY;
     texname = tempTex;
-    depth = arraysize * samples;
+    depth = 1;
     arraysize = arraysize * samples;
     samples = 1;
   }
@@ -2396,13 +2451,46 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
   // fetch and return data now
   {
     PixelUnpackState unpack;
-
     unpack.Fetch(&gl.GetHookset(), true);
 
-    PixelUnpackState identity = {0};
-    identity.alignment = 1;
+    ResetPixelUnpackState(gl.GetHookset(), true, 1);
 
-    identity.Apply(&gl.GetHookset(), true);
+    if(texType == eGL_RENDERBUFFER)
+    {
+      // do blit from renderbuffer to texture
+      MakeCurrentReplayContext(&m_ReplayCtx);
+
+      GLuint curDrawFBO = 0;
+      GLuint curReadFBO = 0;
+      gl.glGetIntegerv(eGL_DRAW_FRAMEBUFFER_BINDING, (GLint *)&curDrawFBO);
+      gl.glGetIntegerv(eGL_READ_FRAMEBUFFER_BINDING, (GLint *)&curReadFBO);
+
+      gl.glBindFramebuffer(eGL_DRAW_FRAMEBUFFER, texDetails.renderbufferFBOs[1]);
+      gl.glBindFramebuffer(eGL_READ_FRAMEBUFFER, texDetails.renderbufferFBOs[0]);
+
+      GLenum b = GetBaseFormat(texDetails.internalFormat);
+
+      GLbitfield mask = GL_COLOR_BUFFER_BIT;
+
+      if(b == eGL_DEPTH_COMPONENT)
+        mask = GL_DEPTH_BUFFER_BIT;
+      else if(b == eGL_STENCIL)
+        mask = GL_STENCIL_BUFFER_BIT;
+      else if(b == eGL_DEPTH_STENCIL)
+        mask = GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
+
+      gl.glBlitFramebuffer(0, 0, texDetails.width, texDetails.height, 0, 0, texDetails.width,
+                           texDetails.height, mask, eGL_NEAREST);
+
+      gl.glBindFramebuffer(eGL_DRAW_FRAMEBUFFER, curDrawFBO);
+      gl.glBindFramebuffer(eGL_READ_FRAMEBUFFER, curReadFBO);
+
+      // then proceed to read from the texture
+      texname = texDetails.renderbufferReadTex;
+      texType = eGL_TEXTURE_2D;
+
+      MakeCurrentReplayContext(m_DebugCtx);
+    }
 
     GLenum binding = TextureBinding(texType);
 
@@ -2426,24 +2514,120 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
 
     if(IsCompressedFormat(intFormat))
     {
-      GLuint compSize;
-      gl.glGetTexLevelParameteriv(target, mip, eGL_TEXTURE_COMPRESSED_IMAGE_SIZE, (GLint *)&compSize);
+      dataSize = (size_t)GetCompressedByteSize(width, height, depth, intFormat);
 
-      dataSize = compSize;
-
+      // contains a single slice
       ret = new byte[dataSize];
 
-      gl.glGetCompressedTexImage(target, mip, ret);
+      // Note that for array textures we fetch the whole mip level (all slices at that mip). Since
+      // GL returns all slices together, we cache it and keep the data around. This is because in
+      // many cases we don't just want one slice we want all of them, but to preserve the API
+      // querying slice-at-a-time we must cache the results of calling glGetTexImage to avoid
+      // allocating the whole N layers N times.
+
+      // check arraysize, since if we remapped or otherwise picked out a slice above, this will now
+      // be 1 and we don't have to worry about anything
+      if(arraysize > 1)
+      {
+        // if we don't have this texture cached, delete the previous data
+        // we don't have to use anything else as the cache key, because if we still have an array at
+        // this point then none of the GetTextureDataParams are relevant - only mip/arrayIdx
+        if(m_GetTexturePrevID != tex)
+        {
+          for(size_t i = 0; i < ARRAY_COUNT(m_GetTexturePrevData); i++)
+          {
+            delete[] m_GetTexturePrevData[i];
+            m_GetTexturePrevData[i] = NULL;
+          }
+        }
+
+        m_GetTexturePrevID = tex;
+
+        RDCASSERT(mip < ARRAY_COUNT(m_GetTexturePrevData));
+
+        // if we don't have this mip cached, fetch it now
+        if(m_GetTexturePrevData[mip] == NULL)
+        {
+          m_GetTexturePrevData[mip] = new byte[dataSize * arraysize];
+          if(IsGLES)
+          {
+            const vector<byte> &data = texDetails.compressedData[mip];
+            if(data.size() == dataSize * arraysize)
+              memcpy(m_GetTexturePrevData[mip], data.data(), data.size());
+            else
+              RDCERR("Different expected and stored compressed texture sizes for array texture!");
+          }
+          else
+          {
+            gl.glGetCompressedTexImage(target, mip, m_GetTexturePrevData[mip]);
+          }
+        }
+
+        // now copy the slice from the cache into ret
+        byte *src = m_GetTexturePrevData[mip];
+        src += dataSize * arrayIdx;
+
+        memcpy(ret, src, dataSize);
+      }
+      else
+      {
+        // for non-arrays we can just readback without caching
+        if(IsGLES)
+        {
+          const vector<byte> &data = texDetails.compressedData[mip];
+          if(data.size() == dataSize)
+            memcpy(m_GetTexturePrevData[mip], data.data(), data.size());
+          else
+            RDCERR("Different expected and stored compressed texture sizes!");
+        }
+        else
+        {
+          gl.glGetCompressedTexImage(target, mip, m_GetTexturePrevData[mip]);
+        }
+      }
     }
     else
     {
       GLenum fmt = GetBaseFormat(intFormat);
       GLenum type = GetDataType(intFormat);
 
+      size_t rowSize = GetByteSize(width, 1, 1, fmt, type);
       dataSize = GetByteSize(width, height, depth, fmt, type);
       ret = new byte[dataSize];
 
-      m_pDriver->glGetTexImage(target, (GLint)mip, fmt, type, ret);
+      // see above for the logic of handling arrays
+      if(arraysize > 1)
+      {
+        if(m_GetTexturePrevID != tex)
+        {
+          for(size_t i = 0; i < ARRAY_COUNT(m_GetTexturePrevData); i++)
+          {
+            delete[] m_GetTexturePrevData[i];
+            m_GetTexturePrevData[i] = NULL;
+          }
+        }
+
+        m_GetTexturePrevID = tex;
+
+        RDCASSERT(mip < ARRAY_COUNT(m_GetTexturePrevData));
+
+        // if we don't have this mip cached, fetch it now
+        if(m_GetTexturePrevData[mip] == NULL)
+        {
+          m_GetTexturePrevData[mip] = new byte[dataSize * arraysize];
+          gl.glGetTexImage(target, (GLint)mip, fmt, type, m_GetTexturePrevData[mip]);
+        }
+
+        // now copy the slice from the cache into ret
+        byte *src = m_GetTexturePrevData[mip];
+        src += dataSize * arrayIdx;
+
+        memcpy(ret, src, dataSize);
+      }
+      else
+      {
+        gl.glGetTexImage(target, (GLint)mip, fmt, type, ret);
+      }
 
       // if we're saving to disk we make the decision to vertically flip any non-compressed
       // images. This is a bit arbitrary, but really origin top-left is common for all disk
@@ -2457,60 +2641,30 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
         // need to vertically flip the image now to get conventional row ordering
         // we either do this when copying out the slice of interest, or just
         // on its own
-        size_t rowSize = GetByteSize(width, 1, 1, fmt, type);
         byte *src, *dst;
 
-        // for arrays just extract the slice we're interested in.
-        if(texType == eGL_TEXTURE_2D_ARRAY || texType == eGL_TEXTURE_1D_ARRAY ||
-           texType == eGL_TEXTURE_CUBE_MAP_ARRAY)
+        byte *row = new byte[rowSize];
+
+        size_t sliceSize = GetByteSize(width, height, 1, fmt, type);
+
+        // invert all slices in a 3D texture
+        for(GLsizei d = 0; d < depth; d++)
         {
-          dataSize = GetByteSize(width, height, 1, fmt, type);
-          byte *slice = new byte[dataSize];
+          dst = ret + d * sliceSize;
+          src = dst + (height - 1) * rowSize;
 
-          // src points to the last row in the array slice image
-          src = (ret + dataSize * arrayIdx) + (height - 1) * rowSize;
-          dst = slice;
-
-          // we do memcpy + vertical flip
-          // memcpy(slice, ret + dataSize*arrayIdx, dataSize);
-
-          for(GLsizei i = 0; i < height; i++)
+          for(GLsizei i = 0; i<height>> 1; i++)
           {
-            memcpy(dst, src, rowSize);
+            memcpy(row, src, rowSize);
+            memcpy(src, dst, rowSize);
+            memcpy(dst, row, rowSize);
 
             dst += rowSize;
             src -= rowSize;
           }
-
-          delete[] ret;
-
-          ret = slice;
         }
-        else
-        {
-          byte *row = new byte[rowSize];
 
-          size_t sliceSize = GetByteSize(width, height, 1, fmt, type);
-
-          // invert all slices in a 3D texture
-          for(GLsizei d = 0; d < depth; d++)
-          {
-            dst = ret + d * sliceSize;
-            src = dst + (height - 1) * rowSize;
-
-            for(GLsizei i = 0; i<height>> 1; i++)
-            {
-              memcpy(row, src, rowSize);
-              memcpy(src, dst, rowSize);
-              memcpy(dst, row, rowSize);
-
-              dst += rowSize;
-              src -= rowSize;
-            }
-          }
-
-          delete[] row;
-        }
+        delete[] row;
       }
     }
 
@@ -2526,7 +2680,7 @@ byte *GLReplay::GetTextureData(ResourceId tex, uint32_t arrayIdx, uint32_t mip,
 }
 
 void GLReplay::BuildCustomShader(string source, string entry, const uint32_t compileFlags,
-                                 ShaderStageType type, ResourceId *id, string *errors)
+                                 ShaderStage type, ResourceId *id, string *errors)
 {
   if(id == NULL || errors == NULL)
   {
@@ -2542,12 +2696,12 @@ void GLReplay::BuildCustomShader(string source, string entry, const uint32_t com
   GLenum shtype = eGL_VERTEX_SHADER;
   switch(type)
   {
-    case eShaderStage_Vertex: shtype = eGL_VERTEX_SHADER; break;
-    case eShaderStage_Tess_Control: shtype = eGL_TESS_CONTROL_SHADER; break;
-    case eShaderStage_Tess_Eval: shtype = eGL_TESS_EVALUATION_SHADER; break;
-    case eShaderStage_Geometry: shtype = eGL_GEOMETRY_SHADER; break;
-    case eShaderStage_Fragment: shtype = eGL_FRAGMENT_SHADER; break;
-    case eShaderStage_Compute: shtype = eGL_COMPUTE_SHADER; break;
+    case ShaderStage::Vertex: shtype = eGL_VERTEX_SHADER; break;
+    case ShaderStage::Tess_Control: shtype = eGL_TESS_CONTROL_SHADER; break;
+    case ShaderStage::Tess_Eval: shtype = eGL_TESS_EVALUATION_SHADER; break;
+    case ShaderStage::Geometry: shtype = eGL_GEOMETRY_SHADER; break;
+    case ShaderStage::Fragment: shtype = eGL_FRAGMENT_SHADER; break;
+    case ShaderStage::Compute: shtype = eGL_COMPUTE_SHADER; break;
     default:
     {
       RDCERR("Unknown shader type %u", type);
@@ -2581,8 +2735,7 @@ void GLReplay::BuildCustomShader(string source, string entry, const uint32_t com
 }
 
 ResourceId GLReplay::ApplyCustomShader(ResourceId shader, ResourceId texid, uint32_t mip,
-                                       uint32_t arrayIdx, uint32_t sampleIdx,
-                                       FormatComponentType typeHint)
+                                       uint32_t arrayIdx, uint32_t sampleIdx, CompType typeHint)
 {
   if(shader == ResourceId() || texid == ResourceId())
     return ResourceId();
@@ -2614,12 +2767,12 @@ ResourceId GLReplay::ApplyCustomShader(ResourceId shader, ResourceId texid, uint
   disp.CustomShader = shader;
   disp.texid = texid;
   disp.typeHint = typeHint;
-  disp.lightBackgroundColour = disp.darkBackgroundColour = FloatVector(0, 0, 0, 0);
+  disp.lightBackgroundColor = disp.darkBackgroundColor = FloatVector(0, 0, 0, 0);
   disp.HDRMul = -1.0f;
   disp.linearDisplayAsGamma = false;
   disp.mip = mip;
   disp.sampleIdx = sampleIdx;
-  disp.overlay = eTexOverlay_None;
+  disp.overlay = DebugOverlay::NoOverlay;
   disp.rangemin = 0.0f;
   disp.rangemax = 1.0f;
   disp.rawoutput = false;
@@ -2652,12 +2805,16 @@ void GLReplay::CreateCustomShaderTex(uint32_t w, uint32_t h)
 
   m_pDriver->glGenTextures(1, &DebugData.customTex);
   m_pDriver->glBindTexture(eGL_TEXTURE_2D, DebugData.customTex);
-  m_pDriver->glTextureStorage2DEXT(DebugData.customTex, eGL_TEXTURE_2D, mips, eGL_RGBA16F,
-                                   (GLsizei)w, (GLsizei)h);
+  for(uint32_t i = 0; i < mips; i++)
+  {
+    m_pDriver->glTextureImage2DEXT(DebugData.customTex, eGL_TEXTURE_2D, i, eGL_RGBA16F,
+                                   (GLsizei)RDCMAX(1U, w >> i), (GLsizei)RDCMAX(1U, h >> i), 0,
+                                   eGL_RGBA, eGL_FLOAT, NULL);
+  }
   m_pDriver->glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MIN_FILTER, eGL_NEAREST);
   m_pDriver->glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MAG_FILTER, eGL_NEAREST);
   m_pDriver->glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_BASE_LEVEL, 0);
-  m_pDriver->glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MAX_LEVEL, mips);
+  m_pDriver->glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_MAX_LEVEL, mips - 1);
   m_pDriver->glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_WRAP_S, eGL_CLAMP_TO_EDGE);
   m_pDriver->glTexParameteri(eGL_TEXTURE_2D, eGL_TEXTURE_WRAP_T, eGL_CLAMP_TO_EDGE);
 
@@ -2674,7 +2831,7 @@ void GLReplay::FreeCustomShader(ResourceId id)
 }
 
 void GLReplay::BuildTargetShader(string source, string entry, const uint32_t compileFlags,
-                                 ShaderStageType type, ResourceId *id, string *errors)
+                                 ShaderStage type, ResourceId *id, string *errors)
 {
   if(id == NULL || errors == NULL)
   {
@@ -2690,12 +2847,12 @@ void GLReplay::BuildTargetShader(string source, string entry, const uint32_t com
   GLenum shtype = eGL_VERTEX_SHADER;
   switch(type)
   {
-    case eShaderStage_Vertex: shtype = eGL_VERTEX_SHADER; break;
-    case eShaderStage_Tess_Control: shtype = eGL_TESS_CONTROL_SHADER; break;
-    case eShaderStage_Tess_Eval: shtype = eGL_TESS_EVALUATION_SHADER; break;
-    case eShaderStage_Geometry: shtype = eGL_GEOMETRY_SHADER; break;
-    case eShaderStage_Fragment: shtype = eGL_FRAGMENT_SHADER; break;
-    case eShaderStage_Compute: shtype = eGL_COMPUTE_SHADER; break;
+    case ShaderStage::Vertex: shtype = eGL_VERTEX_SHADER; break;
+    case ShaderStage::Tess_Control: shtype = eGL_TESS_CONTROL_SHADER; break;
+    case ShaderStage::Tess_Eval: shtype = eGL_TESS_EVALUATION_SHADER; break;
+    case ShaderStage::Geometry: shtype = eGL_GEOMETRY_SHADER; break;
+    case ShaderStage::Fragment: shtype = eGL_FRAGMENT_SHADER; break;
+    case ShaderStage::Compute: shtype = eGL_COMPUTE_SHADER; break;
     default:
     {
       RDCERR("Unknown shader type %u", type);
@@ -2748,7 +2905,7 @@ void GLReplay::FreeTargetResource(ResourceId id)
   m_pDriver->FreeTargetResource(id);
 }
 
-ResourceId GLReplay::CreateProxyTexture(const FetchTexture &templateTex)
+ResourceId GLReplay::CreateProxyTexture(const TextureDescription &templateTex)
 {
   WrappedOpenGL &gl = *m_pDriver;
 
@@ -2761,43 +2918,76 @@ ResourceId GLReplay::CreateProxyTexture(const FetchTexture &templateTex)
 
   GLenum binding = eGL_NONE;
 
+  GLenum baseFormat = eGL_RGBA;
+  GLenum dataType = eGL_UNSIGNED_BYTE;
+  if(!IsCompressedFormat(intFormat))
+  {
+    baseFormat = GetBaseFormat(intFormat);
+    dataType = GetDataType(intFormat);
+  }
+
   switch(templateTex.resType)
   {
-    case eResType_None: break;
-    case eResType_Buffer:
-    case eResType_Texture1D:
+    case TextureDim::Unknown: break;
+    case TextureDim::Buffer:
+    case TextureDim::Texture1D:
     {
       binding = eGL_TEXTURE_1D;
       gl.glBindTexture(eGL_TEXTURE_1D, tex);
-      gl.glTextureStorage1DEXT(tex, eGL_TEXTURE_1D, templateTex.mips, intFormat, templateTex.width);
+      uint32_t w = templateTex.width;
+      for(uint32_t i = 0; i < templateTex.mips; i++)
+      {
+        m_pDriver->glTextureImage1DEXT(tex, eGL_TEXTURE_1D, i, intFormat, w, 0, baseFormat,
+                                       dataType, NULL);
+        w = RDCMAX(1U, w >> 1);
+      }
       break;
     }
-    case eResType_Texture1DArray:
+    case TextureDim::Texture1DArray:
     {
       binding = eGL_TEXTURE_1D_ARRAY;
       gl.glBindTexture(eGL_TEXTURE_1D_ARRAY, tex);
-      gl.glTextureStorage2DEXT(tex, eGL_TEXTURE_1D_ARRAY, templateTex.mips, intFormat,
-                               templateTex.width, templateTex.arraysize);
+      uint32_t w = templateTex.width;
+      for(uint32_t i = 0; i < templateTex.mips; i++)
+      {
+        m_pDriver->glTextureImage2DEXT(tex, eGL_TEXTURE_1D_ARRAY, i, intFormat, w,
+                                       templateTex.arraysize, 0, baseFormat, dataType, NULL);
+        w = RDCMAX(1U, w >> 1);
+      }
       break;
     }
-    case eResType_TextureRect:
-    case eResType_Texture2D:
+    case TextureDim::TextureRect:
+    case TextureDim::Texture2D:
     {
       binding = eGL_TEXTURE_2D;
       gl.glBindTexture(eGL_TEXTURE_2D, tex);
-      gl.glTextureStorage2DEXT(tex, eGL_TEXTURE_2D, templateTex.mips, intFormat, templateTex.width,
-                               templateTex.height);
+      uint32_t w = templateTex.width;
+      uint32_t h = templateTex.height;
+      for(uint32_t i = 0; i < templateTex.mips; i++)
+      {
+        m_pDriver->glTextureImage2DEXT(tex, eGL_TEXTURE_2D, i, intFormat, w, h, 0, baseFormat,
+                                       dataType, NULL);
+        w = RDCMAX(1U, w >> 1);
+        h = RDCMAX(1U, h >> 1);
+      }
       break;
     }
-    case eResType_Texture2DArray:
+    case TextureDim::Texture2DArray:
     {
       binding = eGL_TEXTURE_2D_ARRAY;
       gl.glBindTexture(eGL_TEXTURE_2D_ARRAY, tex);
-      gl.glTextureStorage3DEXT(tex, eGL_TEXTURE_2D_ARRAY, templateTex.mips, intFormat,
-                               templateTex.width, templateTex.height, templateTex.arraysize);
+      uint32_t w = templateTex.width;
+      uint32_t h = templateTex.height;
+      for(uint32_t i = 0; i < templateTex.mips; i++)
+      {
+        m_pDriver->glTextureImage3DEXT(tex, eGL_TEXTURE_2D_ARRAY, i, intFormat, w, h,
+                                       templateTex.arraysize, 0, baseFormat, dataType, NULL);
+        w = RDCMAX(1U, w >> 1);
+        h = RDCMAX(1U, h >> 1);
+      }
       break;
     }
-    case eResType_Texture2DMS:
+    case TextureDim::Texture2DMS:
     {
       binding = eGL_TEXTURE_2D_MULTISAMPLE;
       gl.glBindTexture(eGL_TEXTURE_2D_MULTISAMPLE, tex);
@@ -2805,7 +2995,7 @@ ResourceId GLReplay::CreateProxyTexture(const FetchTexture &templateTex)
                                           intFormat, templateTex.width, templateTex.height, GL_TRUE);
       break;
     }
-    case eResType_Texture2DMSArray:
+    case TextureDim::Texture2DMSArray:
     {
       binding = eGL_TEXTURE_2D_MULTISAMPLE_ARRAY;
       gl.glBindTexture(eGL_TEXTURE_2D_MULTISAMPLE_ARRAY, tex);
@@ -2814,54 +3004,98 @@ ResourceId GLReplay::CreateProxyTexture(const FetchTexture &templateTex)
                                           templateTex.arraysize, GL_TRUE);
       break;
     }
-    case eResType_Texture3D:
+    case TextureDim::Texture3D:
     {
       binding = eGL_TEXTURE_3D;
       gl.glBindTexture(eGL_TEXTURE_3D, tex);
-      gl.glTextureStorage3DEXT(tex, eGL_TEXTURE_3D, templateTex.mips, intFormat, templateTex.width,
-                               templateTex.height, templateTex.depth);
+      uint32_t w = templateTex.width;
+      uint32_t h = templateTex.height;
+      uint32_t d = templateTex.depth;
+      for(uint32_t i = 0; i < templateTex.mips; i++)
+      {
+        m_pDriver->glTextureImage3DEXT(tex, eGL_TEXTURE_3D, i, intFormat, w, h, d, 0, baseFormat,
+                                       dataType, NULL);
+        w = RDCMAX(1U, w >> 1);
+        h = RDCMAX(1U, h >> 1);
+        d = RDCMAX(1U, d >> 1);
+      }
       break;
     }
-    case eResType_TextureCube:
+    case TextureDim::TextureCube:
     {
       binding = eGL_TEXTURE_CUBE_MAP;
       gl.glBindTexture(eGL_TEXTURE_CUBE_MAP, tex);
-      gl.glTextureStorage2DEXT(tex, eGL_TEXTURE_CUBE_MAP, templateTex.mips, intFormat,
-                               templateTex.width, templateTex.height);
+      uint32_t w = templateTex.width;
+      uint32_t h = templateTex.height;
+      for(uint32_t i = 0; i < templateTex.mips; i++)
+      {
+        m_pDriver->glTextureImage2DEXT(tex, eGL_TEXTURE_CUBE_MAP_POSITIVE_X, i, intFormat, w, h, 0,
+                                       baseFormat, dataType, NULL);
+        m_pDriver->glTextureImage2DEXT(tex, eGL_TEXTURE_CUBE_MAP_NEGATIVE_X, i, intFormat, w, h, 0,
+                                       baseFormat, dataType, NULL);
+        m_pDriver->glTextureImage2DEXT(tex, eGL_TEXTURE_CUBE_MAP_POSITIVE_Y, i, intFormat, w, h, 0,
+                                       baseFormat, dataType, NULL);
+        m_pDriver->glTextureImage2DEXT(tex, eGL_TEXTURE_CUBE_MAP_NEGATIVE_Y, i, intFormat, w, h, 0,
+                                       baseFormat, dataType, NULL);
+        m_pDriver->glTextureImage2DEXT(tex, eGL_TEXTURE_CUBE_MAP_POSITIVE_Z, i, intFormat, w, h, 0,
+                                       baseFormat, dataType, NULL);
+        m_pDriver->glTextureImage2DEXT(tex, eGL_TEXTURE_CUBE_MAP_NEGATIVE_Z, i, intFormat, w, h, 0,
+                                       baseFormat, dataType, NULL);
+        w = RDCMAX(1U, w >> 1);
+        h = RDCMAX(1U, h >> 1);
+      }
       break;
     }
-    case eResType_TextureCubeArray:
+    case TextureDim::TextureCubeArray:
     {
       binding = eGL_TEXTURE_CUBE_MAP_ARRAY;
       gl.glBindTexture(eGL_TEXTURE_CUBE_MAP_ARRAY, tex);
-      gl.glTextureStorage3DEXT(tex, eGL_TEXTURE_CUBE_MAP_ARRAY, templateTex.mips, intFormat,
-                               templateTex.width, templateTex.height, templateTex.arraysize);
+      uint32_t w = templateTex.width;
+      uint32_t h = templateTex.height;
+      for(uint32_t i = 0; i < templateTex.mips; i++)
+      {
+        m_pDriver->glTextureImage3DEXT(tex, eGL_TEXTURE_2D_ARRAY, i, intFormat, w, h,
+                                       templateTex.arraysize, 0, baseFormat, dataType, NULL);
+        w = RDCMAX(1U, w >> 1);
+        h = RDCMAX(1U, h >> 1);
+      }
       break;
     }
-    case eResType_Count:
+    case TextureDim::Count:
     {
       RDCERR("Invalid shader resource type");
       break;
     }
   }
 
+  gl.glTexParameteri(binding, eGL_TEXTURE_MAX_LEVEL, templateTex.mips - 1);
+
   if(templateTex.format.bgraOrder && binding != eGL_NONE)
   {
-    GLint bgraSwizzle[] = {eGL_BLUE, eGL_GREEN, eGL_RED, eGL_ALPHA};
-    GLint bgrSwizzle[] = {eGL_BLUE, eGL_GREEN, eGL_RED, eGL_ONE};
+    if(HasExt[ARB_texture_swizzle] || HasExt[EXT_texture_swizzle])
+    {
+      GLint bgraSwizzle[] = {eGL_BLUE, eGL_GREEN, eGL_RED, eGL_ALPHA};
+      GLint bgrSwizzle[] = {eGL_BLUE, eGL_GREEN, eGL_RED, eGL_ONE};
 
-    if(templateTex.format.compCount == 4)
-      gl.glTexParameteriv(binding, eGL_TEXTURE_SWIZZLE_RGBA, bgraSwizzle);
-    else if(templateTex.format.compCount == 3)
-      gl.glTexParameteriv(binding, eGL_TEXTURE_SWIZZLE_RGBA, bgrSwizzle);
+      if(templateTex.format.compCount == 4)
+        SetTextureSwizzle(gl.GetHookset(), tex, binding, (GLenum *)bgraSwizzle);
+      else if(templateTex.format.compCount == 3)
+        SetTextureSwizzle(gl.GetHookset(), tex, binding, (GLenum *)bgrSwizzle);
+      else
+        RDCERR("Unexpected component count %d for BGRA order format", templateTex.format.compCount);
+    }
     else
-      RDCERR("Unexpected component count %d for BGRA order format", templateTex.format.compCount);
+    {
+      RDCERR("Can't create a BGRA proxy texture without texture swizzle extension");
+    }
   }
 
-  if(templateTex.customName)
-    gl.glObjectLabel(eGL_TEXTURE, tex, -1, templateTex.name.elems);
+  ResourceId id = m_pDriver->GetResourceManager()->GetID(TextureRes(m_pDriver->GetCtx(), tex));
 
-  return m_pDriver->GetResourceManager()->GetID(TextureRes(m_pDriver->GetCtx(), tex));
+  if(templateTex.customName)
+    m_pDriver->GetResourceManager()->SetName(id, templateTex.name.c_str());
+
+  return id;
 }
 
 void GLReplay::SetProxyTextureData(ResourceId texid, uint32_t arrayIdx, uint32_t mip, byte *data,
@@ -2998,7 +3232,7 @@ bool GLReplay::IsTextureSupported(const ResourceFormat &format)
   return true;
 }
 
-ResourceId GLReplay::CreateProxyBuffer(const FetchBuffer &templateBuf)
+ResourceId GLReplay::CreateProxyBuffer(const BufferDescription &templateBuf)
 {
   WrappedOpenGL &gl = *m_pDriver;
 
@@ -3006,25 +3240,26 @@ ResourceId GLReplay::CreateProxyBuffer(const FetchBuffer &templateBuf)
 
   GLenum target = eGL_ARRAY_BUFFER;
 
-  if(templateBuf.creationFlags & eBufferCreate_Indirect)
+  if(templateBuf.creationFlags & BufferCategory::Indirect)
     target = eGL_DRAW_INDIRECT_BUFFER;
-  if(templateBuf.creationFlags & eBufferCreate_IB)
+  if(templateBuf.creationFlags & BufferCategory::Index)
     target = eGL_ELEMENT_ARRAY_BUFFER;
-  if(templateBuf.creationFlags & eBufferCreate_CB)
+  if(templateBuf.creationFlags & BufferCategory::Constants)
     target = eGL_UNIFORM_BUFFER;
-  if(templateBuf.creationFlags & eBufferCreate_UAV)
+  if(templateBuf.creationFlags & BufferCategory::ReadWrite)
     target = eGL_SHADER_STORAGE_BUFFER;
 
   GLuint buf = 0;
   gl.glGenBuffers(1, &buf);
   gl.glBindBuffer(target, buf);
-  gl.glNamedBufferStorageEXT(buf, (GLsizeiptr)templateBuf.length, NULL,
-                             GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT);
+  gl.glNamedBufferDataEXT(buf, (GLsizeiptr)templateBuf.length, NULL, eGL_DYNAMIC_DRAW);
+
+  ResourceId id = m_pDriver->GetResourceManager()->GetID(BufferRes(m_pDriver->GetCtx(), buf));
 
   if(templateBuf.customName)
-    gl.glObjectLabel(eGL_BUFFER, buf, -1, templateBuf.name.elems);
+    m_pDriver->GetResourceManager()->SetName(id, templateBuf.name.c_str());
 
-  return m_pDriver->GetResourceManager()->GetID(BufferRes(m_pDriver->GetCtx(), buf));
+  return id;
 }
 
 void GLReplay::SetProxyBufferData(ResourceId bufid, byte *data, size_t dataSize)
@@ -3042,8 +3277,8 @@ vector<EventUsage> GLReplay::GetUsage(ResourceId id)
 #pragma endregion
 
 vector<PixelModification> GLReplay::PixelHistory(vector<EventUsage> events, ResourceId target,
-                                                 uint32_t x, uint32_t y, uint32_t slice, uint32_t mip,
-                                                 uint32_t sampleIdx, FormatComponentType typeHint)
+                                                 uint32_t x, uint32_t y, uint32_t slice,
+                                                 uint32_t mip, uint32_t sampleIdx, CompType typeHint)
 {
   GLNOTIMP("GLReplay::PixelHistory");
   return vector<PixelModification>();
@@ -3063,15 +3298,104 @@ ShaderDebugTrace GLReplay::DebugPixel(uint32_t eventID, uint32_t x, uint32_t y, 
   return ShaderDebugTrace();
 }
 
-ShaderDebugTrace GLReplay::DebugThread(uint32_t eventID, uint32_t groupid[3], uint32_t threadid[3])
+ShaderDebugTrace GLReplay::DebugThread(uint32_t eventID, const uint32_t groupid[3],
+                                       const uint32_t threadid[3])
 {
   GLNOTIMP("DebugThread");
   return ShaderDebugTrace();
 }
 
-const GLHookSet &GetRealGLFunctions();
+void GLReplay::MakeCurrentReplayContext(GLWindowingData *ctx)
+{
+  static GLWindowingData *prev = NULL;
+
+  if(ctx && ctx != prev)
+  {
+    m_pDriver->m_Platform.MakeContextCurrent(*ctx);
+    prev = ctx;
+    m_pDriver->ActivateContext(*ctx);
+  }
+}
+
+void GLReplay::SwapBuffers(GLWindowingData *ctx)
+{
+  m_pDriver->m_Platform.SwapBuffers(*ctx);
+}
+
+void GLReplay::CloseReplayContext()
+{
+  m_pDriver->m_Platform.DeleteReplayContext(m_ReplayCtx);
+}
+
+uint64_t GLReplay::MakeOutputWindow(WindowingSystem system, void *data, bool depth)
+{
+  OutputWindow win = m_pDriver->m_Platform.MakeOutputWindow(system, data, depth, m_ReplayCtx);
+  if(!win.wnd)
+    return 0;
+
+  m_pDriver->m_Platform.GetOutputWindowDimensions(win, win.width, win.height);
+
+  MakeCurrentReplayContext(&win);
+  InitOutputWindow(win);
+  CreateOutputWindowBackbuffer(win, depth);
+
+  uint64_t ret = m_OutputWindowID++;
+
+  m_OutputWindows[ret] = win;
+
+  return ret;
+}
+
+void GLReplay::DestroyOutputWindow(uint64_t id)
+{
+  auto it = m_OutputWindows.find(id);
+  if(id == 0 || it == m_OutputWindows.end())
+    return;
+
+  OutputWindow &outw = it->second;
+
+  MakeCurrentReplayContext(&outw);
+
+  WrappedOpenGL &gl = *m_pDriver;
+  gl.glDeleteFramebuffers(1, &outw.BlitData.readFBO);
+
+  m_pDriver->m_Platform.DeleteReplayContext(outw);
+
+  m_OutputWindows.erase(it);
+}
+
+void GLReplay::GetOutputWindowDimensions(uint64_t id, int32_t &w, int32_t &h)
+{
+  if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
+    return;
+
+  OutputWindow &outw = m_OutputWindows[id];
+
+  m_pDriver->m_Platform.GetOutputWindowDimensions(outw, w, h);
+}
+
+bool GLReplay::IsOutputWindowVisible(uint64_t id)
+{
+  if(id == 0 || m_OutputWindows.find(id) == m_OutputWindows.end())
+    return false;
+
+  return m_pDriver->m_Platform.IsOutputWindowVisible(m_OutputWindows[id]);
+}
+
+#if defined(RENDERDOC_SUPPORT_GL)
 
 // defined in gl_replay_<platform>.cpp
-ReplayCreateStatus GL_CreateReplayDevice(const char *logfile, IReplayDriver **driver);
+ReplayStatus GL_CreateReplayDevice(const char *logfile, IReplayDriver **driver);
 
 static DriverRegistration GLDriverRegistration(RDC_OpenGL, "OpenGL", &GL_CreateReplayDevice);
+
+#endif
+
+#if defined(RENDERDOC_SUPPORT_GLES)
+
+// defined in gl_replay_egl.cpp
+ReplayStatus GLES_CreateReplayDevice(const char *logfile, IReplayDriver **driver);
+
+static DriverRegistration GLESDriverRegistration(RDC_OpenGLES, "OpenGLES", &GLES_CreateReplayDevice);
+
+#endif

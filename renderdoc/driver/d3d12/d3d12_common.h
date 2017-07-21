@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,6 +33,33 @@
 #include "driver/shaders/dxbc/dxbc_compile.h"
 #include "serialise/serialiser.h"
 
+// replay only class for handling marker regions
+struct D3D12MarkerRegion
+{
+  D3D12MarkerRegion(ID3D12GraphicsCommandList *list, const std::string &marker);
+  ~D3D12MarkerRegion();
+  static void Set(ID3D12GraphicsCommandList *list, const std::string &marker);
+
+  ID3D12GraphicsCommandList *list;
+};
+
+inline void SetObjName(ID3D12Object *obj, const std::string &utf8name)
+{
+  obj->SetName(StringFormat::UTF82Wide(utf8name).c_str());
+}
+
+TextureDim MakeTextureDim(D3D12_SRV_DIMENSION dim);
+TextureDim MakeTextureDim(D3D12_RTV_DIMENSION dim);
+TextureDim MakeTextureDim(D3D12_DSV_DIMENSION dim);
+TextureDim MakeTextureDim(D3D12_UAV_DIMENSION dim);
+AddressMode MakeAddressMode(D3D12_TEXTURE_ADDRESS_MODE addr);
+CompareFunc MakeCompareFunc(D3D12_COMPARISON_FUNC func);
+TextureFilter MakeFilter(D3D12_FILTER filter);
+LogicOp MakeLogicOp(D3D12_LOGIC_OP op);
+BlendMultiplier MakeBlendMultiplier(D3D12_BLEND blend, bool alpha);
+BlendOp MakeBlendOp(D3D12_BLEND_OP op);
+StencilOp MakeStencilOp(D3D12_STENCIL_OP op);
+
 void MakeShaderReflection(DXBC::DXBCFile *dxbc, ShaderReflection *refl,
                           ShaderBindpointMapping *mapping);
 
@@ -51,14 +78,14 @@ void MakeShaderReflection(DXBC::DXBCFile *dxbc, ShaderReflection *refl,
 // uncomment this to cause every internal ExecuteCommandLists to immediately call
 // FlushLists(), and to only submit one command list at once to narrow
 // down the cause of device lost errors
-//#define SINGLE_FLUSH_VALIDATE
+#define SINGLE_FLUSH_VALIDATE OPTION_OFF
 
 // uncomment this to get verbose debugging about when/where/why partial command
 // buffer replay is happening
-#define VERBOSE_PARTIAL_REPLAY
+#define VERBOSE_PARTIAL_REPLAY OPTION_ON
 
-ShaderStageBits ConvertVisibility(D3D12_SHADER_VISIBILITY ShaderVisibility);
-UINT GetNumSubresources(const D3D12_RESOURCE_DESC *desc);
+ShaderStageMask ConvertVisibility(D3D12_SHADER_VISIBILITY ShaderVisibility);
+UINT GetNumSubresources(ID3D12Device *dev, const D3D12_RESOURCE_DESC *desc);
 
 class WrappedID3D12Device;
 
@@ -87,6 +114,9 @@ public:
   // implement IUnknown
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject)
   {
+    if(!m_pReal)
+      return E_NOINTERFACE;
+
     return RefCountDXGIObject::WrapQueryInterface(m_pReal, riid, ppvObject);
   }
 
@@ -124,9 +154,42 @@ public:
   }
 };
 
-struct D3D12RootSignatureParameter : D3D12_ROOT_PARAMETER
+struct D3D12RootSignatureParameter : D3D12_ROOT_PARAMETER1
 {
-  void MakeFrom(const D3D12_ROOT_PARAMETER &param, UINT &numSpaces)
+  D3D12RootSignatureParameter()
+  {
+    ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // copy the POD ones first
+    Constants.Num32BitValues = 0;
+    Constants.RegisterSpace = 0;
+    Constants.ShaderRegister = 0;
+  }
+
+  D3D12RootSignatureParameter(const D3D12RootSignatureParameter &other) { *this = other; }
+  D3D12RootSignatureParameter &operator=(const D3D12RootSignatureParameter &other)
+  {
+    // copy first
+    ParameterType = other.ParameterType;
+    ShaderVisibility = other.ShaderVisibility;
+
+    // copy the POD ones first
+    Descriptor = other.Descriptor;
+    Constants = other.Constants;
+
+    ranges = other.ranges;
+
+    // repoint ranges
+    if(ParameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+    {
+      DescriptorTable.NumDescriptorRanges = (UINT)ranges.size();
+      DescriptorTable.pDescriptorRanges = &ranges[0];
+    }
+    return *this;
+  }
+
+  void MakeFrom(const D3D12_ROOT_PARAMETER1 &param, UINT &numSpaces)
   {
     ParameterType = param.ParameterType;
     ShaderVisibility = param.ShaderVisibility;
@@ -158,15 +221,67 @@ struct D3D12RootSignatureParameter : D3D12_ROOT_PARAMETER
     }
   }
 
-  vector<D3D12_DESCRIPTOR_RANGE> ranges;
+  void MakeFrom(const D3D12_ROOT_PARAMETER &param, UINT &numSpaces)
+  {
+    ParameterType = param.ParameterType;
+    ShaderVisibility = param.ShaderVisibility;
+
+    // copy the POD ones first
+    Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
+    Descriptor.RegisterSpace = param.Descriptor.RegisterSpace;
+    Descriptor.ShaderRegister = param.Descriptor.ShaderRegister;
+    Constants = param.Constants;
+
+    if(ParameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+    {
+      ranges.resize(param.DescriptorTable.NumDescriptorRanges);
+      for(size_t i = 0; i < ranges.size(); i++)
+      {
+        ranges[i].RangeType = param.DescriptorTable.pDescriptorRanges[i].RangeType;
+        ranges[i].NumDescriptors = param.DescriptorTable.pDescriptorRanges[i].NumDescriptors;
+        ranges[i].BaseShaderRegister = param.DescriptorTable.pDescriptorRanges[i].BaseShaderRegister;
+        ranges[i].RegisterSpace = param.DescriptorTable.pDescriptorRanges[i].RegisterSpace;
+        ranges[i].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE |
+                          D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+        ranges[i].OffsetInDescriptorsFromTableStart =
+            param.DescriptorTable.pDescriptorRanges[i].OffsetInDescriptorsFromTableStart;
+
+        numSpaces = RDCMAX(numSpaces, ranges[i].RegisterSpace + 1);
+      }
+
+      DescriptorTable.NumDescriptorRanges = (UINT)ranges.size();
+      DescriptorTable.pDescriptorRanges = &ranges[0];
+    }
+    else if(ParameterType == D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS)
+    {
+      numSpaces = RDCMAX(numSpaces, Constants.RegisterSpace + 1);
+    }
+    else
+    {
+      numSpaces = RDCMAX(numSpaces, Descriptor.RegisterSpace + 1);
+    }
+  }
+
+  vector<D3D12_DESCRIPTOR_RANGE1> ranges;
 };
 
 struct D3D12RootSignature
 {
   D3D12RootSignature() : numSpaces(0) {}
   uint32_t numSpaces;
+  uint32_t dwordLength;
+
+  D3D12_ROOT_SIGNATURE_FLAGS Flags;
   vector<D3D12RootSignatureParameter> params;
   vector<D3D12_STATIC_SAMPLER_DESC> samplers;
+};
+
+struct D3D12CommandSignature
+{
+  bool graphics;
+  UINT numDraws;
+  UINT ByteStride;
+  vector<D3D12_INDIRECT_ARGUMENT_DESC> arguments;
 };
 
 #define IMPLEMENT_IUNKNOWN_WITH_REFCOUNTER_CUSTOMQUERY                \
@@ -194,6 +309,8 @@ template <>
 void Serialiser::Serialise(const char *name, D3D12_INDEX_BUFFER_VIEW &el);
 template <>
 void Serialiser::Serialise(const char *name, D3D12_VERTEX_BUFFER_VIEW &el);
+template <>
+void Serialiser::Serialise(const char *name, D3D12_STREAM_OUTPUT_BUFFER_VIEW &el);
 template <>
 void Serialiser::Serialise(const char *name, D3D12_RESOURCE_BARRIER &el);
 template <>
@@ -226,6 +343,10 @@ template <>
 void Serialiser::Serialise(const char *name, D3D12_CLEAR_VALUE &el);
 template <>
 void Serialiser::Serialise(const char *name, D3D12_TEXTURE_COPY_LOCATION &el);
+template <>
+void Serialiser::Serialise(const char *name, D3D12_TILED_RESOURCE_COORDINATE &el);
+template <>
+void Serialiser::Serialise(const char *name, D3D12_TILE_REGION_SIZE &el);
 template <>
 void Serialiser::Serialise(const char *name, D3D12_DISCARD_REGION &el);
 template <>
@@ -277,10 +398,19 @@ void Serialiser::Serialise(const char *name, D3D12Descriptor &el);
                                                                                                    \
   D3D12_CHUNK_MACRO(RESOURCE_BARRIER, "ID3D12GraphicsCommandList::ResourceBarrier")                \
                                                                                                    \
+  D3D12_CHUNK_MACRO(MAP_DATA_WRITE, "ID3D12Resource::Unmap")                                       \
+  D3D12_CHUNK_MACRO(WRITE_TO_SUB, "ID3D12Resource::WriteToSubresource")                            \
+                                                                                                   \
+  D3D12_CHUNK_MACRO(BEGIN_QUERY, "ID3D12GraphicsCommandList::BeginQuery")                          \
+  D3D12_CHUNK_MACRO(END_QUERY, "ID3D12GraphicsCommandList::EndQuery")                              \
+  D3D12_CHUNK_MACRO(RESOLVE_QUERY, "ID3D12GraphicsCommandList::ResolveQueryData")                  \
+  D3D12_CHUNK_MACRO(SET_PREDICATION, "ID3D12GraphicsCommandList::SetPredication")                  \
+                                                                                                   \
   D3D12_CHUNK_MACRO(DRAW_INDEXED_INST, "ID3D12GraphicsCommandList::DrawIndexedInstanced")          \
   D3D12_CHUNK_MACRO(DRAW_INST, "ID3D12GraphicsCommandList::DrawInstanced")                         \
   D3D12_CHUNK_MACRO(DISPATCH, "ID3D12GraphicsCommandList::Dispatch")                               \
   D3D12_CHUNK_MACRO(EXEC_INDIRECT, "ID3D12GraphicsCommandList::ExecuteIndirect")                   \
+  D3D12_CHUNK_MACRO(EXEC_BUNDLE, "ID3D12GraphicsCommandList::ExecuteBundle")                       \
                                                                                                    \
   D3D12_CHUNK_MACRO(COPY_BUFFER, "ID3D12GraphicsCommandList::CopyBufferRegion")                    \
   D3D12_CHUNK_MACRO(COPY_TEXTURE, "ID3D12GraphicsCommandList::CopyTextureRegion")                  \
@@ -296,6 +426,7 @@ void Serialiser::Serialise(const char *name, D3D12Descriptor &el);
   D3D12_CHUNK_MACRO(SET_TOPOLOGY, "ID3D12GraphicsCommandList::IASetPrimitiveTopology")             \
   D3D12_CHUNK_MACRO(SET_IBUFFER, "ID3D12GraphicsCommandList::IASetIndexBuffer")                    \
   D3D12_CHUNK_MACRO(SET_VBUFFERS, "ID3D12GraphicsCommandList::IASetVertexBuffers")                 \
+  D3D12_CHUNK_MACRO(SET_SOTARGETS, "ID3D12GraphicsCommandList::SOSetTargets")                      \
   D3D12_CHUNK_MACRO(SET_VIEWPORTS, "ID3D12GraphicsCommandList::RSSetViewports")                    \
   D3D12_CHUNK_MACRO(SET_SCISSORS, "ID3D12GraphicsCommandList::RSSetScissors")                      \
   D3D12_CHUNK_MACRO(SET_PIPE, "ID3D12GraphicsCommandList::SetPipelineState")                       \
@@ -330,8 +461,17 @@ void Serialiser::Serialise(const char *name, D3D12Descriptor &el);
   D3D12_CHUNK_MACRO(SET_COMP_ROOT_UAV,                                                             \
                     "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView")                \
                                                                                                    \
+  D3D12_CHUNK_MACRO(DYN_DESC_WRITE, "Dynamic descriptor write")                                    \
+  D3D12_CHUNK_MACRO(DYN_DESC_COPIES, "Dynamic descriptor copies")                                  \
+                                                                                                   \
   D3D12_CHUNK_MACRO(EXECUTE_CMD_LISTS, "ID3D12GraphicsCommandQueue::ExecuteCommandLists")          \
   D3D12_CHUNK_MACRO(SIGNAL, "ID3D12GraphicsCommandQueue::Signal")                                  \
+  D3D12_CHUNK_MACRO(WAIT, "ID3D12GraphicsCommandQueue::Wait")                                      \
+                                                                                                   \
+  D3D12_CHUNK_MACRO(CREATE_RESERVED_RESOURCE, "ID3D12Device::CreateReservedResource")              \
+  D3D12_CHUNK_MACRO(COPY_TILES, "ID3D12GraphicsCommandList::CopyTiles")                            \
+  D3D12_CHUNK_MACRO(UPDATE_TILE_MAPPINGS, "ID3D12GraphicsCommandQueue::UpdateTileMappings")        \
+  D3D12_CHUNK_MACRO(COPY_TILE_MAPPINGS, "ID3D12GraphicsCommandQueue::CopyTileMappings")            \
                                                                                                    \
   D3D12_CHUNK_MACRO(NUM_D3D12_CHUNKS, "")
 

@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -324,6 +324,40 @@ void VulkanResourceManager::SerialiseImageStates(map<ResourceId, ImageLayouts> &
       it = barriers.erase(it);
     else
       ++it;
+  }
+
+  // try to merge images that have been split up by subresource but are now all in the same state
+  // again.
+  for(auto it = states.begin(); it != states.end(); ++it)
+  {
+    ImageLayouts &layouts = it->second;
+
+    if(layouts.subresourceStates.size() > 1 &&
+       layouts.subresourceStates.size() == size_t(layouts.layerCount * layouts.levelCount))
+    {
+      VkImageLayout layout = layouts.subresourceStates[0].newLayout;
+
+      bool allIdentical = true;
+
+      for(size_t i = 0; i < layouts.subresourceStates.size(); i++)
+      {
+        if(layouts.subresourceStates[i].newLayout != layout)
+        {
+          allIdentical = false;
+          break;
+        }
+      }
+
+      if(allIdentical)
+      {
+        layouts.subresourceStates.erase(layouts.subresourceStates.begin() + 1,
+                                        layouts.subresourceStates.end());
+        layouts.subresourceStates[0].subresourceRange.baseArrayLayer = 0;
+        layouts.subresourceStates[0].subresourceRange.baseMipLevel = 0;
+        layouts.subresourceStates[0].subresourceRange.layerCount = layouts.layerCount;
+        layouts.subresourceStates[0].subresourceRange.levelCount = layouts.levelCount;
+      }
+    }
   }
 }
 

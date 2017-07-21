@@ -7,12 +7,6 @@ set(RDOC_INCLUDES
     PRIVATE ${RDOC_SOURCE_DIR}/3rdparty)
 set(RDOC_LIBRARIES)
 
-# get git commit hash
-get_git_hash(GIT_COMMIT_HASH)
-string(STRIP ${GIT_COMMIT_HASH} GIT_COMMIT_HASH)
-list(APPEND RDOC_DEFINITIONS
-    PRIVATE -DGIT_COMMIT_HASH="${GIT_COMMIT_HASH}")
-
 if(ANDROID)
     list(APPEND RDOC_LIBRARIES
         PRIVATE m
@@ -24,7 +18,6 @@ elseif(APPLE)
     list(APPEND RDOC_LIBRARIES
         PRIVATE m
         PRIVATE dl
-        PRIVATE log
         PRIVATE ${CMAKE_THREAD_LIBS_INIT})
 elseif(UNIX)
     find_package(PkgConfig REQUIRED)
@@ -71,6 +64,7 @@ set(sources
     api/replay/replay_enums.h
     api/replay/shader_types.h
     api/replay/vk_pipestate.h
+    api/replay/version.h
     common/common.cpp
     common/common.h
     common/custom_assert.h
@@ -96,9 +90,9 @@ set(sources
     data/glsl/debuguniforms.h
     data/glsl/vk_texsample.h
     data/glsl/gl_texsample.h
+    data/glsl/gles_texsample.h
     data/glsl_shaders.cpp
     data/glsl_shaders.h
-    data/version.h
     hooks/hooks.cpp
     hooks/hooks.h
     maths/camera.cpp
@@ -113,11 +107,13 @@ set(sources
     os/os_specific.h
     replay/app_api.cpp
     replay/capture_options.cpp
+    replay/capture_file.cpp
     replay/entry_points.cpp
+    replay/replay_driver.cpp
     replay/replay_driver.h
     replay/replay_output.cpp
-    replay/replay_renderer.cpp
-    replay/replay_renderer.h
+    replay/replay_controller.cpp
+    replay/replay_controller.h
     replay/type_helpers.cpp
     replay/type_helpers.h
     serialise/grisu2.cpp
@@ -134,10 +130,13 @@ set(sources
     3rdparty/lz4/lz4.h
     3rdparty/stb/stb_image.h
     3rdparty/stb/stb_image_write.h
+    3rdparty/stb/stb_image_resize.h
     3rdparty/stb/stb_impl.c
     3rdparty/stb/stb_truetype.h
     3rdparty/tinyexr/tinyexr.cpp
-    3rdparty/tinyexr/tinyexr.h)
+    3rdparty/tinyexr/tinyexr.h
+    3rdparty/tinyfiledialogs/tinyfiledialogs.c
+    3rdparty/tinyfiledialogs/tinyfiledialogs.h)
 
 if(ANDROID)
     list(APPEND sources
@@ -202,6 +201,11 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR APPLE)
     # -Wno-shift-negative-value available
     set_source_files_properties(3rdparty/jpeg-compressor/jpgd.cpp
         PROPERTIES COMPILE_FLAGS "-Wno-unknown-warning-option -Wno-shift-negative-value")
+
+    if(CMAKE_COMPILER_IS_GNUCXX)
+        set_property(SOURCE 3rdparty/jpeg-compressor/jpgd.cpp
+            APPEND_STRING PROPERTY COMPILE_FLAGS " -Wno-unknown-warning -Wno-implicit-fallthrough")
+    endif()
 endif()
 
 add_library(rdoc OBJECT ${sources})
@@ -225,6 +229,7 @@ set(data
     data/glsl/quadwrite.frag
     data/glsl/texdisplay.frag
     data/glsl/gl_texsample.h
+    data/glsl/gles_texsample.h
     data/glsl/vk_texsample.h
     data/glsl/text.frag
     data/glsl/text.vert
@@ -232,6 +237,8 @@ set(data
     data/glsl/ms2array.comp
     data/glsl/trisize.frag
     data/glsl/trisize.geom
+    data/glsl/deptharr2ms.frag
+    data/glsl/depthms2arr.frag
     data/sourcecodepro.ttf
     driver/vulkan/renderdoc.json)
 
@@ -272,7 +279,7 @@ endif()
 
 set(renderdoc_objects)
 
-if(ENABLE_GL)
+if(ENABLE_GL OR ENABLE_GLES)
     add_subdirectory(driver/gl)
     list(APPEND renderdoc_objects $<TARGET_OBJECTS:rdoc_gl>)
 endif()
@@ -282,9 +289,12 @@ if(ENABLE_VULKAN)
     list(APPEND renderdoc_objects $<TARGET_OBJECTS:rdoc_vulkan>)
 endif()
 
-if(ENABLE_GL OR ENABLE_VULKAN)
+if(ENABLE_GL OR ENABLE_GLES OR ENABLE_VULKAN)
     add_subdirectory(driver/shaders/spirv)
     list(APPEND renderdoc_objects $<TARGET_OBJECTS:rdoc_spirv>)
+
+    add_subdirectory(driver/ihv/amd)
+    list(APPEND renderdoc_objects $<TARGET_OBJECTS:rdoc_amd>)
 endif()
 
 # rdoc must be after its drivers because of linux_libentry.cpp
@@ -297,9 +307,12 @@ target_compile_definitions(renderdoc ${RDOC_DEFINITIONS})
 target_include_directories(renderdoc ${RDOC_INCLUDES})
 target_link_libraries(renderdoc ${RDOC_LIBRARIES})
 
-install (TARGETS renderdoc DESTINATION lib)
+if(UNIX AND NOT ANDROID AND NOT APPLE)
+    set_target_properties(renderdoc PROPERTIES LINK_FLAGS "-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/renderdoc.version")
+endif()
 
-add_custom_command(TARGET renderdoc POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/bin/)
-add_custom_command(TARGET renderdoc POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:renderdoc> ${CMAKE_SOURCE_DIR}/bin/)
+install (TARGETS renderdoc DESTINATION lib${LIB_SUFFIX})
+
+# Copy in application API header to include
+install (FILES api/app/renderdoc_app.h DESTINATION include RENAME renderdoc.h)
+

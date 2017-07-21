@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2016 Baldur Karlsson
+ * Copyright (c) 2015-2017 Baldur Karlsson
  * Copyright (c) 2014 Crytek
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,6 +25,7 @@
 
 #include "d3d11_device.h"
 #include "d3d11_context.h"
+#include "d3d11_renderstate.h"
 #include "d3d11_resources.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -88,9 +89,20 @@ bool WrappedID3D11Device::Serialise_CreateBlendState1(const D3D11_BLEND_DESC1 *p
     }
     else
     {
-      ret = new WrappedID3D11BlendState1(ret, this);
+      if(GetResourceManager()->HasWrapper(ret))
+      {
+        ret->Release();
+        ret = (ID3D11BlendState1 *)GetResourceManager()->GetWrapper(ret);
+        ret->AddRef();
 
-      GetResourceManager()->AddLiveResource(State, ret);
+        GetResourceManager()->AddLiveResource(State, ret);
+      }
+      else
+      {
+        ret = new WrappedID3D11BlendState1(ret, this);
+
+        GetResourceManager()->AddLiveResource(State, ret);
+      }
     }
   }
 
@@ -168,9 +180,20 @@ bool WrappedID3D11Device::Serialise_CreateRasterizerState1(
     }
     else
     {
-      ret = new WrappedID3D11RasterizerState2(ret, this);
+      if(GetResourceManager()->HasWrapper(ret))
+      {
+        ret->Release();
+        ret = (ID3D11RasterizerState1 *)GetResourceManager()->GetWrapper(ret);
+        ret->AddRef();
 
-      GetResourceManager()->AddLiveResource(State, ret);
+        GetResourceManager()->AddLiveResource(State, ret);
+      }
+      else
+      {
+        ret = new WrappedID3D11RasterizerState2(ret, this);
+
+        GetResourceManager()->AddLiveResource(State, ret);
+      }
     }
   }
 
@@ -235,9 +258,27 @@ HRESULT WrappedID3D11Device::CreateDeviceContextState(UINT Flags,
 {
   if(m_pDevice1 == NULL)
     return E_NOINTERFACE;
-  RDCUNIMPLEMENTED("Not wrapping CreateDeviceContextState");
-  return m_pDevice1->CreateDeviceContextState(Flags, pFeatureLevels, FeatureLevels, SDKVersion,
-                                              EmulatedInterface, pChosenFeatureLevel, ppContextState);
+
+  if(ppContextState == NULL)
+    return m_pDevice1->CreateDeviceContextState(Flags, pFeatureLevels, FeatureLevels, SDKVersion,
+                                                EmulatedInterface, pChosenFeatureLevel, NULL);
+
+  ID3DDeviceContextState *real = NULL;
+  HRESULT ret = m_pDevice1->CreateDeviceContextState(Flags, pFeatureLevels, FeatureLevels, SDKVersion,
+                                                     EmulatedInterface, pChosenFeatureLevel, &real);
+
+  if(SUCCEEDED(ret))
+  {
+    SCOPED_LOCK(m_D3DLock);
+
+    WrappedID3DDeviceContextState *wrapped = new WrappedID3DDeviceContextState(real, this);
+
+    wrapped->state->CopyState(*m_pImmediateContext->GetCurrentPipelineState());
+
+    *ppContextState = wrapped;
+  }
+
+  return ret;
 }
 
 HRESULT WrappedID3D11Device::OpenSharedResource1(HANDLE hResource, REFIID returnedInterface,

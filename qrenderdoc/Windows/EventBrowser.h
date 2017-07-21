@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,8 +22,7 @@
  * THE SOFTWARE.
  ******************************************************************************/
 
-#ifndef EVENTBROWSER_H
-#define EVENTBROWSER_H
+#pragma once
 
 #include <QFrame>
 #include <QIcon>
@@ -34,70 +33,111 @@ namespace Ui
 class EventBrowser;
 }
 
-class QTreeWidgetItem;
+class QSpacerItem;
+class QToolButton;
+class RDTreeWidgetItem;
 class QTimer;
+class QTextStream;
+class FlowLayout;
+struct EventItemTag;
 
-class EventBrowser : public QFrame, public ILogViewerForm
+class EventBrowser : public QFrame, public IEventBrowser, public ILogViewer
 {
 private:
   Q_OBJECT
 
+  Q_PROPERTY(QVariant persistData READ persistData WRITE setPersistData DESIGNABLE false SCRIPTABLE false)
+
 public:
-  explicit EventBrowser(CaptureContext *ctx, QWidget *parent = 0);
+  explicit EventBrowser(ICaptureContext &ctx, QWidget *parent = 0);
   ~EventBrowser();
 
-  void OnLogfileLoaded();
-  void OnLogfileClosed();
-  void OnEventSelected(uint32_t eventID);
+  // IEventBrowser
+  QWidget *Widget() override { return this; }
+  void UpdateDurationColumn() override;
+  // ILogViewerForm
+  void OnLogfileLoaded() override;
+  void OnLogfileClosed() override;
+  void OnSelectedEventChanged(uint32_t eventID) override {}
+  void OnEventChanged(uint32_t eventID) override;
+
+  QVariant persistData();
+  void setPersistData(const QVariant &persistData);
 
 private slots:
   // automatic slots
   void on_find_clicked();
   void on_gotoEID_clicked();
   void on_timeDraws_clicked();
-  void on_toolButton_clicked();
+  void on_bookmark_clicked();
   void on_HideFindJump();
   void on_jumpToEID_returnPressed();
   void on_findEvent_returnPressed();
+  void on_findEvent_keyPress(QKeyEvent *event);
   void on_findEvent_textEdited(const QString &arg1);
-  void on_events_currentItemChanged(QTreeWidgetItem *current, QTreeWidgetItem *previous);
+  void on_events_currentItemChanged(RDTreeWidgetItem *current, RDTreeWidgetItem *previous);
   void on_findNext_clicked();
   void on_findPrev_clicked();
+  void on_stepNext_clicked();
+  void on_stepPrev_clicked();
+  void on_exportDraws_clicked();
+  void on_colSelect_clicked();
 
   // manual slots
   void findHighlight_timeout();
+  void events_keyPress(QKeyEvent *event);
+  void events_contextMenu(const QPoint &pos);
+
+public slots:
+  void clearBookmarks();
+  bool hasBookmark(uint32_t EID);
+  void toggleBookmark(uint32_t EID);
+  void jumpToBookmark(int idx);
 
 private:
-  uint AddDrawcalls(QTreeWidgetItem *parent, const rdctype::array<FetchDrawcall> &draws);
-  void SetDrawcallTimes(QTreeWidgetItem *node, const rdctype::array<CounterResult> &results);
+  QPair<uint32_t, uint32_t> AddDrawcalls(RDTreeWidgetItem *parent,
+                                         const rdctype::array<DrawcallDescription> &draws);
+  void SetDrawcallTimes(RDTreeWidgetItem *node, const rdctype::array<CounterResult> &results);
 
-  void ExpandNode(QTreeWidgetItem *node);
+  void ExpandNode(RDTreeWidgetItem *node);
 
-  bool FindEventNode(QTreeWidgetItem *&found, QTreeWidgetItem *parent, uint32_t eventID);
+  bool FindEventNode(RDTreeWidgetItem *&found, RDTreeWidgetItem *parent, uint32_t eventID);
   bool SelectEvent(uint32_t eventID);
 
-  void ClearFindIcons(QTreeWidgetItem *parent);
+  void ClearFindIcons(RDTreeWidgetItem *parent);
   void ClearFindIcons();
 
-  int SetFindIcons(QTreeWidgetItem *parent, QString filter);
+  int SetFindIcons(RDTreeWidgetItem *parent, QString filter);
   int SetFindIcons(QString filter);
 
-  QTreeWidgetItem *FindNode(QTreeWidgetItem *parent, QString filter, uint32_t after);
-  int FindEvent(QTreeWidgetItem *parent, QString filter, uint32_t after, bool forward);
+  void highlightBookmarks();
+  bool hasBookmark(RDTreeWidgetItem *node);
+
+  RDTreeWidgetItem *FindNode(RDTreeWidgetItem *parent, QString filter, uint32_t after);
+  int FindEvent(RDTreeWidgetItem *parent, QString filter, uint32_t after, bool forward);
   int FindEvent(QString filter, uint32_t after, bool forward);
   void Find(bool forward);
 
-  QIcon m_CurrentIcon;
-  QIcon m_FindIcon;
-  QIcon m_BookmarkIcon;
+  QString GetExportDrawcallString(int indent, bool firstchild, const DrawcallDescription &drawcall);
+  double GetDrawTime(const DrawcallDescription &drawcall);
+  void GetMaxNameLength(int &maxNameLength, int indent, bool firstchild,
+                        const DrawcallDescription &drawcall);
+  void ExportDrawcall(QTextStream &writer, int maxNameLength, int indent, bool firstchild,
+                      const DrawcallDescription &drawcall);
 
-  SizeDelegate *m_SizeDelegate;
+  TimeUnit m_TimeUnit = TimeUnit::Count;
+
+  rdctype::array<CounterResult> m_Times;
+
   QTimer *m_FindHighlight;
 
-  void RefreshIcon(QTreeWidgetItem *item);
+  FlowLayout *m_BookmarkStripLayout;
+  QSpacerItem *m_BookmarkSpacer;
+  QList<int> m_Bookmarks;
+  QList<QToolButton *> m_BookmarkButtons;
+
+  void RefreshIcon(RDTreeWidgetItem *item, EventItemTag tag);
 
   Ui::EventBrowser *ui;
-  CaptureContext *m_Ctx;
+  ICaptureContext &m_Ctx;
 };
-
-#endif    // EVENTBROWSER_H

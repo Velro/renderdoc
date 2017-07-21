@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,6 +24,7 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <limits.h>
 #include <pwd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +32,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "api/app/renderdoc_app.h"
-#include "api/replay/capture_options.h"
 #include "os/os_specific.h"
 #include "serialise/string_utils.h"
 
@@ -39,9 +39,42 @@
 char **GetCurrentEnvironment();
 int GetIdentPort(pid_t childPid);
 
-static vector<Process::EnvironmentModification> &GetEnvModifications()
+static const string GetAbsoluteAppPathFromName(const string &appName)
 {
-  static vector<Process::EnvironmentModification> envCallbacks;
+  // If the application name contains a slash character convert it to an absolute path and return it
+  if(appName.find("/") != string::npos)
+  {
+    char realpathBuffer[PATH_MAX];
+    string appDir = dirname(appName);
+    string appBasename = basename(appName);
+    realpath(appDir.c_str(), realpathBuffer);
+    string appPath(realpathBuffer);
+    appPath += "/" + appBasename;
+    return appPath;
+  }
+
+  // Search the PATH directory list for the application (like shell which) to get the absolute path
+  // Return "" if no exectuable found in the PATH list
+  char *pathEnvVar = getenv("PATH");
+  if(!pathEnvVar)
+    return string();
+
+  const char *pathSeparator = ":";
+  const char *path = strtok(pathEnvVar, pathSeparator);
+  while(path)
+  {
+    string testPath(path);
+    testPath += "/" + appName;
+    if(!access(testPath.c_str(), X_OK))
+      return testPath;
+    path = strtok(NULL, pathSeparator);
+  }
+  return string();
+}
+
+static vector<EnvironmentModification> &GetEnvModifications()
+{
+  static vector<EnvironmentModification> envCallbacks;
   return envCallbacks;
 }
 
@@ -54,6 +87,12 @@ static map<string, string> EnvStringToEnvMap(const char **envstring)
   while(*e)
   {
     const char *equals = strchr(*e, '=');
+
+    if(equals == NULL)
+    {
+      e++;
+      continue;
+    }
 
     string name;
     string value;
@@ -116,7 +155,7 @@ static string shellExpand(const string &in)
   return path;
 }
 
-void Process::RegisterEnvironmentModification(Process::EnvironmentModification modif)
+void Process::RegisterEnvironmentModification(EnvironmentModification modif)
 {
   GetEnvModifications().push_back(modif);
 }
@@ -139,38 +178,38 @@ void Process::ApplyEnvironmentModification()
   {
     EnvironmentModification &m = modifications[i];
 
-    string value = currentEnv[m.name];
+    string value = currentEnv[m.name.c_str()];
 
-    switch(m.type)
+    switch(m.mod)
     {
-      case eEnvModification_Replace: value = m.value; break;
-      case eEnvModification_Append: value += m.value; break;
-      case eEnvModification_AppendPlatform:
-      case eEnvModification_AppendColon:
+      case EnvMod::Set: value = m.value.c_str(); break;
+      case EnvMod::Append:
+      {
         if(!value.empty())
-          value += ":";
-        value += m.value;
+        {
+          if(m.sep == EnvSep::Platform || m.sep == EnvSep::Colon)
+            value += ":";
+          else if(m.sep == EnvSep::SemiColon)
+            value += ";";
+        }
+        value += m.value.c_str();
         break;
-      case eEnvModification_AppendSemiColon:
+      }
+      case EnvMod::Prepend:
+      {
         if(!value.empty())
-          value += ";";
-        value += m.value;
-        break;
-      case eEnvModification_Prepend: value = m.value + value; break;
-      case eEnvModification_PrependColon:
-        if(!value.empty())
-          value = m.value + ":" + value;
+        {
+          if(m.sep == EnvSep::Platform || m.sep == EnvSep::Colon)
+            value += ":";
+          else if(m.sep == EnvSep::SemiColon)
+            value += ";";
+        }
         else
-          value = m.value;
+        {
+          value = m.value.c_str();
+        }
         break;
-      case eEnvModification_PrependPlatform:
-      case eEnvModification_PrependSemiColon:
-        if(!value.empty())
-          value = m.value + ";" + value;
-        else
-          value = m.value;
-        break;
-      default: RDCERR("Unexpected environment modification type");
+      }
     }
 
     setenv(m.name.c_str(), value.c_str(), true);
@@ -180,7 +219,13 @@ void Process::ApplyEnvironmentModification()
   modifications.clear();
 }
 
-static pid_t RunProcess(const char *app, const char *workingDir, const char *cmdLine, char **envp)
+namespace FileIO
+{
+void ReleaseFDAfterFork();
+};
+
+static pid_t RunProcess(const char *app, const char *workingDir, const char *cmdLine, char **envp,
+                        int stdoutPipe[2] = NULL, int stderrPipe[2] = NULL)
 {
   if(!app)
     return (pid_t)0;
@@ -310,19 +355,42 @@ static pid_t RunProcess(const char *app, const char *workingDir, const char *cmd
   }
 
   // don't care about child processes, just ignore them
-  signal(SIGCHLD, SIG_IGN);
+  // signal(SIGCHLD, SIG_IGN);
 
   pid_t childPid = fork();
   if(childPid == 0)
   {
-    chdir(workDir.c_str());
+    FileIO::ReleaseFDAfterFork();
+    if(stdoutPipe)
+    {
+      // Redirect stdout & stderr write ends.
+      dup2(stdoutPipe[1], STDOUT_FILENO);
+      dup2(stderrPipe[1], STDERR_FILENO);
 
-    // in child process, so we can change environment
-    environ = envp;
-    execvp(appName.c_str(), argv);
-
-    RDCERR("Failed to execute %s: %s", appName.c_str(), strerror(errno));
+      // Close read ends, as the child will write.
+      close(stdoutPipe[0]);
+      close(stderrPipe[0]);
+    }
+    const string appPath(GetAbsoluteAppPathFromName(appName));
+    if(!appPath.empty())
+    {
+      chdir(workDir.c_str());
+      execve(appPath.c_str(), argv, envp);
+      RDCERR("Failed to execute '%s' %s", appName.c_str(), strerror(errno));
+      RDCERR("Full Path: '%s'", appPath.c_str());
+    }
+    else
+    {
+      RDCERR("Failed to execute '%s' Executable not found", appName.c_str());
+    }
     exit(0);
+  }
+
+  if(stdoutPipe)
+  {
+    // Close write ends, as parent will read.
+    close(stdoutPipe[1]);
+    close(stderrPipe[1]);
   }
 
   char **argv_delete = argv;
@@ -341,14 +409,15 @@ static pid_t RunProcess(const char *app, const char *workingDir, const char *cmd
   return childPid;
 }
 
-uint32_t Process::InjectIntoProcess(uint32_t pid, EnvironmentModification *env, const char *logfile,
-                                    const CaptureOptions *opts, bool waitForExit)
+uint32_t Process::InjectIntoProcess(uint32_t pid, const rdctype::array<EnvironmentModification> &env,
+                                    const char *logfile, const CaptureOptions &opts, bool waitForExit)
 {
   RDCUNIMPLEMENTED("Injecting into already running processes on linux");
   return 0;
 }
 
-uint32_t Process::LaunchProcess(const char *app, const char *workingDir, const char *cmdLine)
+uint32_t Process::LaunchProcess(const char *app, const char *workingDir, const char *cmdLine,
+                                ProcessResult *result)
 {
   if(app == NULL || app[0] == 0)
   {
@@ -356,13 +425,50 @@ uint32_t Process::LaunchProcess(const char *app, const char *workingDir, const c
     return 0;
   }
 
+  int stdoutPipe[2], stderrPipe[2];
+  if(result)
+  {
+    if(pipe(stdoutPipe) == -1)
+      RDCERR("Could not create stdout pipe");
+    if(pipe(stderrPipe) == -1)
+      RDCERR("Could not create stderr pipe");
+  }
+
   char **currentEnvironment = GetCurrentEnvironment();
-  return (uint32_t)RunProcess(app, workingDir, cmdLine, currentEnvironment);
+  uint32_t ret = (uint32_t)RunProcess(app, workingDir, cmdLine, currentEnvironment,
+                                      result ? stdoutPipe : NULL, result ? stderrPipe : NULL);
+
+  if(result)
+  {
+    result->strStdout = "";
+    result->strStderror = "";
+
+    ssize_t stdoutRead, stderrRead;
+    do
+    {
+      char chBuf[1000];
+      stdoutRead = read(stdoutPipe[0], chBuf, sizeof(chBuf));
+      if(stdoutRead > 0)
+        result->strStdout += string(chBuf, stdoutRead);
+
+      stderrRead = read(stderrPipe[0], chBuf, sizeof(chBuf));
+      if(stderrRead > 0)
+        result->strStderror += string(chBuf, stderrRead);
+
+    } while(stdoutRead > 0 || stderrRead > 0);
+
+    // Close read ends.
+    close(stdoutPipe[0]);
+    close(stderrPipe[0]);
+  }
+
+  return ret;
 }
 
 uint32_t Process::LaunchAndInjectIntoProcess(const char *app, const char *workingDir,
-                                             const char *cmdLine, EnvironmentModification *envList,
-                                             const char *logfile, const CaptureOptions *opts,
+                                             const char *cmdLine,
+                                             const rdctype::array<EnvironmentModification> &envList,
+                                             const char *logfile, const CaptureOptions &opts,
                                              bool waitForExit)
 {
   if(app == NULL || app[0] == 0)
@@ -376,35 +482,23 @@ uint32_t Process::LaunchAndInjectIntoProcess(const char *app, const char *workin
   map<string, string> env = EnvStringToEnvMap((const char **)currentEnvironment);
   vector<EnvironmentModification> &modifications = GetEnvModifications();
 
-  if(envList)
-  {
-    for(;;)
-    {
-      EnvironmentModification e = *envList;
-      e.name = trim(e.name);
-
-      if(e.name == "")
-        break;
-
-      modifications.push_back(e);
-
-      envList++;
-    }
-  }
+  for(const EnvironmentModification &e : envList)
+    modifications.push_back(e);
 
   if(logfile == NULL)
     logfile = "";
 
-  string libpath;
+  string binpath, libpath;
   {
-    FileIO::GetExecutableFilename(libpath);
-    libpath = dirname(libpath);
+    FileIO::GetExecutableFilename(binpath);
+    binpath = dirname(binpath);
+    libpath = binpath + "/../lib";
   }
 
   string optstr;
   {
     optstr.reserve(sizeof(CaptureOptions) * 2 + 1);
-    byte *b = (byte *)opts;
+    byte *b = (byte *)&opts;
     for(size_t i = 0; i < sizeof(CaptureOptions); i++)
     {
       optstr.push_back(char('a' + ((b[i] >> 4) & 0xf)));
@@ -412,51 +506,55 @@ uint32_t Process::LaunchAndInjectIntoProcess(const char *app, const char *workin
     }
   }
 
+  modifications.push_back(EnvironmentModification(EnvMod::Append, EnvSep::Platform,
+                                                  "LD_LIBRARY_PATH", binpath.c_str()));
+  modifications.push_back(EnvironmentModification(EnvMod::Append, EnvSep::Platform,
+                                                  "LD_LIBRARY_PATH", libpath.c_str()));
   modifications.push_back(
-      EnvironmentModification(eEnvModification_AppendPlatform, "LD_LIBRARY_PATH", libpath.c_str()));
+      EnvironmentModification(EnvMod::Append, EnvSep::Platform, "LD_PRELOAD", "librenderdoc.so"));
   modifications.push_back(
-      EnvironmentModification(eEnvModification_AppendPlatform, "LD_PRELOAD", "librenderdoc.so"));
+      EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "RENDERDOC_LOGFILE", logfile));
   modifications.push_back(
-      EnvironmentModification(eEnvModification_Replace, "RENDERDOC_LOGFILE", logfile));
-  modifications.push_back(
-      EnvironmentModification(eEnvModification_Replace, "RENDERDOC_CAPTUREOPTS", optstr.c_str()));
+      EnvironmentModification(EnvMod::Set, EnvSep::NoSep, "RENDERDOC_CAPTUREOPTS", optstr.c_str()));
+  modifications.push_back(EnvironmentModification(EnvMod::Set, EnvSep::NoSep,
+                                                  "RENDERDOC_DEBUG_LOG_FILE", RDCGETLOGFILE()));
 
   for(size_t i = 0; i < modifications.size(); i++)
   {
     EnvironmentModification &m = modifications[i];
 
-    string &value = env[m.name];
+    string &value = env[m.name.c_str()];
 
-    switch(m.type)
+    switch(m.mod)
     {
-      case eEnvModification_Replace: value = m.value; break;
-      case eEnvModification_Append: value += m.value; break;
-      case eEnvModification_AppendPlatform:
-      case eEnvModification_AppendColon:
+      case EnvMod::Set: value = m.value.c_str(); break;
+      case EnvMod::Append:
+      {
         if(!value.empty())
-          value += ":";
-        value += m.value;
+        {
+          if(m.sep == EnvSep::Platform || m.sep == EnvSep::Colon)
+            value += ":";
+          else if(m.sep == EnvSep::SemiColon)
+            value += ";";
+        }
+        value += m.value.c_str();
         break;
-      case eEnvModification_AppendSemiColon:
+      }
+      case EnvMod::Prepend:
+      {
         if(!value.empty())
-          value += ";";
-        value += m.value;
-        break;
-      case eEnvModification_Prepend: value = m.value + value; break;
-      case eEnvModification_PrependColon:
-        if(!value.empty())
-          value = m.value + ":" + value;
+        {
+          if(m.sep == EnvSep::Platform || m.sep == EnvSep::Colon)
+            value += ":";
+          else if(m.sep == EnvSep::SemiColon)
+            value += ";";
+        }
         else
-          value = m.value;
+        {
+          value = m.value.c_str();
+        }
         break;
-      case eEnvModification_PrependPlatform:
-      case eEnvModification_PrependSemiColon:
-        if(!value.empty())
-          value = m.value + ";" + value;
-        else
-          value = m.value;
-        break;
-      default: RDCERR("Unexpected environment modification type");
+      }
     }
   }
 
@@ -503,9 +601,24 @@ uint32_t Process::LaunchAndInjectIntoProcess(const char *app, const char *workin
   return ret;
 }
 
-void Process::StartGlobalHook(const char *pathmatch, const char *logfile, const CaptureOptions *opts)
+bool Process::StartGlobalHook(const char *pathmatch, const char *logfile, const CaptureOptions &opts)
 {
   RDCUNIMPLEMENTED("Global hooking of all processes on linux");
+  return false;
+}
+
+bool Process::CanGlobalHook()
+{
+  return false;
+}
+
+bool Process::IsGlobalHookActive()
+{
+  return false;
+}
+
+void Process::StopGlobalHook()
+{
 }
 
 void *Process::LoadModule(const char *module)

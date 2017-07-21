@@ -1,7 +1,7 @@
 /******************************************************************************
  * The MIT License (MIT)
  *
- * Copyright (c) 2016 Baldur Karlsson
+ * Copyright (c) 2016-2017 Baldur Karlsson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,15 +24,14 @@
 
 #pragma once
 
-#include <algorithm>
 #include "driver/shaders/dxbc/dxbc_inspect.h"
 #include "d3d12_device.h"
 #include "d3d12_manager.h"
 
-class TrackedResource
+class TrackedResource12
 {
 public:
-  TrackedResource()
+  TrackedResource12()
   {
     m_ID = ResourceIDGen::GetNewUniqueID();
     m_pRecord = NULL;
@@ -40,9 +39,9 @@ public:
   ResourceId GetResourceID() { return m_ID; }
   D3D12ResourceRecord *GetResourceRecord() { return m_pRecord; }
   void SetResourceRecord(D3D12ResourceRecord *record) { m_pRecord = record; }
-private:
-  TrackedResource(const TrackedResource &);
-  TrackedResource &operator=(const TrackedResource &);
+protected:
+  TrackedResource12(const TrackedResource12 &);
+  TrackedResource12 &operator=(const TrackedResource12 &);
 
   ResourceId m_ID;
   D3D12ResourceRecord *m_pRecord;
@@ -51,14 +50,19 @@ private:
 extern const GUID RENDERDOC_ID3D12ShaderGUID_ShaderDebugMagicValue;
 
 template <typename NestedType, typename NestedType1 = NestedType, typename NestedType2 = NestedType1>
-class WrappedDeviceChild12 : public RefCounter12<NestedType>, public NestedType2, public TrackedResource
+class WrappedDeviceChild12 : public RefCounter12<NestedType>,
+                             public NestedType2,
+                             public TrackedResource12
 {
 protected:
   WrappedID3D12Device *m_pDevice;
+  ULONG m_InternalRefcount;
 
   WrappedDeviceChild12(NestedType *real, WrappedID3D12Device *device)
       : RefCounter12(real), m_pDevice(device)
   {
+    m_InternalRefcount = 0;
+
     m_pDevice->SoftRef();
 
     if(real)
@@ -92,9 +96,31 @@ protected:
 public:
   typedef NestedType InnerType;
 
+  // some applications wrongly check refcount return values and expect them to
+  // match D3D's values. When we have some internal refs we need to hide, we
+  // add them here and they're subtracted from return values
+  void AddInternalRef() { InterlockedIncrement(&m_InternalRefcount); }
+  void ReleaseInternalRef() { InterlockedDecrement(&m_InternalRefcount); }
   NestedType *GetReal() { return m_pReal; }
-  ULONG STDMETHODCALLTYPE AddRef() { return RefCounter12::SoftRef(m_pDevice); }
-  ULONG STDMETHODCALLTYPE Release() { return RefCounter12::SoftRelease(m_pDevice); }
+  ULONG STDMETHODCALLTYPE AddRef()
+  {
+    ULONG ret = RefCounter12::SoftRef(m_pDevice);
+
+    if(ret >= m_InternalRefcount)
+      ret -= m_InternalRefcount;
+
+    return ret;
+  }
+  ULONG STDMETHODCALLTYPE Release()
+  {
+    ULONG ret = RefCounter12::SoftRelease(m_pDevice);
+
+    if(ret >= m_InternalRefcount)
+      ret -= m_InternalRefcount;
+
+    return ret;
+  }
+
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject)
   {
     if(riid == __uuidof(IUnknown))
@@ -109,7 +135,7 @@ public:
       AddRef();
       return S_OK;
     }
-    if(riid == __uuidof(NestedType1))
+    if(riid == __uuidof(NestedType1) && m_pReal)
     {
       // check that the real interface supports this
       NestedType1 *dummy = NULL;
@@ -124,7 +150,7 @@ public:
       AddRef();
       return S_OK;
     }
-    if(riid == __uuidof(NestedType2))
+    if(riid == __uuidof(NestedType2) && m_pReal)
     {
       // check that the real interface supports this
       NestedType2 *dummy = NULL;
@@ -159,6 +185,9 @@ public:
        riid == __uuidof(IDXGISurface) || riid == __uuidof(IDXGISurface1) ||
        riid == __uuidof(IDXGIResource1) || riid == __uuidof(IDXGISurface2))
     {
+      if(m_pReal == NULL)
+        return E_NOINTERFACE;
+
       // ensure the real object has this interface
       void *outObj;
       HRESULT hr = m_pReal->QueryInterface(riid, &outObj);
@@ -225,6 +254,13 @@ public:
 
   HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData)
   {
+    if(!m_pReal)
+    {
+      if(pDataSize)
+        *pDataSize = 0;
+      return S_OK;
+    }
+
     return m_pReal->GetPrivateData(guid, pDataSize, pData);
   }
 
@@ -236,11 +272,17 @@ public:
     if(guid == WKPDID_D3DDebugObjectName)
       m_pDevice->SetResourceName(this, (const char *)pData);
 
+    if(!m_pReal)
+      return S_OK;
+
     return m_pReal->SetPrivateData(guid, DataSize, pData);
   }
 
   HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData)
   {
+    if(!m_pReal)
+      return S_OK;
+
     return m_pReal->SetPrivateDataInterface(guid, pData);
   }
 
@@ -248,6 +290,9 @@ public:
   {
     string utf8 = StringFormat::Wide2UTF8(Name);
     m_pDevice->SetResourceName(this, utf8.c_str());
+
+    if(!m_pReal)
+      return S_OK;
 
     return m_pReal->SetName(Name);
   }
@@ -297,6 +342,8 @@ class WrappedID3D12CommandSignature : public WrappedDeviceChild12<ID3D12CommandS
 public:
   ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12CommandSignature);
 
+  D3D12CommandSignature sig;
+
   enum
   {
     TypeEnum = Resource_CommandSignature,
@@ -316,7 +363,8 @@ class WrappedID3D12DescriptorHeap : public WrappedDeviceChild12<ID3D12Descriptor
   D3D12_CPU_DESCRIPTOR_HANDLE realCPUBase;
   D3D12_GPU_DESCRIPTOR_HANDLE realGPUBase;
 
-  UINT increment;
+  UINT increment : 24;
+  UINT resident : 8;
   UINT numDescriptors;
 
   D3D12Descriptor *descriptors;
@@ -333,8 +381,10 @@ public:
                               const D3D12_DESCRIPTOR_HEAP_DESC &desc);
   virtual ~WrappedID3D12DescriptorHeap();
 
-  const D3D12Descriptor *GetDescriptors() { return descriptors; }
+  D3D12Descriptor *GetDescriptors() { return descriptors; }
   UINT GetNumDescriptors() { return numDescriptors; }
+  bool Resident() { return resident != 0; }
+  void SetResident(bool r) { resident = r ? 1 : 0; }
   //////////////////////////////
   // implement ID3D12DescriptorHeap
 
@@ -419,7 +469,9 @@ public:
 class WrappedID3D12PipelineState : public WrappedDeviceChild12<ID3D12PipelineState>
 {
 public:
-  ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12PipelineState);
+  static const int AllocPoolCount = 65536;
+  static const int AllocMaxByteSize = 5 * 1024 * 1024;
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12PipelineState, AllocPoolCount, AllocMaxByteSize);
 
   D3D12_GRAPHICS_PIPELINE_STATE_DESC *graphics;
   D3D12_COMPUTE_PIPELINE_STATE_DESC *compute;
@@ -479,9 +531,36 @@ public:
 
     virtual ~ShaderEntry()
     {
+      m_Shaders.erase(m_Key);
       m_Bytecode.clear();
       SAFE_DELETE(m_DXBCFile);
       Shutdown();
+    }
+
+    static ShaderEntry *AddShader(const D3D12_SHADER_BYTECODE &byteCode,
+                                  WrappedID3D12Device *device, WrappedID3D12PipelineState *pipeline)
+    {
+      DXBCKey key(byteCode);
+      ShaderEntry *shader = m_Shaders[key];
+
+      if(shader == NULL)
+        shader = m_Shaders[key] = new ShaderEntry(byteCode, device);
+      else
+        shader->AddRef();
+
+      if(pipeline &&
+         std::find(shader->m_Pipes.begin(), shader->m_Pipes.end(), pipeline) == shader->m_Pipes.end())
+        shader->m_Pipes.push_back(pipeline);
+
+      return shader;
+    }
+
+    static void ReleaseShader(ShaderEntry *shader)
+    {
+      if(shader == NULL)
+        return;
+
+      shader->Release();
     }
 
     DXBCKey GetKey() { return m_Key; }
@@ -489,6 +568,14 @@ public:
     {
       m_DebugInfoSearchPaths = searchPaths;
       m_DebugInfoPath = path;
+    }
+
+    D3D12_SHADER_BYTECODE GetDesc()
+    {
+      D3D12_SHADER_BYTECODE ret;
+      ret.BytecodeLength = m_Bytecode.size();
+      ret.pShaderBytecode = (const void *)&m_Bytecode[0];
+      return ret;
     }
 
     DXBC::DXBCFile *GetDXBC()
@@ -503,22 +590,35 @@ public:
     ShaderReflection &GetDetails()
     {
       if(!m_Built && GetDXBC() != NULL)
-        MakeShaderReflection(m_DXBCFile, &m_Details, &m_Mapping);
+        BuildReflection();
       m_Built = true;
       return m_Details;
     }
+
     const ShaderBindpointMapping &GetMapping()
     {
       if(!m_Built && GetDXBC() != NULL)
-        MakeShaderReflection(m_DXBCFile, &m_Details, &m_Mapping);
+        BuildReflection();
       m_Built = true;
       return m_Mapping;
     }
+
+    vector<WrappedID3D12PipelineState *> m_Pipes;
 
   private:
     ShaderEntry(const ShaderEntry &e);
     void TryReplaceOriginalByteCode();
     ShaderEntry &operator=(const ShaderEntry &e);
+
+    void BuildReflection()
+    {
+      MakeShaderReflection(m_DXBCFile, &m_Details, &m_Mapping);
+      m_Details.ID = GetResourceID();
+      m_Details.EntryPoint =
+          m_DXBCFile->m_DebugInfo ? m_DXBCFile->m_DebugInfo->GetEntryFunction() : "";
+      if(m_Details.EntryPoint.empty())
+        m_Details.EntryPoint = "main";
+    }
 
     DXBCKey m_Key;
 
@@ -531,6 +631,8 @@ public:
     DXBC::DXBCFile *m_DXBCFile;
     ShaderReflection m_Details;
     ShaderBindpointMapping m_Mapping;
+
+    static map<DXBCKey, ShaderEntry *> m_Shaders;
   };
 
   enum
@@ -538,28 +640,57 @@ public:
     TypeEnum = Resource_PipelineState,
   };
 
-  static ShaderEntry *AddShader(const D3D12_SHADER_BYTECODE &byteCode, WrappedID3D12Device *device)
+  ShaderEntry *VS() { return (ShaderEntry *)graphics->VS.pShaderBytecode; }
+  ShaderEntry *HS() { return (ShaderEntry *)graphics->HS.pShaderBytecode; }
+  ShaderEntry *DS() { return (ShaderEntry *)graphics->DS.pShaderBytecode; }
+  ShaderEntry *GS() { return (ShaderEntry *)graphics->GS.pShaderBytecode; }
+  ShaderEntry *PS() { return (ShaderEntry *)graphics->PS.pShaderBytecode; }
+  ShaderEntry *CS() { return (ShaderEntry *)compute->CS.pShaderBytecode; }
+  D3D12_COMPUTE_PIPELINE_STATE_DESC GetComputeDesc()
   {
-    DXBCKey key(byteCode);
-    ShaderEntry *shader = m_Shaders[key];
+    D3D12_COMPUTE_PIPELINE_STATE_DESC ret = *compute;
 
-    if(shader == NULL)
-      shader = m_Shaders[key] = new ShaderEntry(byteCode, device);
-    else
-      shader->AddRef();
+    ret.CS = CS()->GetDesc();
 
-    return shader;
+    return ret;
   }
 
-  static void ReleaseShader(ShaderEntry *shader)
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC GetGraphicsDesc()
   {
-    if(shader == NULL)
-      return;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC ret = *graphics;
 
-    DXBCKey key = shader->GetKey();
+    ShaderEntry *vs = VS();
+    ShaderEntry *hs = HS();
+    ShaderEntry *ds = DS();
+    ShaderEntry *gs = GS();
+    ShaderEntry *ps = PS();
 
-    if(shader->Release() == 0)
-      m_Shaders.erase(key);
+    if(vs)
+      ret.VS = vs->GetDesc();
+    else
+      RDCEraseEl(ret.VS);
+
+    if(hs)
+      ret.HS = hs->GetDesc();
+    else
+      RDCEraseEl(ret.HS);
+
+    if(ds)
+      ret.DS = ds->GetDesc();
+    else
+      RDCEraseEl(ret.DS);
+
+    if(gs)
+      ret.GS = gs->GetDesc();
+    else
+      RDCEraseEl(ret.GS);
+
+    if(ps)
+      ret.PS = ps->GetDesc();
+    else
+      RDCEraseEl(ret.PS);
+
+    return ret;
   }
 
   WrappedID3D12PipelineState(ID3D12PipelineState *real, WrappedID3D12Device *device)
@@ -574,26 +705,18 @@ public:
 
     if(graphics)
     {
-      ShaderEntry *vs = (ShaderEntry *)graphics->VS.pShaderBytecode;
-      ShaderEntry *hs = (ShaderEntry *)graphics->HS.pShaderBytecode;
-      ShaderEntry *ds = (ShaderEntry *)graphics->DS.pShaderBytecode;
-      ShaderEntry *gs = (ShaderEntry *)graphics->GS.pShaderBytecode;
-      ShaderEntry *ps = (ShaderEntry *)graphics->PS.pShaderBytecode;
-
-      ReleaseShader(vs);
-      ReleaseShader(hs);
-      ReleaseShader(ds);
-      ReleaseShader(gs);
-      ReleaseShader(ps);
+      ShaderEntry::ReleaseShader(VS());
+      ShaderEntry::ReleaseShader(HS());
+      ShaderEntry::ReleaseShader(DS());
+      ShaderEntry::ReleaseShader(GS());
+      ShaderEntry::ReleaseShader(PS());
 
       SAFE_DELETE(graphics);
     }
 
     if(compute)
     {
-      ShaderEntry *cs = (ShaderEntry *)compute->CS.pShaderBytecode;
-
-      ReleaseShader(cs);
+      ShaderEntry::ReleaseShader(CS());
 
       SAFE_DELETE(compute);
     }
@@ -606,10 +729,9 @@ public:
   {
     return m_pReal->GetCachedBlob(ppBlob);
   }
-
-private:
-  static map<DXBCKey, ShaderEntry *> m_Shaders;
 };
+
+typedef WrappedID3D12PipelineState::ShaderEntry WrappedID3D12Shader;
 
 class WrappedID3D12QueryHeap : public WrappedDeviceChild12<ID3D12QueryHeap>
 {
@@ -630,44 +752,23 @@ public:
 
 class WrappedID3D12Resource : public WrappedDeviceChild12<ID3D12Resource>
 {
-  struct AddressRange
-  {
-    D3D12_GPU_VIRTUAL_ADDRESS start, end;
-    ResourceId id;
+  static GPUAddressRangeTracker m_Addresses;
 
-    bool operator<(const D3D12_GPU_VIRTUAL_ADDRESS &o) const
-    {
-      if(o < start)
-        return true;
-
-      return false;
-    }
-  };
-
-  static std::vector<AddressRange> m_Addresses;
+  bool resident;
 
 public:
-  ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12Resource);
+  static const int AllocPoolCount = 16384;
+  static const int AllocMaxByteSize = 1536 * 1024;
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12Resource, AllocPoolCount, AllocMaxByteSize, false);
 
-  static std::map<ResourceId, WrappedID3D12Resource *> m_List;
+  static std::map<ResourceId, WrappedID3D12Resource *> *m_List;
+
+  static std::map<ResourceId, WrappedID3D12Resource *> &GetList() { return *m_List; }
+  static void RefBuffers(D3D12ResourceManager *rm);
 
   static void GetResIDFromAddr(D3D12_GPU_VIRTUAL_ADDRESS addr, ResourceId &id, UINT64 &offs)
   {
-    id = ResourceId();
-    offs = 0;
-
-    if(m_Addresses.empty())
-      return;
-
-    auto it = std::lower_bound(m_Addresses.begin(), m_Addresses.end(), addr);
-    if(it == m_Addresses.end())
-      return;
-
-    if(addr < it->start || addr >= it->end)
-      return;
-
-    id = it->id;
-    offs = addr - it->start;
+    m_Addresses.GetResIDFromAddr(addr, id, offs);
   }
 
   // overload to just return the id in case the offset isn't needed
@@ -676,7 +777,7 @@ public:
     ResourceId id;
     UINT64 offs;
 
-    GetResIDFromAddr(addr, id, offs);
+    m_Addresses.GetResIDFromAddr(addr, id, offs);
 
     return id;
   }
@@ -689,42 +790,40 @@ public:
   WrappedID3D12Resource(ID3D12Resource *real, WrappedID3D12Device *device)
       : WrappedDeviceChild12(real, device)
   {
-    m_List[GetResourceID()] = this;
+    if(m_List)
+      (*m_List)[GetResourceID()] = this;
+
+    SetResident(true);
 
     // assuming only valid for buffers
     if(m_pReal->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
       D3D12_GPU_VIRTUAL_ADDRESS addr = m_pReal->GetGPUVirtualAddress();
 
-      auto it = std::lower_bound(m_Addresses.begin(), m_Addresses.end(), addr);
-      RDCASSERT(it == m_Addresses.begin() || it == m_Addresses.end() || addr < it->start ||
-                addr >= it->end);
-
-      AddressRange range;
+      GPUAddressRange range;
       range.start = addr;
       range.end = addr + m_pReal->GetDesc().Width;
       range.id = GetResourceID();
 
-      m_Addresses.insert(it, range);
+      m_Addresses.AddTo(range);
     }
   }
-  virtual ~WrappedID3D12Resource()
+  virtual ~WrappedID3D12Resource();
+
+  bool Resident() { return resident; }
+  void SetResident(bool r) { resident = r; }
+  byte *GetMap(UINT Subresource);
+  byte *GetShadow(UINT Subresource);
+  void AllocShadow(UINT Subresource, size_t size);
+  void FreeShadow();
+
+  virtual uint64_t GetGPUVirtualAddressIfBuffer()
   {
-    m_List.erase(GetResourceID());
-
-    // assuming only valid for buffers
     if(m_pReal->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-    {
-      D3D12_GPU_VIRTUAL_ADDRESS addr = m_pReal->GetGPUVirtualAddress();
-
-      auto it = std::lower_bound(m_Addresses.begin(), m_Addresses.end(), addr);
-      RDCASSERT(it != m_Addresses.end() && addr >= it->start && addr < it->end);
-
-      m_Addresses.erase(it);
-    }
-
-    Shutdown();
+      return m_pReal->GetGPUVirtualAddress();
+    return 0;
   }
+
   //////////////////////////////
   // implement ID3D12Resource
 
@@ -740,31 +839,17 @@ public:
     return m_pReal->GetHeapProperties(pHeapProperties, pHeapFlags);
   }
 
-  virtual HRESULT STDMETHODCALLTYPE Map(UINT Subresource, const D3D12_RANGE *pReadRange, void **ppData)
-  {
-    D3D12NOTIMP("Resource mapping");
-    return m_pReal->Map(Subresource, pReadRange, ppData);
-  }
-
-  virtual void STDMETHODCALLTYPE Unmap(UINT Subresource, const D3D12_RANGE *pWrittenRange)
-  {
-    D3D12NOTIMP("Resource mapping");
-    return m_pReal->Unmap(Subresource, pWrittenRange);
-  }
-
+  virtual HRESULT STDMETHODCALLTYPE Map(UINT Subresource, const D3D12_RANGE *pReadRange,
+                                        void **ppData);
+  virtual void STDMETHODCALLTYPE Unmap(UINT Subresource, const D3D12_RANGE *pWrittenRange);
   virtual HRESULT STDMETHODCALLTYPE WriteToSubresource(UINT DstSubresource, const D3D12_BOX *pDstBox,
                                                        const void *pSrcData, UINT SrcRowPitch,
-                                                       UINT SrcDepthPitch)
-  {
-    D3D12NOTIMP("Resource mapping");
-    return m_pReal->WriteToSubresource(DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
-  }
-
+                                                       UINT SrcDepthPitch);
   virtual HRESULT STDMETHODCALLTYPE ReadFromSubresource(void *pDstData, UINT DstRowPitch,
                                                         UINT DstDepthPitch, UINT SrcSubresource,
                                                         const D3D12_BOX *pSrcBox)
   {
-    D3D12NOTIMP("Resource mapping");
+    // don't have to do anything here
     return m_pReal->ReadFromSubresource(pDstData, DstRowPitch, DstDepthPitch, SrcSubresource,
                                         pSrcBox);
   }
@@ -773,7 +858,9 @@ public:
 class WrappedID3D12RootSignature : public WrappedDeviceChild12<ID3D12RootSignature>
 {
 public:
-  ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12RootSignature);
+  static const int AllocPoolCount = 8192;
+  static const int AllocMaxByteSize = 2 * 1024 * 1024;
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12RootSignature, AllocPoolCount, AllocMaxByteSize);
 
   D3D12RootSignature sig;
 
@@ -789,6 +876,62 @@ public:
   virtual ~WrappedID3D12RootSignature() { Shutdown(); }
 };
 
+class WrappedID3D12PipelineLibrary : public WrappedDeviceChild12<ID3D12PipelineLibrary>
+{
+public:
+  ALLOCATE_WITH_WRAPPED_POOL(WrappedID3D12PipelineLibrary);
+
+  enum
+  {
+    TypeEnum = Resource_PipelineLibrary,
+  };
+
+  WrappedID3D12PipelineLibrary(WrappedID3D12Device *device) : WrappedDeviceChild12(NULL, device) {}
+  virtual ~WrappedID3D12PipelineLibrary() { Shutdown(); }
+  virtual HRESULT STDMETHODCALLTYPE StorePipeline(_In_opt_ LPCWSTR pName,
+                                                  _In_ ID3D12PipelineState *pPipeline)
+  {
+    // do nothing
+    return S_OK;
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE
+  LoadGraphicsPipeline(_In_ LPCWSTR pName, _In_ const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc,
+                       REFIID riid, _COM_Outptr_ void **ppPipelineState)
+  {
+    // pretend we don't have it - assume that the application won't store then
+    // load in the same run, or will handle that if it happens
+    return E_INVALIDARG;
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE
+  LoadComputePipeline(_In_ LPCWSTR pName, _In_ const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc,
+                      REFIID riid, _COM_Outptr_ void **ppPipelineState)
+  {
+    // pretend we don't have it - assume that the application won't store then
+    // load in the same run, or will handle that if it happens
+    return E_INVALIDARG;
+  }
+
+  static const SIZE_T DummyBytes = 32;
+
+  virtual SIZE_T STDMETHODCALLTYPE GetSerializedSize(void)
+  {
+    // simple dummy serialisation since applications might not expect 0 bytes
+    return DummyBytes;
+  }
+
+  virtual HRESULT STDMETHODCALLTYPE Serialize(_Out_writes_(DataSizeInBytes) void *pData,
+                                              SIZE_T DataSizeInBytes)
+  {
+    if(DataSizeInBytes < DummyBytes)
+      return E_INVALIDARG;
+
+    memset(pData, 0, DummyBytes);
+    return S_OK;
+  }
+};
+
 #define ALL_D3D12_TYPES                     \
   D3D12_TYPE_MACRO(ID3D12CommandAllocator); \
   D3D12_TYPE_MACRO(ID3D12CommandSignature); \
@@ -798,7 +941,8 @@ public:
   D3D12_TYPE_MACRO(ID3D12PipelineState);    \
   D3D12_TYPE_MACRO(ID3D12QueryHeap);        \
   D3D12_TYPE_MACRO(ID3D12Resource);         \
-  D3D12_TYPE_MACRO(ID3D12RootSignature);
+  D3D12_TYPE_MACRO(ID3D12RootSignature);    \
+  D3D12_TYPE_MACRO(ID3D12PipelineLibrary);
 
 // template magic voodoo to unwrap types
 template <typename inner>
